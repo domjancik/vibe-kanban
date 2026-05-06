@@ -510,6 +510,11 @@ impl App {
 
         match key {
             KeyEvent {
+                code: KeyCode::Esc, ..
+            } if self.creating_new_session && self.selected_pane == Pane::Chat => {
+                self.cancel_new_session_flow();
+            }
+            KeyEvent {
                 code: KeyCode::F(2),
                 ..
             } => self.toggle_composer_editor_mode(),
@@ -807,15 +812,23 @@ impl App {
         match self.composer_editor_mode {
             ComposerEditorMode::Standard => {
                 if key.code == KeyCode::Esc {
-                    self.focus = Focus::Main;
+                    if self.creating_new_session && self.composer.trim().is_empty() {
+                        self.cancel_new_session_flow();
+                    } else {
+                        self.focus = Focus::Main;
+                    }
                 } else {
                     self.handle_text_input(key, false).await;
                 }
             }
             ComposerEditorMode::Vim(VimMode::Insert) => {
                 if key.code == KeyCode::Esc {
-                    self.composer_editor_mode = ComposerEditorMode::Vim(VimMode::Normal);
-                    self.status = "Composer mode: Vim Normal".to_string();
+                    if self.creating_new_session && self.composer.trim().is_empty() {
+                        self.cancel_new_session_flow();
+                    } else {
+                        self.composer_editor_mode = ComposerEditorMode::Vim(VimMode::Normal);
+                        self.status = "Composer mode: Vim Normal".to_string();
+                    }
                 } else {
                     self.handle_text_input(key, false).await;
                 }
@@ -825,7 +838,11 @@ impl App {
                     return;
                 }
                 if key.code == KeyCode::Esc {
-                    self.focus = Focus::Main;
+                    if self.creating_new_session && self.composer.trim().is_empty() {
+                        self.cancel_new_session_flow();
+                    } else {
+                        self.focus = Focus::Main;
+                    }
                 }
             }
         }
@@ -2147,7 +2164,7 @@ impl App {
         } else {
             Style::default().fg(Color::DarkGray)
         };
-        Line::from(vec![
+        let mut spans = vec![
             Span::styled("Mode ", Style::default().fg(Color::Gray)),
             Span::styled(mode, Style::default().fg(Color::LightMagenta)),
             Span::raw("  "),
@@ -2184,9 +2201,33 @@ impl App {
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
-            ),
+                ),
             Span::styled(" discard", Style::default().fg(Color::DarkGray)),
-        ])
+        ];
+        if self.creating_new_session {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::styled(
+                " create session ",
+                Style::default().fg(Color::DarkGray),
+            ));
+            spans.push(Span::styled(
+                "Esc",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::styled(
+                " cancel",
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        Line::from(spans)
     }
 
     fn composer_editor_mode_label(&self) -> &'static str {
@@ -3302,6 +3343,16 @@ impl App {
                 }
             }
         }
+    }
+
+    fn cancel_new_session_flow(&mut self) {
+        if !self.creating_new_session {
+            return;
+        }
+        self.creating_new_session = false;
+        self.sync_composer_context();
+        self.status = "Cancelled new session".to_string();
+        self.error = None;
     }
 
     fn current_session(&self) -> Option<&Session> {
