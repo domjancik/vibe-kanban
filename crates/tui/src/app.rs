@@ -1930,8 +1930,7 @@ impl App {
             Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
             content_area,
         );
-        let top_offset = total_lines
-            .saturating_sub(visible_lines.saturating_add(chat_end_offset));
+        let top_offset = total_lines.saturating_sub(visible_lines.saturating_add(chat_end_offset));
         render_vertical_scrollbar(frame, area, total_lines, visible_lines, top_offset);
 
         if let Some(status_area) = status_area {
@@ -2380,7 +2379,7 @@ impl App {
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
-                ),
+            ),
             Span::styled(" discard", Style::default().fg(Color::DarkGray)),
         ];
         if self.creating_new_session {
@@ -2781,7 +2780,9 @@ impl App {
             self.chat_render_cache_dirty = false;
             self.last_chat_render_cache_build = Some(std::time::Instant::now());
         }
-        self.chat_render_cache.as_ref().expect("chat cache populated")
+        self.chat_render_cache
+            .as_ref()
+            .expect("chat cache populated")
     }
 
     fn build_chat_render_cache(&self, width: usize) -> ChatRenderCache {
@@ -4559,10 +4560,7 @@ fn render_vertical_scrollbar(
         vertical: 1,
         horizontal: 0,
     });
-    if inner.height == 0
-        || inner.width == 0
-        || total_items <= viewport_items
-        || viewport_items == 0
+    if inner.height == 0 || inner.width == 0 || total_items <= viewport_items || viewport_items == 0
     {
         return;
     }
