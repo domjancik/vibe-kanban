@@ -890,8 +890,8 @@ impl App {
     }
 
     fn handle_terminal_resize(&mut self, size: Rect) {
-        let cols = size.width.saturating_sub(2).max(20);
-        let rows = size.height.saturating_sub(8).max(8);
+        let cols = size.width.saturating_sub(2).max(1);
+        let rows = size.height.saturating_sub(2).max(1);
         self.bundle.terminal.size = (cols, rows);
         self.bundle.terminal.parser.set_size(rows, cols);
         if let Some(tx) = &self.subscriptions.terminal_tx {
@@ -1070,8 +1070,6 @@ impl App {
     }
 
     fn render(&mut self, frame: &mut Frame) {
-        self.handle_terminal_resize(frame.area());
-
         let outer = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -1186,7 +1184,7 @@ impl App {
         frame.render_stateful_widget(list, area, &mut state);
     }
 
-    fn render_main(&self, frame: &mut Frame, area: Rect) {
+    fn render_main(&mut self, frame: &mut Frame, area: Rect) {
         let chunks = if self.selected_pane == Pane::Chat {
             let composer_height = self.chat_composer_height(area.width);
             Layout::default()
@@ -1538,7 +1536,8 @@ impl App {
         );
     }
 
-    fn render_terminal(&self, frame: &mut Frame, area: Rect) {
+    fn render_terminal(&mut self, frame: &mut Frame, area: Rect) {
+        self.handle_terminal_resize(area);
         let screen = self.bundle.terminal.parser.screen();
         let mut lines = Vec::new();
         for row in 0..screen.size().0 {
