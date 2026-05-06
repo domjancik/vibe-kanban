@@ -1,0 +1,102 @@
+use ratatui::{
+    Frame,
+    layout::Rect,
+    style::{Color, Modifier, Style},
+    text::{Line, Text},
+    widgets::{List, ListItem, ListState},
+};
+
+use crate::{
+    app_state::App,
+    model::{Focus, format_relative_time, workspace_title},
+    ui::{panel_block, render_vertical_scrollbar},
+    workspace::WorkspaceRow,
+};
+
+impl App {
+    pub(crate) fn render_workspace_list(&self, frame: &mut Frame, area: Rect) {
+        let rows = self.workspace_rows();
+        let items = rows
+            .iter()
+            .map(|row| match row {
+                WorkspaceRow::Header(title) => ListItem::new(Line::styled(
+                    format!(" {title} "),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                WorkspaceRow::Workspace(workspace) => {
+                    let summary = self.summaries.get(&workspace.id);
+                    let mut line = workspace_title(&workspace.workspace);
+                    if workspace.workspace.pinned {
+                        line.push_str("  [pin]");
+                    }
+                    if workspace.is_running {
+                        line.push_str("  [run]");
+                    }
+                    if summary.is_some_and(|summary| summary.has_pending_approval) {
+                        line.push_str("  [approval]");
+                    }
+                    if summary.is_some_and(|summary| summary.has_running_dev_server) {
+                        line.push_str("  [dev]");
+                    }
+                    if summary.is_some_and(|summary| summary.has_unseen_turns) {
+                        line.push_str("  [new]");
+                    }
+                    let meta = if let Some(summary) = summary {
+                        format!(
+                            "{}  +{} -{}  {}",
+                            workspace.workspace.branch,
+                            summary.lines_added.unwrap_or_default(),
+                            summary.lines_removed.unwrap_or_default(),
+                            format_relative_time(summary.latest_process_completed_at)
+                        )
+                    } else {
+                        workspace.workspace.branch.clone()
+                    };
+                    let status_color = if summary.is_some_and(|summary| {
+                        summary.has_pending_approval || summary.has_unseen_turns
+                    }) {
+                        Color::Yellow
+                    } else if workspace.is_running
+                        || summary.is_some_and(|summary| summary.has_running_dev_server)
+                    {
+                        Color::Green
+                    } else {
+                        Color::White
+                    };
+                    ListItem::new(Text::from(vec![
+                        Line::styled(format!(" {line}"), Style::default().fg(status_color)),
+                        Line::styled(format!(" {meta}"), Style::default().fg(Color::DarkGray)),
+                        Line::raw(""),
+                    ]))
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let mut state = ListState::default();
+        if let Some(index) = self.selected_workspace_row_index(&rows) {
+            state.select(Some(index));
+        }
+
+        let block = panel_block("Workspaces", self.focus == Focus::WorkspaceList);
+        let list = List::new(items).block(block).highlight_style(
+            Style::default()
+                .bg(Color::Rgb(28, 38, 48))
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
+        frame.render_stateful_widget(list, area, &mut state);
+        render_vertical_scrollbar(
+            frame,
+            area,
+            rows.len(),
+            crate::app::viewport_capacity(area, 3),
+            crate::app::selected_list_offset(
+                self.selected_workspace_row_index(&rows).unwrap_or(0),
+                rows.len(),
+                crate::app::viewport_capacity(area, 3),
+            ),
+        );
+    }
+}

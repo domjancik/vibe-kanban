@@ -3,9 +3,8 @@ use std::{str::FromStr, time::Duration};
 use anyhow::Result;
 use crossterm::event::{Event as CrosstermEvent, EventStream, KeyCode, KeyEvent, KeyModifiers};
 use db::models::{
-    execution_process::{ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus},
+    execution_process::{ExecutionProcessRunReason, ExecutionProcessStatus},
     scratch::DraftFollowUpData,
-    session::Session,
 };
 use executors::{
     executors::BaseCodingAgent,
@@ -36,13 +35,13 @@ use crate::{
     input::{TerminalInput, map_app_key, map_terminal_key},
     model::{
         Focus, NetEvent, Pane, PatchType, QueueStatus, diff_title, display_permission,
-        display_variant, format_relative_time, workspace_title,
+        display_variant, workspace_title,
     },
     ui::{
         centered_rect, panel_block, rect_from_size, render_vertical_scrollbar,
         terminal_content_area,
     },
-    workspace::{SessionRow, WorkspaceRow, session_target},
+    workspace::session_target,
 };
 
 impl App {
@@ -535,92 +534,6 @@ impl App {
         }
     }
 
-    fn render_workspace_list(&self, frame: &mut Frame, area: Rect) {
-        let rows = self.workspace_rows();
-        let items = rows
-            .iter()
-            .map(|row| match row {
-                WorkspaceRow::Header(title) => ListItem::new(Line::styled(
-                    format!(" {title} "),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                )),
-                WorkspaceRow::Workspace(workspace) => {
-                    let summary = self.summaries.get(&workspace.id);
-                    let mut line = workspace_title(&workspace.workspace);
-                    if workspace.workspace.pinned {
-                        line.push_str("  [pin]");
-                    }
-                    if workspace.is_running {
-                        line.push_str("  [run]");
-                    }
-                    if summary.is_some_and(|summary| summary.has_pending_approval) {
-                        line.push_str("  [approval]");
-                    }
-                    if summary.is_some_and(|summary| summary.has_running_dev_server) {
-                        line.push_str("  [dev]");
-                    }
-                    if summary.is_some_and(|summary| summary.has_unseen_turns) {
-                        line.push_str("  [new]");
-                    }
-                    let meta = if let Some(summary) = summary {
-                        format!(
-                            "{}  +{} -{}  {}",
-                            workspace.workspace.branch,
-                            summary.lines_added.unwrap_or_default(),
-                            summary.lines_removed.unwrap_or_default(),
-                            format_relative_time(summary.latest_process_completed_at)
-                        )
-                    } else {
-                        workspace.workspace.branch.clone()
-                    };
-                    let status_color = if summary.is_some_and(|summary| {
-                        summary.has_pending_approval || summary.has_unseen_turns
-                    }) {
-                        Color::Yellow
-                    } else if workspace.is_running
-                        || summary.is_some_and(|summary| summary.has_running_dev_server)
-                    {
-                        Color::Green
-                    } else {
-                        Color::White
-                    };
-                    ListItem::new(Text::from(vec![
-                        Line::styled(format!(" {line}"), Style::default().fg(status_color)),
-                        Line::styled(format!(" {meta}"), Style::default().fg(Color::DarkGray)),
-                        Line::raw(""),
-                    ]))
-                }
-            })
-            .collect::<Vec<_>>();
-
-        let mut state = ListState::default();
-        if let Some(index) = self.selected_workspace_row_index(&rows) {
-            state.select(Some(index));
-        }
-
-        let block = panel_block("Workspaces", self.focus == Focus::WorkspaceList);
-        let list = List::new(items).block(block).highlight_style(
-            Style::default()
-                .bg(Color::Rgb(28, 38, 48))
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        );
-        frame.render_stateful_widget(list, area, &mut state);
-        render_vertical_scrollbar(
-            frame,
-            area,
-            rows.len(),
-            viewport_capacity(area, 3),
-            selected_list_offset(
-                self.selected_workspace_row_index(&rows).unwrap_or(0),
-                rows.len(),
-                viewport_capacity(area, 3),
-            ),
-        );
-    }
-
     fn render_main(&mut self, frame: &mut Frame, area: Rect) {
         let chunks = if self.selected_pane == Pane::Chat {
             let composer_height = self.chat_composer_height(area.width);
@@ -718,125 +631,6 @@ impl App {
                 .max(1)
         };
         wrapped_lines.saturating_add(2).clamp(7, 16) as u16
-    }
-
-    fn render_detail(&self, frame: &mut Frame, area: Rect) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(10),
-                Constraint::Length(12),
-                Constraint::Min(7),
-            ])
-            .split(area);
-
-        let workspace_info = if let Some(workspace) = &self.bundle.workspace {
-            vec![
-                Line::raw(workspace_title(workspace)),
-                Line::raw(format!("branch: {}", workspace.branch)),
-                Line::raw(format!("archived: {}", workspace.archived)),
-                Line::raw(format!("pinned: {}", workspace.pinned)),
-                Line::styled(
-                    format!("draft: {}", self.draft_status_label()),
-                    Style::default().fg(Color::LightBlue),
-                ),
-                Line::styled(
-                    format!("queue: {}", self.queue_status_label()),
-                    Style::default().fg(Color::Yellow),
-                ),
-                Line::styled(
-                    "Enter send/queue  Q queue/replace  X cancel queue  D discard draft"
-                        .to_string(),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Line::styled(
-                    "v stop execution  s dev server  c cleanup  e editor  r rename session"
-                        .to_string(),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Line::raw(format!(
-                    "updated: {}",
-                    format_relative_time(Some(workspace.updated_at))
-                )),
-            ]
-        } else {
-            vec![Line::raw("No workspace selected")]
-        };
-        frame.render_widget(
-            Paragraph::new(Text::from(workspace_info)).block(panel_block("Workspace", false)),
-            chunks[0],
-        );
-
-        let session_rows = self.session_rows();
-        let sessions = session_rows
-            .iter()
-            .map(|row| match row {
-                SessionRow::NewSession => ListItem::new(Text::from(vec![
-                    Line::styled(
-                        "+ New session",
-                        Style::default()
-                            .fg(Color::LightGreen)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Line::styled(
-                        "Start a fresh thread in this workspace",
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ])),
-                SessionRow::Session(session) => self.render_session_row(session),
-            })
-            .collect::<Vec<_>>();
-        let mut state = ListState::default();
-        if let Some(index) = self.selected_session_row_index(&session_rows) {
-            state.select(Some(index));
-        }
-        frame.render_stateful_widget(
-            List::new(sessions)
-                .block(panel_block("Sessions", self.focus == Focus::Detail))
-                .highlight_style(Style::default().fg(Color::Cyan).bg(Color::Rgb(28, 38, 48))),
-            chunks[1],
-            &mut state,
-        );
-        render_vertical_scrollbar(
-            frame,
-            chunks[1],
-            session_rows.len(),
-            viewport_capacity(chunks[1], 2),
-            selected_list_offset(
-                self.selected_session_row_index(&session_rows).unwrap_or(0),
-                session_rows.len(),
-                viewport_capacity(chunks[1], 2),
-            ),
-        );
-
-        let mut processes = self
-            .bundle
-            .process_map
-            .values()
-            .cloned()
-            .collect::<Vec<ExecutionProcess>>();
-        processes.sort_by(|left, right| right.created_at.cmp(&left.created_at));
-        let process_lines = processes
-            .iter()
-            .map(|process| {
-                let label = format!(
-                    "{}  {:?}",
-                    process.created_at.format("%H:%M:%S"),
-                    process.status
-                );
-                ListItem::new(Text::from(vec![
-                    Line::raw(label),
-                    Line::styled(
-                        format!("{:?}", process.run_reason),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]))
-            })
-            .collect::<Vec<_>>();
-        frame.render_widget(
-            List::new(process_lines).block(panel_block("Processes", false)),
-            chunks[2],
-        );
     }
 
     fn render_chat(&mut self, frame: &mut Frame, area: Rect) {
@@ -1166,82 +960,6 @@ impl App {
         Paragraph::new(status.to_string()).block(Block::default().borders(Borders::TOP))
     }
 
-    fn render_agent_picker(&self, frame: &mut Frame, area: Rect) {
-        let Some(picker) = self.agent_picker.as_ref() else {
-            return;
-        };
-        let popup = centered_rect(72, 55, area);
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(6)])
-            .split(popup);
-        let options = self.filtered_agent_mode_options();
-        let selected = picker.selected.min(options.len().saturating_sub(1));
-        let items = options
-            .iter()
-            .map(|option| match option {
-                None => ListItem::new(vec![
-                    Line::styled(
-                        "Default",
-                        Style::default()
-                            .fg(Color::LightBlue)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Line::styled(
-                        "Use the executor default agent mode",
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]),
-                Some(agent) => {
-                    let mut lines = vec![Line::from(vec![
-                        Span::styled(
-                            agent.label.clone(),
-                            Style::default()
-                                .fg(Color::LightBlue)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::raw("  "),
-                        Span::styled(agent.id.clone(), Style::default().fg(Color::Gray)),
-                        if agent.is_default {
-                            Span::styled("  default", Style::default().fg(Color::Yellow))
-                        } else {
-                            Span::raw("")
-                        },
-                    ])];
-                    if let Some(description) = &agent.description {
-                        lines.push(Line::styled(
-                            description.clone(),
-                            Style::default().fg(Color::DarkGray),
-                        ));
-                    }
-                    ListItem::new(lines)
-                }
-            })
-            .collect::<Vec<_>>();
-        let mut state = ListState::default().with_selected(Some(selected));
-
-        frame.render_widget(Clear, popup);
-        frame.render_widget(panel_block("Agent Mode", true), popup);
-        frame.render_widget(
-            Paragraph::new(format!("Search: {}", picker.query))
-                .block(panel_block("Filter", false))
-                .wrap(Wrap { trim: false }),
-            chunks[0],
-        );
-        frame.render_stateful_widget(
-            List::new(items)
-                .block(panel_block("Options", false))
-                .highlight_style(
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                )
-                .highlight_symbol(">> "),
-            chunks[1],
-            &mut state,
-        );
-    }
-
     fn composer_selection_line(&self) -> Line<'static> {
         let config = self.composer_config.as_ref();
         let executor = config
@@ -1373,7 +1091,7 @@ impl App {
         Line::from(spans)
     }
 
-    fn draft_status_label(&self) -> String {
+    pub(crate) fn draft_status_label(&self) -> String {
         if self.composer_queue_conflict {
             "blocked by queued follow-up".to_string()
         } else if self.composer_dirty {
@@ -1385,46 +1103,7 @@ impl App {
         }
     }
 
-    fn render_session_row(&self, session: &Session) -> ListItem<'static> {
-        let is_renaming = self
-            .session_rename
-            .as_ref()
-            .is_some_and(|rename| rename.session_id == session.id);
-
-        if is_renaming && let Some(rename) = self.session_rename.as_ref() {
-            let mut lines = vec![
-                Line::styled(
-                    "rename",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Line::styled(
-                    "Enter save  Esc cancel",
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ];
-            lines.extend(
-                render_editor_buffer(&rename.name, rename.cursor, true, self.editor_mode).lines,
-            );
-            return ListItem::new(Text::from(lines));
-        }
-
-        let name = session
-            .name
-            .clone()
-            .unwrap_or_else(|| session.id.to_string());
-        let executor = session
-            .executor
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string());
-        ListItem::new(Text::from(vec![
-            Line::raw(name),
-            Line::styled(executor, Style::default().fg(Color::DarkGray)),
-        ]))
-    }
-
-    fn queue_status_label(&self) -> String {
+    pub(crate) fn queue_status_label(&self) -> String {
         if self.queue_pending {
             return "loading".to_string();
         }
@@ -1997,7 +1676,7 @@ impl App {
             .unwrap_or_default()
     }
 
-    fn filtered_agent_mode_options(&self) -> Vec<Option<AgentInfo>> {
+    pub(crate) fn filtered_agent_mode_options(&self) -> Vec<Option<AgentInfo>> {
         let query = self
             .agent_picker
             .as_ref()
@@ -2505,7 +2184,7 @@ fn fuzzy_contains(query: &str, candidate: &str) -> bool {
     false
 }
 
-fn viewport_capacity(area: Rect, rows_per_item: u16) -> usize {
+pub(crate) fn viewport_capacity(area: Rect, rows_per_item: u16) -> usize {
     area.height
         .saturating_sub(2)
         .max(1)
@@ -2513,7 +2192,7 @@ fn viewport_capacity(area: Rect, rows_per_item: u16) -> usize {
         .max(1) as usize
 }
 
-fn selected_list_offset(selected: usize, total: usize, viewport: usize) -> usize {
+pub(crate) fn selected_list_offset(selected: usize, total: usize, viewport: usize) -> usize {
     if total <= viewport {
         0
     } else {
