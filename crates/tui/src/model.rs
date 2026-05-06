@@ -8,6 +8,12 @@ use db::models::{
     workspace::{Workspace, WorkspaceWithStatus},
     workspace_repo::RepoWithTargetBranch,
 };
+use executors::{
+    executor_discovery::ExecutorDiscoveredOptions,
+    executors::BaseCodingAgent,
+    model_selector::PermissionPolicy,
+    profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},
+};
 use executors::logs::{
     ActionType, NormalizedEntry, NormalizedEntryError, NormalizedEntryType, ToolStatus,
 };
@@ -119,10 +125,27 @@ pub struct OpenEditorRequest {
 #[derive(Debug, Clone, Serialize)]
 pub struct FollowUpRequest {
     pub prompt: String,
-    pub executor_config: executors::profile::ExecutorConfig,
+    pub executor_config: ExecutorConfig,
     pub retry_process_id: Option<Uuid>,
     pub force_when_dirty: Option<bool>,
     pub perform_git_reset: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UserSystemInfo {
+    pub config: UserConfig,
+    #[serde(flatten)]
+    pub profiles: ExecutorConfigs,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UserConfig {
+    pub executor_profile: ExecutorProfileId,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExecutorDiscoveryStreamState {
+    pub options: ExecutorDiscoveredOptions,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -318,6 +341,7 @@ pub enum StreamKind {
 
 #[derive(Debug, Clone)]
 pub enum NetEvent {
+    UserSystemLoaded(UserSystemInfo),
     ActiveWorkspaces(WorkspaceStreamState),
     ArchivedWorkspaces(WorkspaceStreamState),
     Summaries {
@@ -352,6 +376,10 @@ pub enum NetEvent {
     LogsUpdated {
         process_id: Uuid,
         entries: Vec<PatchType>,
+    },
+    ExecutorOptionsUpdated {
+        executor: BaseCodingAgent,
+        options: ExecutorDiscoveredOptions,
     },
     NotesSaved(Uuid),
     TerminalConnected(Uuid),
@@ -516,4 +544,17 @@ pub fn active_process(processes: &HashMap<Uuid, ExecutionProcess>) -> Option<Exe
         .filter(|process| process.run_reason != ExecutionProcessRunReason::DevServer)
         .max_by_key(|process| process.created_at)
         .cloned()
+}
+
+pub fn display_variant(variant: Option<&str>) -> &str {
+    variant.unwrap_or("DEFAULT")
+}
+
+pub fn display_permission(policy: Option<&PermissionPolicy>) -> &str {
+    match policy {
+        Some(PermissionPolicy::Auto) => "AUTO",
+        Some(PermissionPolicy::Supervised) => "SUPERVISED",
+        Some(PermissionPolicy::Plan) => "PLAN",
+        None => "DEFAULT",
+    }
 }

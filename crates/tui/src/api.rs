@@ -20,11 +20,11 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use uuid::Uuid;
 
 use crate::model::{
-    ApiEnvelope, CreateSessionRequest, DiffStreamState, ExecutionProcessesState, FollowUpRequest,
-    LogEntriesState, NetEvent, OpenEditorRequest, PatchType, ScratchPayload, ScratchRecord,
-    ScratchStreamState, StreamKind, UpdateScratchPayload, UpdateScratchRequest,
-    UpdateWorkspaceRequest, WorkspaceStreamState, WorkspaceSummaryRequest,
-    WorkspaceSummaryResponse,
+    ApiEnvelope, CreateSessionRequest, DiffStreamState, ExecutionProcessesState,
+    ExecutorDiscoveryStreamState, FollowUpRequest, LogEntriesState, NetEvent, OpenEditorRequest,
+    PatchType, ScratchPayload, ScratchRecord, ScratchStreamState, StreamKind,
+    UpdateScratchPayload, UpdateScratchRequest, UpdateWorkspaceRequest, UserSystemInfo,
+    WorkspaceStreamState, WorkspaceSummaryRequest, WorkspaceSummaryResponse,
 };
 
 #[derive(Clone)]
@@ -39,6 +39,7 @@ pub struct WorkspaceSubscriptions {
     pub notes: Option<JoinHandle<()>>,
     pub processes: Option<JoinHandle<()>>,
     pub logs: Option<JoinHandle<()>>,
+    pub discovery: Option<JoinHandle<()>>,
     pub terminal: Option<JoinHandle<()>>,
     pub terminal_tx: Option<UnboundedSender<TerminalCommand>>,
 }
@@ -122,6 +123,20 @@ impl Api {
             spawn_summary_poller(self.clone(), false, tx.clone()),
             spawn_summary_poller(self.clone(), true, tx),
         ]
+    }
+
+    pub fn load_user_system_info(&self, tx: UnboundedSender<NetEvent>) {
+        let api = self.clone();
+        tokio::spawn(async move {
+            match api.get::<UserSystemInfo>("/api/info").await {
+                Ok(info) => {
+                    let _ = tx.send(NetEvent::UserSystemLoaded(info));
+                }
+                Err(error) => {
+                    let _ = tx.send(NetEvent::Error(error.to_string()));
+                }
+            }
+        });
     }
 
     pub fn load_workspace(&self, workspace_id: Uuid, tx: UnboundedSender<NetEvent>) {
@@ -247,6 +262,9 @@ impl Api {
         if let Some(process_id) = selected_process_id {
             subscriptions.logs = Some(spawn_logs_stream(self.clone(), process_id, tx.clone()));
         }
+        if let Some(handle) = subscriptions.discovery.take() {
+            handle.abort();
+        }
         let (terminal_tx, terminal_rx) = unbounded_channel();
         subscriptions.terminal_tx = Some(terminal_tx);
         subscriptions.terminal = Some(spawn_terminal_stream(
@@ -286,6 +304,26 @@ impl Api {
         if let Some(process_id) = selected_process_id {
             subscriptions.logs = Some(spawn_logs_stream(self.clone(), process_id, tx.clone()));
         }
+    }
+
+    pub fn replace_discovery_stream(
+        &self,
+        executor: executors::executors::BaseCodingAgent,
+        workspace_id: Option<Uuid>,
+        session_id: Option<Uuid>,
+        tx: UnboundedSender<NetEvent>,
+        subscriptions: &mut WorkspaceSubscriptions,
+    ) {
+        if let Some(handle) = subscriptions.discovery.take() {
+            handle.abort();
+        }
+        subscriptions.discovery = Some(spawn_discovery_stream(
+            self.clone(),
+            executor,
+            workspace_id,
+            session_id,
+            tx,
+        ));
     }
 
     pub async fn save_notes(&self, workspace_id: Uuid, notes: String) -> Result<()> {
@@ -363,11 +401,12 @@ impl Api {
         workspace_id: Uuid,
         session: Option<Session>,
         prompt: String,
+        executor_config: executors::profile::ExecutorConfig,
     ) -> Result<Uuid> {
         let session = if let Some(session) = session {
             session
         } else {
-            let executor = Some("codex".to_string());
+            let executor = Some(executor_config.executor.to_string());
             self.post::<_, Session>(
                 "/api/sessions",
                 &CreateSessionRequest {
@@ -379,19 +418,12 @@ impl Api {
             .await?
         };
 
-        let executor = session
-            .executor
-            .clone()
-            .unwrap_or_else(|| "codex".to_string());
-        let config: executors::profile::ExecutorConfig = self
-            .get(&format!("/api/agents/preset-options?executor={executor}"))
-            .await?;
         let _: db::models::execution_process::ExecutionProcess = self
             .post(
                 &format!("/api/sessions/{}/follow-up", session.id),
                 &FollowUpRequest {
                     prompt,
-                    executor_config: config,
+                    executor_config,
                     retry_process_id: None,
                     force_when_dirty: None,
                     perform_git_reset: None,
@@ -409,6 +441,7 @@ impl WorkspaceSubscriptions {
             self.notes.take(),
             self.processes.take(),
             self.logs.take(),
+            self.discovery.take(),
             self.terminal.take(),
         ]
         .into_iter()
@@ -643,6 +676,56 @@ fn spawn_logs_stream(api: Api, process_id: Uuid, tx: UnboundedSender<NetEvent>) 
             let _ = tx.send(NetEvent::Error(error.to_string()));
         }
         let _ = tx.send(NetEvent::StreamClosed(StreamKind::Logs(process_id)));
+    })
+}
+
+fn spawn_discovery_stream(
+    api: Api,
+    executor: executors::executors::BaseCodingAgent,
+    workspace_id: Option<Uuid>,
+    session_id: Option<Uuid>,
+    tx: UnboundedSender<NetEvent>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut endpoint = format!(
+            "{}/api/agents/discovered-options/ws?executor={executor}",
+            ws_base(&api.base_url)
+        );
+        if let Some(workspace_id) = workspace_id {
+            endpoint.push_str(&format!("&workspace_id={workspace_id}"));
+        }
+        if let Some(session_id) = session_id {
+            endpoint.push_str(&format!("&session_id={session_id}"));
+        }
+
+        let result = run_patch_stream::<ExecutorDiscoveryStreamState, _>(
+            endpoint,
+            json!({
+                "options": {
+                    "model_selector": {
+                        "providers": [],
+                        "models": [],
+                        "default_model": null,
+                        "agents": [],
+                        "permissions": []
+                    },
+                    "slash_commands": [],
+                    "loading_models": true,
+                    "loading_agents": true,
+                    "loading_slash_commands": true,
+                    "error": null
+                }
+            }),
+            move |state| NetEvent::ExecutorOptionsUpdated {
+                executor,
+                options: state.options,
+            },
+            tx.clone(),
+        )
+        .await;
+        if let Err(error) = result {
+            let _ = tx.send(NetEvent::Error(error.to_string()));
+        }
     })
 }
 

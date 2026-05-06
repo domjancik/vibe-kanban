@@ -1,9 +1,15 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, str::FromStr, time::Duration};
 
 use anyhow::Result;
 use crossterm::event::{Event as CrosstermEvent, EventStream, KeyCode, KeyEvent, KeyModifiers};
 use db::models::{
     execution_process::ExecutionProcess, session::Session, workspace::WorkspaceWithStatus,
+};
+use executors::{
+    executor_discovery::ExecutorDiscoveredOptions,
+    executors::BaseCodingAgent,
+    model_selector::{ModelInfo, PermissionPolicy},
+    profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},
 };
 use futures_util::StreamExt;
 use ratatui::{
@@ -24,7 +30,8 @@ use crate::{
     api::{Api, TerminalCommand, WorkspaceSubscriptions},
     model::{
         Focus, NetEvent, Pane, PatchType, TerminalState, WorkspaceBundle, WorkspaceSummary,
-        active_process, diff_title, format_patch_entry, format_relative_time, workspace_title,
+        active_process, diff_title, display_permission, display_variant, format_patch_entry,
+        format_relative_time, workspace_title,
     },
 };
 
@@ -51,6 +58,10 @@ pub struct App {
     status: String,
     error: Option<String>,
     bundle: WorkspaceBundle,
+    executor_profiles: ExecutorConfigs,
+    default_executor_profile: Option<ExecutorProfileId>,
+    composer_config: Option<ExecutorConfig>,
+    composer_options: Option<ExecutorDiscoveredOptions>,
     composer: String,
     composer_cursor: usize,
     notes_cursor: usize,
@@ -63,6 +74,7 @@ impl App {
         let (tx, rx) = unbounded_channel();
         let workspace_streams = api.spawn_workspace_streams(tx.clone());
         let summary_streams = api.spawn_summary_pollers(tx.clone());
+        api.load_user_system_info(tx.clone());
         Self {
             api,
             rx,
@@ -81,6 +93,12 @@ impl App {
             status: String::new(),
             error: None,
             bundle: WorkspaceBundle::default(),
+            executor_profiles: ExecutorConfigs {
+                executors: HashMap::new(),
+            },
+            default_executor_profile: None,
+            composer_config: None,
+            composer_options: None,
             composer: String::new(),
             composer_cursor: 0,
             notes_cursor: 0,
@@ -125,6 +143,14 @@ impl App {
 
     async fn handle_net_event(&mut self, event: NetEvent, size: Rect) {
         match event {
+            NetEvent::UserSystemLoaded(info) => {
+                self.default_executor_profile = Some(info.config.executor_profile.clone());
+                self.executor_profiles = info.profiles;
+                if self.composer_config.is_none() {
+                    self.composer_config = Some(ExecutorConfig::from(info.config.executor_profile));
+                }
+                self.rebind_discovery_stream();
+            }
             NetEvent::ActiveWorkspaces(state) => {
                 self.active_workspaces = state
                     .workspaces
@@ -172,6 +198,7 @@ impl App {
                         self.bundle.selected_process_id = None;
                         self.rebind_session_streams();
                     }
+                    self.rebind_discovery_stream();
                 }
             }
             NetEvent::ReposLoaded {
@@ -228,6 +255,7 @@ impl App {
                         self.bundle.log_entries.clear();
                         self.rebind_logs_only();
                     }
+                    self.sync_composer_executor_with_session();
                 }
             }
             NetEvent::LogsUpdated {
@@ -236,6 +264,15 @@ impl App {
             } => {
                 if Some(process_id) == self.bundle.selected_process_id {
                     self.bundle.log_entries = entries;
+                }
+            }
+            NetEvent::ExecutorOptionsUpdated { executor, options } => {
+                if self
+                    .composer_config
+                    .as_ref()
+                    .is_some_and(|config| config.executor == executor)
+                {
+                    self.composer_options = Some(options);
                 }
             }
             NetEvent::NotesSaved(workspace_id) => {
@@ -324,7 +361,7 @@ impl App {
                 code: KeyCode::Char('?'),
                 ..
             } => {
-                self.status = "Keys: Tab focus, j/k nav, 1-6 panes, i edit, Enter open/send, p pin, x archive, n new session, s start dev, c cleanup, e editor, C-] leave terminal".to_string();
+                self.status = "Keys: Tab focus, j/k nav, 1-6 panes, i edit, Enter open/send, E executor, V variant, M model, R reasoning, A agent mode, P permission, p pin, x archive, n new session, s start dev, c cleanup, e editor, C-] leave terminal".to_string();
             }
             KeyEvent {
                 code: KeyCode::Char('1'),
@@ -369,6 +406,7 @@ impl App {
                 self.creating_new_session = true;
                 self.selected_pane = Pane::Chat;
                 self.focus = Focus::Composer;
+                self.rebind_discovery_stream();
                 self.status = "New session: type a prompt and press Enter".to_string();
             }
             KeyEvent {
@@ -396,6 +434,30 @@ impl App {
                 ..
             } => self.open_editor().await,
             KeyEvent {
+                code: KeyCode::Char('E'),
+                ..
+            } => self.cycle_executor().await,
+            KeyEvent {
+                code: KeyCode::Char('V'),
+                ..
+            } => self.cycle_variant().await,
+            KeyEvent {
+                code: KeyCode::Char('M'),
+                ..
+            } => self.cycle_model(),
+            KeyEvent {
+                code: KeyCode::Char('R'),
+                ..
+            } => self.cycle_reasoning(),
+            KeyEvent {
+                code: KeyCode::Char('A'),
+                ..
+            } => self.cycle_agent_mode(),
+            KeyEvent {
+                code: KeyCode::Char('P'),
+                ..
+            } => self.cycle_permission_mode(),
+            KeyEvent {
                 code: KeyCode::Enter,
                 ..
             } => self.handle_enter(size).await,
@@ -407,6 +469,41 @@ impl App {
                 code: KeyCode::Char('k') | KeyCode::Up,
                 ..
             } => self.move_selection(-1, size),
+            KeyEvent {
+                code: KeyCode::PageDown,
+                ..
+            } => self.move_selection(self.page_step(size), size),
+            KeyEvent {
+                code: KeyCode::PageUp,
+                ..
+            } => self.move_selection(-self.page_step(size), size),
+            KeyEvent {
+                code: KeyCode::Home,
+                ..
+            }
+            | KeyEvent {
+                code: KeyCode::Left,
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::SUPER) => self.jump_to_boundary(false, size),
+            KeyEvent {
+                code: KeyCode::End, ..
+            }
+            | KeyEvent {
+                code: KeyCode::Right,
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::SUPER) => self.jump_to_boundary(true, size),
+            KeyEvent {
+                code: KeyCode::Up,
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::SUPER) => self.jump_to_boundary(false, size),
+            KeyEvent {
+                code: KeyCode::Down,
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::SUPER) => self.jump_to_boundary(true, size),
             KeyEvent {
                 code: KeyCode::Char('t'),
                 ..
@@ -490,12 +587,20 @@ impl App {
         if prompt.is_empty() {
             return;
         }
+        let Some(executor_config) = self.composer_config.clone() else {
+            self.status = "Composer config is still loading".to_string();
+            return;
+        };
         let session = if self.creating_new_session {
             None
         } else {
             self.current_session().cloned()
         };
-        match self.api.send_prompt(workspace_id, session, prompt).await {
+        match self
+            .api
+            .send_prompt(workspace_id, session, prompt, executor_config)
+            .await
+        {
             Ok(session_id) => {
                 self.composer.clear();
                 self.composer_cursor = 0;
@@ -612,7 +717,9 @@ impl App {
                         .clamp(0, self.bundle.sessions.len().saturating_sub(1) as i32)
                         as usize;
                     self.bundle.selected_session_id = Some(self.bundle.sessions[next].id);
+                    self.creating_new_session = false;
                     self.rebind_session_streams();
+                    self.rebind_discovery_stream();
                 }
                 Pane::Git => {
                     let scroll = self.bundle.log_scroll as i32 + delta;
@@ -628,6 +735,100 @@ impl App {
                 _ => {}
             },
         }
+    }
+
+    fn page_step(&self, size: Rect) -> i32 {
+        match self.focus {
+            Focus::WorkspaceList => ((size.height.saturating_sub(4) / 3).max(1)) as i32,
+            Focus::Detail => 5,
+            Focus::Main | Focus::Composer => size.height.saturating_sub(6).max(1) as i32,
+        }
+    }
+
+    fn jump_to_boundary(&mut self, to_end: bool, size: Rect) {
+        match self.focus {
+            Focus::WorkspaceList => {
+                let ids = self.visible_workspace_ids();
+                if ids.is_empty() {
+                    return;
+                }
+                self.selected_workspace_id = Some(if to_end {
+                    *ids.last().unwrap_or(&ids[0])
+                } else {
+                    ids[0]
+                });
+                self.load_selected_workspace(size);
+            }
+            Focus::Detail => match self.selected_pane {
+                Pane::Changes => {
+                    if self.bundle.diffs.is_empty() {
+                        return;
+                    }
+                    self.bundle.selected_diff_index = if to_end {
+                        self.bundle.diffs.len().saturating_sub(1)
+                    } else {
+                        0
+                    };
+                }
+                Pane::Chat | Pane::Logs => {
+                    if self.bundle.sessions.is_empty() {
+                        return;
+                    }
+                    self.bundle.selected_session_id = Some(if to_end {
+                        self.bundle.sessions.last().map(|session| session.id)
+                    } else {
+                        self.bundle.sessions.first().map(|session| session.id)
+                    }
+                    .unwrap());
+                    self.rebind_session_streams();
+                }
+                Pane::Git => {
+                    self.bundle.log_scroll = if to_end {
+                        self.max_scroll_for_selected_pane()
+                    } else {
+                        0
+                    };
+                }
+                _ => {}
+            },
+            Focus::Main | Focus::Composer => match self.selected_pane {
+                Pane::Chat | Pane::Logs | Pane::Git => {
+                    self.bundle.log_scroll = if to_end {
+                        self.max_scroll_for_selected_pane()
+                    } else {
+                        0
+                    };
+                }
+                _ => {}
+            },
+        }
+    }
+
+    fn max_scroll_for_selected_pane(&self) -> u16 {
+        let lines = match self.selected_pane {
+            Pane::Chat => self
+                .bundle
+                .log_entries
+                .iter()
+                .map(render_chat_entry)
+                .map(|lines| lines.len())
+                .sum::<usize>(),
+            Pane::Logs => self
+                .bundle
+                .log_entries
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| render_log_entry(index, entry).len())
+                .sum::<usize>(),
+            Pane::Git => self
+                .bundle
+                .git_status
+                .iter()
+                .map(|status| 3 + usize::from(status.status.is_rebase_in_progress))
+                .sum::<usize>(),
+            _ => 0,
+        };
+        lines.saturating_sub(1).min(u16::MAX as usize) as u16
     }
 
     fn render(&mut self, frame: &mut Frame) {
@@ -809,9 +1010,15 @@ impl App {
             Pane::Notes => self.bundle.notes.as_str(),
             _ => self.composer.as_str(),
         };
-        let composer = Paragraph::new(composer_text)
-            .block(Block::default().borders(Borders::ALL).title(composer_title))
-            .wrap(Wrap { trim: false });
+        let composer = if self.selected_pane == Pane::Chat {
+            Paragraph::new(self.composer_panel_text(composer_text))
+                .block(Block::default().borders(Borders::ALL).title(composer_title))
+                .wrap(Wrap { trim: false })
+        } else {
+            Paragraph::new(composer_text)
+                .block(Block::default().borders(Borders::ALL).title(composer_title))
+                .wrap(Wrap { trim: false })
+        };
         frame.render_widget(composer, chunks[2]);
     }
 
@@ -1132,6 +1339,397 @@ impl App {
         Paragraph::new(status.to_string()).block(Block::default().borders(Borders::TOP))
     }
 
+    fn composer_panel_text(&self, composer_text: &str) -> Text<'static> {
+        let config = self.composer_config.as_ref();
+        let executor = config
+            .map(|config| config.executor.to_string())
+            .unwrap_or_else(|| "loading".to_string());
+        let variant = config
+            .map(|config| display_variant(config.variant.as_deref()).to_string())
+            .unwrap_or_else(|| "loading".to_string());
+        let model = self
+            .selected_model_label()
+            .unwrap_or_else(|| "default".to_string());
+        let reasoning = self
+            .selected_reasoning_label()
+            .unwrap_or_else(|| "default".to_string());
+        let agent_mode = config
+            .and_then(|config| config.agent_id.clone())
+            .unwrap_or_else(|| "default".to_string());
+        let permission = config
+            .map(|config| display_permission(config.permission_policy.as_ref()).to_string())
+            .unwrap_or_else(|| "default".to_string());
+
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled(
+                    "Exec ",
+                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(executor, Style::default().fg(Color::Cyan)),
+                Span::raw("  "),
+                Span::styled(
+                    "Variant ",
+                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(variant, Style::default().fg(Color::Yellow)),
+                Span::raw("  "),
+                Span::styled(
+                    "Model ",
+                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(model, Style::default().fg(Color::Green)),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "Reason ",
+                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(reasoning, Style::default().fg(Color::Magenta)),
+                Span::raw("  "),
+                Span::styled(
+                    "Mode ",
+                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(agent_mode, Style::default().fg(Color::LightBlue)),
+                Span::raw("  "),
+                Span::styled(
+                    "Perm ",
+                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(permission, Style::default().fg(Color::LightRed)),
+            ]),
+            Line::styled(
+                "E executor  V variant  M model  R reasoning  A mode  P permission",
+                Style::default().fg(Color::DarkGray),
+            ),
+            Line::raw(""),
+        ];
+        lines.extend(composer_text.lines().map(|line| Line::raw(line.to_string())));
+        if composer_text.is_empty() {
+            lines.push(Line::raw(String::new()));
+        }
+        Text::from(lines)
+    }
+
+    fn current_discovery_session_id(&self) -> Option<Uuid> {
+        if self.creating_new_session {
+            None
+        } else {
+            self.bundle.selected_session_id
+        }
+    }
+
+    fn rebind_discovery_stream(&mut self) {
+        let Some(config) = self.composer_config.as_ref() else {
+            return;
+        };
+        self.api.replace_discovery_stream(
+            config.executor,
+            self.selected_workspace_id,
+            self.current_discovery_session_id(),
+            self.tx.clone(),
+            &mut self.subscriptions,
+        );
+    }
+
+    async fn refresh_preset_config(
+        &mut self,
+        executor: BaseCodingAgent,
+        variant: Option<String>,
+        message: &str,
+    ) {
+        let mut path = format!("/api/agents/preset-options?executor={executor}");
+        if let Some(variant) = variant.as_deref() {
+            path.push_str(&format!("&variant={variant}"));
+        }
+        match self.api.get::<ExecutorConfig>(&path).await {
+            Ok(config) => {
+                self.composer_config = Some(config);
+                self.composer_options = None;
+                self.rebind_discovery_stream();
+                self.status = message.to_string();
+                self.error = None;
+            }
+            Err(error) => {
+                self.error = Some(error.to_string());
+                self.status = error.to_string();
+            }
+        }
+    }
+
+    fn executor_options(&self) -> Vec<BaseCodingAgent> {
+        let mut options = self
+            .executor_profiles
+            .executors
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        options.sort_by_key(|executor| executor.to_string());
+        options
+    }
+
+    fn variant_options(&self, executor: BaseCodingAgent) -> Vec<String> {
+        let Some(profile) = self.executor_profiles.executors.get(&executor) else {
+            return vec!["DEFAULT".to_string()];
+        };
+        let mut variants = profile
+            .configurations
+            .keys()
+            .filter(|key| key.as_str() != "recently_used_models")
+            .cloned()
+            .collect::<Vec<_>>();
+        variants.sort_by(|left, right| {
+            if left == "DEFAULT" {
+                std::cmp::Ordering::Less
+            } else if right == "DEFAULT" {
+                std::cmp::Ordering::Greater
+            } else {
+                left.cmp(right)
+            }
+        });
+        if variants.is_empty() {
+            variants.push("DEFAULT".to_string());
+        }
+        variants
+    }
+
+    fn model_options(&self) -> Vec<ModelInfo> {
+        self.composer_options
+            .as_ref()
+            .map(|options| options.model_selector.models.clone())
+            .unwrap_or_default()
+    }
+
+    fn selected_model_value(&self) -> Option<String> {
+        self.composer_config
+            .as_ref()
+            .and_then(|config| config.model_id.clone())
+            .or_else(|| {
+                self.composer_options
+                    .as_ref()
+                    .and_then(|options| options.model_selector.default_model.clone())
+            })
+    }
+
+    fn selected_model_label(&self) -> Option<String> {
+        let selected = self.selected_model_value()?;
+        self.model_options()
+            .into_iter()
+            .find(|model| model_key(model) == selected)
+            .map(|model| {
+                if let Some(provider_id) = model.provider_id {
+                    format!("{provider_id}/{}", model.id)
+                } else {
+                    model.id
+                }
+            })
+            .or(Some(selected))
+    }
+
+    fn reasoning_options(&self) -> Vec<String> {
+        let Some(selected_model) = self.selected_model_value() else {
+            return Vec::new();
+        };
+        self.model_options()
+            .into_iter()
+            .find(|model| model_key(model) == selected_model)
+            .map(|model| {
+                model
+                    .reasoning_options
+                    .into_iter()
+                    .map(|option| option.id)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    }
+
+    fn selected_reasoning_label(&self) -> Option<String> {
+        self.composer_config
+            .as_ref()
+            .and_then(|config| config.reasoning_id.clone())
+            .or_else(|| {
+                let selected_model = self.selected_model_value()?;
+                self.model_options()
+                    .into_iter()
+                    .find(|model| model_key(model) == selected_model)
+                    .and_then(|model| {
+                        model
+                            .reasoning_options
+                            .into_iter()
+                            .find(|option| option.is_default)
+                            .map(|option| option.id)
+                    })
+            })
+    }
+
+    fn agent_mode_options(&self) -> Vec<String> {
+        self.composer_options
+            .as_ref()
+            .map(|options| {
+                options
+                    .model_selector
+                    .agents
+                    .iter()
+                    .map(|agent| agent.id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    }
+
+    fn permission_options(&self) -> Vec<PermissionPolicy> {
+        self.composer_options
+            .as_ref()
+            .map(|options| options.model_selector.permissions.clone())
+            .unwrap_or_default()
+    }
+
+    async fn cycle_executor(&mut self) {
+        let options = self.executor_options();
+        if options.is_empty() {
+            self.status = "Executor profiles are still loading".to_string();
+            return;
+        }
+        let current = self
+            .composer_config
+            .as_ref()
+            .map(|config| config.executor)
+            .or_else(|| self.default_executor_profile.as_ref().map(|profile| profile.executor))
+            .unwrap_or(options[0]);
+        let index = options.iter().position(|executor| *executor == current).unwrap_or(0);
+        let next = options[(index + 1) % options.len()];
+        let variant = self
+            .variant_options(next)
+            .into_iter()
+            .next()
+            .and_then(default_variant_to_none);
+        self.refresh_preset_config(next, variant, "Updated composer executor")
+            .await;
+    }
+
+    async fn cycle_variant(&mut self) {
+        let Some(config) = self.composer_config.as_ref() else {
+            self.status = "Composer config is still loading".to_string();
+            return;
+        };
+        let options = self.variant_options(config.executor);
+        if options.is_empty() {
+            self.status = "No variants available".to_string();
+            return;
+        }
+        let current = display_variant(config.variant.as_deref());
+        let index = options.iter().position(|variant| variant == current).unwrap_or(0);
+        let next = options[(index + 1) % options.len()].clone();
+        self.refresh_preset_config(
+            config.executor,
+            default_variant_to_none(next),
+            "Updated composer variant",
+        )
+        .await;
+    }
+
+    fn cycle_model(&mut self) {
+        let options = self.model_options();
+        if options.is_empty() {
+            self.status = "No model options available".to_string();
+            return;
+        }
+        let keys = options.iter().map(model_key).collect::<Vec<_>>();
+        let current = self
+            .selected_model_value()
+            .unwrap_or_else(|| keys.first().cloned().unwrap_or_default());
+        let index = keys.iter().position(|key| *key == current).unwrap_or(0);
+        let next = keys[(index + 1) % keys.len()].clone();
+        if let Some(config) = self.composer_config.as_mut() {
+            config.model_id = Some(next.clone());
+            config.reasoning_id = None;
+            self.status = format!("Updated model to {next}");
+            self.error = None;
+        }
+    }
+
+    fn cycle_reasoning(&mut self) {
+        let options = self.reasoning_options();
+        if options.is_empty() {
+            self.status = "No reasoning options available".to_string();
+            return;
+        }
+        let current = self.selected_reasoning_label().unwrap_or_else(|| options[0].clone());
+        let index = options.iter().position(|option| option == &current).unwrap_or(0);
+        let next = options[(index + 1) % options.len()].clone();
+        if let Some(config) = self.composer_config.as_mut() {
+            config.reasoning_id = Some(next.clone());
+            self.status = format!("Updated reasoning to {next}");
+            self.error = None;
+        }
+    }
+
+    fn cycle_agent_mode(&mut self) {
+        let options = self.agent_mode_options();
+        if options.is_empty() {
+            self.status = "No agent modes available".to_string();
+            return;
+        }
+        let current = self
+            .composer_config
+            .as_ref()
+            .and_then(|config| config.agent_id.clone())
+            .unwrap_or_else(|| options[0].clone());
+        let index = options.iter().position(|option| option == &current).unwrap_or(0);
+        let next = options[(index + 1) % options.len()].clone();
+        if let Some(config) = self.composer_config.as_mut() {
+            config.agent_id = Some(next.clone());
+            self.status = format!("Updated agent mode to {next}");
+            self.error = None;
+        }
+    }
+
+    fn cycle_permission_mode(&mut self) {
+        let options = self.permission_options();
+        if options.is_empty() {
+            self.status = "No permission modes available".to_string();
+            return;
+        }
+        let current = self
+            .composer_config
+            .as_ref()
+            .and_then(|config| config.permission_policy.clone())
+            .unwrap_or(options[0].clone());
+        let index = options.iter().position(|option| option == &current).unwrap_or(0);
+        let next = options[(index + 1) % options.len()].clone();
+        if let Some(config) = self.composer_config.as_mut() {
+            config.permission_policy = Some(next.clone());
+            self.status = format!("Updated permission mode to {}", display_permission(Some(&next)));
+            self.error = None;
+        }
+    }
+
+    fn sync_composer_executor_with_session(&mut self) {
+        if self.creating_new_session {
+            return;
+        }
+        let Some(session) = self.current_session() else {
+            return;
+        };
+        let Some(executor_name) = session.executor.as_deref() else {
+            return;
+        };
+        let Ok(executor) = BaseCodingAgent::from_str(executor_name) else {
+            return;
+        };
+        if self
+            .composer_config
+            .as_ref()
+            .is_some_and(|config| config.executor == executor)
+        {
+            self.rebind_discovery_stream();
+            return;
+        }
+        self.composer_config = Some(ExecutorConfig::new(executor));
+        self.composer_options = None;
+        self.rebind_discovery_stream();
+    }
+
     fn ensure_workspace_selected(&mut self, size: Rect) {
         if self.selected_workspace_id.is_some() {
             return;
@@ -1144,6 +1742,7 @@ impl App {
         let Some(workspace_id) = self.selected_workspace_id else {
             return;
         };
+        self.creating_new_session = false;
         self.bundle = WorkspaceBundle::default();
         self.bundle.terminal = TerminalState::default();
         self.api.load_workspace(workspace_id, self.tx.clone());
@@ -1435,6 +2034,22 @@ fn render_diff_text(diff: &crate::model::LocalDiff) -> String {
     }
     let file = diff_title(diff);
     utils::diff::create_unified_diff(&file, old, new)
+}
+
+fn default_variant_to_none(variant: String) -> Option<String> {
+    if variant == "DEFAULT" {
+        None
+    } else {
+        Some(variant)
+    }
+}
+
+fn model_key(model: &ModelInfo) -> String {
+    if let Some(provider_id) = &model.provider_id {
+        format!("{provider_id}/{}", model.id)
+    } else {
+        model.id.clone()
+    }
 }
 
 fn render_chat_entry(entry: &PatchType) -> Vec<Line<'static>> {

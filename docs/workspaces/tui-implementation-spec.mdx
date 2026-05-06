@@ -45,6 +45,7 @@ Where the web app depends on a graphical primitive, the TUI should provide a ter
 - workspace selection and navigation
 - session picker and new-session flow
 - message composer for follow-up prompts
+- composer-side executor/profile/model configuration controls
 - live conversation timeline
 - changes panel with file list and diff viewer
 - logs/process panel
@@ -146,10 +147,20 @@ The TUI should be keyboard-first. Mouse support is optional and should not drive
 - `Tab` and `Shift+Tab`: cycle focus regions
 - `1` `2` `3` `4`: jump to main regions
 - `/`: search within the currently focused list or log buffer
+- `PageUp` and `PageDown`: page-scroll or page-jump within the focused scrollable container
+- `Home` and `End`: jump to the beginning or end of the focused scrollable container
+
+On macOS terminals, the TUI should also support the common equivalents when the terminal passes them through:
+
+- `Fn+Up` and `Fn+Down` for `PageUp` and `PageDown`
+- `Fn+Left` and `Fn+Right` for `Home` and `End`
+- `Cmd+Up`, `Cmd+Down`, `Cmd+Left`, and `Cmd+Right` as begin/end shortcuts where available
 
 ### Workspace list keys
 
 - `j` `k` or arrows: move selection
+- `PageUp` and `PageDown`: jump by a page of workspace rows
+- `Home` and `End`: jump to the first or last visible workspace
 - `Enter`: open workspace
 - `a`: toggle archived section
 - `p`: pin or unpin workspace
@@ -164,6 +175,12 @@ The TUI should be keyboard-first. Mouse support is optional and should not drive
 - `i`: focus composer
 - `Esc`: leave composer focus
 - `Enter`: submit prompt
+- `E`: cycle executor
+- `V`: cycle executor variant or preset
+- `M`: cycle model
+- `R`: cycle reasoning effort
+- `A`: cycle agent mode
+- `P`: cycle permission mode
 - `Ctrl+n` `Ctrl+p`: switch session
 - `[` `]`: previous or next unread or user turn
 - `r`: retry selected or latest turn when supported
@@ -178,6 +195,8 @@ The TUI should be keyboard-first. Mouse support is optional and should not drive
 - `o`: notes pane
 - `v`: dev server controls
 - `Space`: expand or collapse current section
+- `PageUp` and `PageDown`: page-scroll logs and git output, or page-jump list selections
+- `Home` and `End`: jump to the beginning or end of the focused list or scroll buffer
 
 ## Workspace list specification
 
@@ -263,6 +282,42 @@ The conversation pane should behave like the web Workspaces main panel:
 - keep the composer visible
 - stream agent output incrementally
 
+### Composer configuration
+
+The composer must not be limited to plain text entry. It should expose the same executor-configuration concepts the web UI exposes before a send:
+
+- executor selection
+- executor variant or preset selection
+- model selection
+- reasoning selection when supported by the selected model
+- agent mode selection when supported by the selected executor
+- permission mode selection when supported by the selected executor
+
+These controls should be visible adjacent to the composer rather than hidden in a separate settings route, because they directly affect the next turn.
+
+The TUI may present them as a compact metadata strip or inline control row instead of a full popover-heavy UI, but it must preserve the underlying data model of `ExecutorConfig`.
+
+### Composer configuration data sources
+
+The TUI should reuse the same backend surfaces as the web app:
+
+- `GET /api/info` for the user default executor profile and available executor profiles
+- `GET /api/agents/preset-options?executor={executor}&variant={variant}` for preset baseline values
+- `GET /api/agents/discovered-options/ws?...` for model, reasoning, agent, and permission options
+
+The send path should submit the fully resolved `ExecutorConfig` chosen in the composer rather than discarding user-selected overrides and falling back to a hardcoded executor default.
+
+### Composer configuration defaults
+
+Defaults should follow this precedence:
+
+1. current composer selection
+2. selected session's current executor profile when meaningful
+3. user default executor profile from `/api/info`
+4. executor-defined default or preset values
+
+Changing executor or variant should refresh the preset baseline and discovery stream for the new selection.
+
 ### Draft persistence
 
 Message-draft persistence is not purely a UI concern in the current local app.
@@ -327,6 +382,89 @@ The current backend rejects edits to `DRAFT_FOLLOW_UP` while a queued message ex
 - preserve local text
 - show a banner or inline error
 - allow retry once the queue clears
+
+### Message queueing
+
+Message queueing is related to drafts, but it is not the same persistence model.
+
+The current queue implementation is backend-owned session state:
+
+- API surface:
+  - `GET /api/sessions/{session_id}/queue`
+  - `POST /api/sessions/{session_id}/queue`
+  - `DELETE /api/sessions/{session_id}/queue`
+- backend service: `QueuedMessageService`
+- scope: one queued message per session
+- storage: in-memory `DashMap`, not durable DB-backed storage
+
+That means queueing today is:
+
+- initiated by the UI
+- stored and enforced by the backend
+- not persisted across server or process restart in the same way scratch is
+
+### Current queue semantics
+
+The backend currently enforces these rules:
+
+- queueing a message replaces any existing queued message for the session
+- queued data is the same `DraftFollowUpData` shape used by scratch
+- queued messages are consumed when the active execution finalizes successfully
+- if the active execution fails or is killed, the queued follow-up is discarded
+- when a queued follow-up is consumed, the backend deletes the associated `DRAFT_FOLLOW_UP` scratch
+
+### TUI implementation requirement
+
+The Ratatui client should model queueing as server-side execution state, not as a local convenience feature.
+
+The TUI should:
+
+1. fetch queue status for the active session
+2. show whether a follow-up is queued
+3. allow replace-queue behaviour explicitly
+4. allow queue cancellation
+5. reconcile queue status after execution transitions
+
+### Queue UI states
+
+At minimum, expose:
+
+- `Not queued`
+- `Queued`
+- `Queue action in progress`
+- `Queue rejected`
+
+When queued, the composer should clearly indicate:
+
+- queued message content
+- queued executor config if it differs from the current selection
+- cancel or replace actions
+
+### Sync model
+
+Unlike drafts, the current queue API is request-response driven rather than websocket-streamed.
+
+The TUI should therefore refresh queue state:
+
+- on session switch
+- after queue or cancel mutation
+- after execution-process status changes
+- after send, retry, stop, or approval actions that may change run state
+
+If a websocket or event-stream queue surface is added later, the TUI can switch to a push-driven model, but the first implementation should not assume that exists.
+
+### Durability note
+
+Because the queue is currently in-memory:
+
+- it should be treated as ephemeral
+- the UI must not promise recovery after app or server restart
+- drafts remain the durable user-facing safety net
+
+This distinction matters in the TUI:
+
+- draft = durable text recovery
+- queue = backend execution intent waiting on current run completion
 
 ### TUI implementation requirement
 
