@@ -83,6 +83,12 @@ struct SessionRenameState {
     cursor: usize,
 }
 
+#[derive(Clone, Copy)]
+enum EditorTarget {
+    Composer,
+    Notes,
+}
+
 pub struct App {
     api: Api,
     rx: UnboundedReceiver<NetEvent>,
@@ -107,7 +113,7 @@ pub struct App {
     composer_options: Option<ExecutorDiscoveredOptions>,
     composer: String,
     composer_cursor: usize,
-    composer_editor_mode: ComposerEditorMode,
+    editor_mode: ComposerEditorMode,
     vim_pending_operator: Option<VimOperator>,
     composer_dirty: bool,
     composer_edit_revision: u64,
@@ -170,7 +176,7 @@ impl App {
             composer_options: None,
             composer: String::new(),
             composer_cursor: 0,
-            composer_editor_mode: ComposerEditorMode::Standard,
+            editor_mode: ComposerEditorMode::Standard,
             vim_pending_operator: None,
             composer_dirty: false,
             composer_edit_revision: 0,
@@ -564,15 +570,11 @@ impl App {
         if self.focus == Focus::Composer {
             match self.selected_pane {
                 Pane::Chat => {
-                    self.handle_composer_key(key).await;
+                    self.handle_editor_key(key, EditorTarget::Composer).await;
                     return;
                 }
                 Pane::Notes => {
-                    if key.code == KeyCode::Esc {
-                        self.focus = Focus::Main;
-                    } else {
-                        self.handle_text_input(key, true).await;
-                    }
+                    self.handle_editor_key(key, EditorTarget::Notes).await;
                     return;
                 }
                 _ => {}
@@ -587,7 +589,7 @@ impl App {
     async fn handle_app_intent(&mut self, intent: AppIntent, size: Rect) {
         match intent {
             AppIntent::CancelNewSession => self.cancel_new_session_flow(),
-            AppIntent::ToggleComposerEditorMode => self.toggle_composer_editor_mode(),
+            AppIntent::ToggleComposerEditorMode => self.toggle_editor_mode(),
             AppIntent::Quit => self.should_quit = true,
             AppIntent::FocusNext => self.focus = next_focus(&self.focus),
             AppIntent::FocusPrev => self.focus = prev_focus(&self.focus),
@@ -681,46 +683,57 @@ impl App {
         }
     }
 
-    async fn handle_composer_key(&mut self, key: KeyEvent) {
+    async fn handle_editor_key(&mut self, key: KeyEvent, target: EditorTarget) {
         if let KeyEvent {
             code: KeyCode::F(2),
             ..
         } = key
         {
-            self.toggle_composer_editor_mode();
+            self.toggle_editor_mode();
             return;
         }
 
-        match self.composer_editor_mode {
+        match self.editor_mode {
             ComposerEditorMode::Standard => {
                 if key.code == KeyCode::Esc {
-                    if self.creating_new_session && self.composer.trim().is_empty() {
+                    if matches!(target, EditorTarget::Composer)
+                        && self.creating_new_session
+                        && self.composer.trim().is_empty()
+                    {
                         self.cancel_new_session_flow();
                     } else {
                         self.focus = Focus::Main;
                     }
                 } else {
-                    self.handle_text_input(key, false).await;
+                    self.handle_text_input(key, matches!(target, EditorTarget::Notes))
+                        .await;
                 }
             }
             ComposerEditorMode::Vim(VimMode::Insert) => {
                 if key.code == KeyCode::Esc {
-                    if self.creating_new_session && self.composer.trim().is_empty() {
+                    if matches!(target, EditorTarget::Composer)
+                        && self.creating_new_session
+                        && self.composer.trim().is_empty()
+                    {
                         self.cancel_new_session_flow();
                     } else {
-                        self.composer_editor_mode = ComposerEditorMode::Vim(VimMode::Normal);
-                        self.status = "Composer mode: Vim Normal".to_string();
+                        self.editor_mode = ComposerEditorMode::Vim(VimMode::Normal);
+                        self.status = "Editor mode: Vim Normal".to_string();
                     }
                 } else {
-                    self.handle_text_input(key, false).await;
+                    self.handle_text_input(key, matches!(target, EditorTarget::Notes))
+                        .await;
                 }
             }
             ComposerEditorMode::Vim(VimMode::Normal) => {
-                if self.handle_vim_normal_key(key).await {
+                if self.handle_vim_normal_key(key, target).await {
                     return;
                 }
                 if key.code == KeyCode::Esc {
-                    if self.creating_new_session && self.composer.trim().is_empty() {
+                    if matches!(target, EditorTarget::Composer)
+                        && self.creating_new_session
+                        && self.composer.trim().is_empty()
+                    {
                         self.cancel_new_session_flow();
                     } else {
                         self.focus = Focus::Main;
@@ -730,9 +743,9 @@ impl App {
         }
     }
 
-    async fn handle_vim_normal_key(&mut self, key: KeyEvent) -> bool {
+    async fn handle_vim_normal_key(&mut self, key: KeyEvent, target: EditorTarget) -> bool {
         if let Some(operator) = self.vim_pending_operator.take() {
-            return self.execute_vim_operator(operator, key);
+            return self.execute_vim_operator(operator, key, target);
         }
 
         match key {
@@ -740,86 +753,101 @@ impl App {
                 code: KeyCode::Enter,
                 ..
             } => {
-                self.submit_prompt().await;
+                if matches!(target, EditorTarget::Composer) {
+                    self.submit_prompt().await;
+                }
                 true
             }
             KeyEvent {
                 code: KeyCode::Char('i'),
                 ..
             } => {
-                self.composer_editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
-                self.status = "Composer mode: Vim Insert".to_string();
+                self.editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
+                self.status = "Editor mode: Vim Insert".to_string();
                 true
             }
             KeyEvent {
                 code: KeyCode::Char('a'),
                 ..
             } => {
-                self.composer_cursor = (self.composer_cursor + 1).min(self.composer.len());
-                self.composer_editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
-                self.status = "Composer mode: Vim Insert".to_string();
+                {
+                    let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
+                    *cursor = (*cursor + 1).min(buffer.len());
+                }
+                self.editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
+                self.status = "Editor mode: Vim Insert".to_string();
                 true
             }
             KeyEvent {
                 code: KeyCode::Char('I'),
                 ..
             } => {
-                self.composer_cursor = line_start_index(&self.composer, self.composer_cursor);
-                self.composer_editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
-                self.status = "Composer mode: Vim Insert".to_string();
+                {
+                    let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
+                    *cursor = line_start_index(buffer, *cursor);
+                }
+                self.editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
+                self.status = "Editor mode: Vim Insert".to_string();
                 true
             }
             KeyEvent {
                 code: KeyCode::Char('A'),
                 ..
             } => {
-                self.composer_cursor = line_end_index(&self.composer, self.composer_cursor);
-                self.composer_editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
-                self.status = "Composer mode: Vim Insert".to_string();
+                {
+                    let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
+                    *cursor = line_end_index(buffer, *cursor);
+                }
+                self.editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
+                self.status = "Editor mode: Vim Insert".to_string();
                 true
             }
             KeyEvent {
                 code: KeyCode::Char('h') | KeyCode::Left,
                 ..
             } => {
-                self.composer_cursor = self.composer_cursor.saturating_sub(1);
+                let (_, cursor) = self.editor_buffer_cursor_mut(target);
+                *cursor = cursor.saturating_sub(1);
                 true
             }
             KeyEvent {
                 code: KeyCode::Char('l') | KeyCode::Right,
                 ..
             } => {
-                self.composer_cursor = (self.composer_cursor + 1).min(self.composer.len());
+                let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
+                *cursor = (*cursor + 1).min(buffer.len());
                 true
             }
             KeyEvent {
                 code: KeyCode::Char('k') | KeyCode::Up,
                 ..
             } => {
-                self.composer_cursor =
-                    move_cursor_vertical(&self.composer, self.composer_cursor, -1);
+                let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
+                *cursor = move_cursor_vertical(buffer, *cursor, -1);
                 true
             }
             KeyEvent {
                 code: KeyCode::Char('j') | KeyCode::Down,
                 ..
             } => {
-                self.composer_cursor =
-                    move_cursor_vertical(&self.composer, self.composer_cursor, 1);
+                let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
+                *cursor = move_cursor_vertical(buffer, *cursor, 1);
                 true
             }
             KeyEvent {
                 code: KeyCode::Char('w'),
                 ..
             } => {
-                self.composer_cursor = next_word_start(&self.composer, self.composer_cursor);
+                let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
+                *cursor = next_word_start(buffer, *cursor);
                 true
             }
             KeyEvent {
                 code: KeyCode::Char('b'),
                 ..
             } => {
-                self.composer_cursor = prev_word_start(&self.composer, self.composer_cursor);
+                let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
+                *cursor = prev_word_start(buffer, *cursor);
                 true
             }
             KeyEvent {
@@ -834,25 +862,33 @@ impl App {
                 code: KeyCode::Char('0') | KeyCode::Home,
                 ..
             } => {
-                self.composer_cursor = line_start_index(&self.composer, self.composer_cursor);
+                let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
+                *cursor = line_start_index(buffer, *cursor);
                 true
             }
             KeyEvent {
                 code: KeyCode::Char('$') | KeyCode::End,
                 ..
             } => {
-                self.composer_cursor = line_end_index(&self.composer, self.composer_cursor);
+                let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
+                *cursor = line_end_index(buffer, *cursor);
                 true
             }
             KeyEvent {
                 code: KeyCode::Char('x') | KeyCode::Delete,
                 ..
             } => {
-                if self.composer_cursor < self.composer.len() {
-                    self.composer.remove(self.composer_cursor);
-                    self.composer_dirty = true;
-                    self.last_composer_edit = Some(std::time::Instant::now());
-                    self.composer_edit_revision = self.composer_edit_revision.saturating_add(1);
+                let changed = {
+                    let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
+                    if *cursor < buffer.len() {
+                        buffer.remove(*cursor);
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if changed {
+                    self.mark_editor_dirty(target);
                 }
                 true
             }
@@ -860,90 +896,131 @@ impl App {
                 code: KeyCode::Char('o'),
                 ..
             } => {
-                self.composer_cursor = line_end_index(&self.composer, self.composer_cursor);
-                self.composer.insert(self.composer_cursor, '\n');
-                self.composer_cursor += 1;
-                self.composer_dirty = true;
-                self.last_composer_edit = Some(std::time::Instant::now());
-                self.composer_edit_revision = self.composer_edit_revision.saturating_add(1);
-                self.composer_editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
-                self.status = "Composer mode: Vim Insert".to_string();
+                {
+                    let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
+                    *cursor = line_end_index(buffer, *cursor);
+                    buffer.insert(*cursor, '\n');
+                    *cursor += 1;
+                }
+                self.mark_editor_dirty(target);
+                self.editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
+                self.status = "Editor mode: Vim Insert".to_string();
                 true
             }
             KeyEvent {
                 code: KeyCode::Char('O'),
                 ..
             } => {
-                self.composer_cursor = line_start_index(&self.composer, self.composer_cursor);
-                self.composer.insert(self.composer_cursor, '\n');
-                self.composer_dirty = true;
-                self.last_composer_edit = Some(std::time::Instant::now());
-                self.composer_edit_revision = self.composer_edit_revision.saturating_add(1);
-                self.composer_editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
-                self.status = "Composer mode: Vim Insert".to_string();
+                {
+                    let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
+                    *cursor = line_start_index(buffer, *cursor);
+                    buffer.insert(*cursor, '\n');
+                }
+                self.mark_editor_dirty(target);
+                self.editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
+                self.status = "Editor mode: Vim Insert".to_string();
                 true
             }
             _ => false,
         }
     }
 
-    fn execute_vim_operator(&mut self, operator: VimOperator, key: KeyEvent) -> bool {
+    fn execute_vim_operator(
+        &mut self,
+        operator: VimOperator,
+        key: KeyEvent,
+        target: EditorTarget,
+    ) -> bool {
         match operator {
-            VimOperator::Delete => self.execute_vim_delete(key),
+            VimOperator::Delete => self.execute_vim_delete(key, target),
         }
     }
 
-    fn execute_vim_delete(&mut self, key: KeyEvent) -> bool {
-        let cursor = self.composer_cursor;
-        let buffer = &self.composer;
-        let range = match key {
-            KeyEvent {
-                code: KeyCode::Char('d'),
-                ..
-            } => {
-                let line_start = line_start_index(buffer, cursor);
-                let line_end = line_end_index(buffer, cursor);
-                if line_end < buffer.len() {
-                    Some((line_start, line_end + 1))
-                } else if line_start > 0 {
-                    Some((line_start - 1, line_end))
-                } else {
-                    Some((0, line_end))
+    fn execute_vim_delete(&mut self, key: KeyEvent, target: EditorTarget) -> bool {
+        let (cursor, range) = {
+            let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
+            let cursor_value = *cursor;
+            let range = match key {
+                KeyEvent {
+                    code: KeyCode::Char('d'),
+                    ..
+                } => {
+                    let line_start = line_start_index(buffer, cursor_value);
+                    let line_end = line_end_index(buffer, cursor_value);
+                    if line_end < buffer.len() {
+                        Some((line_start, line_end + 1))
+                    } else if line_start > 0 {
+                        Some((line_start - 1, line_end))
+                    } else {
+                        Some((0, line_end))
+                    }
                 }
-            }
-            KeyEvent {
-                code: KeyCode::Char('w'),
-                ..
-            } => Some((cursor, next_word_start(buffer, cursor))),
-            KeyEvent {
-                code: KeyCode::Char('b'),
-                ..
-            } => {
-                let target = prev_word_start(buffer, cursor);
-                Some((target, cursor))
-            }
-            KeyEvent {
-                code: KeyCode::Char('$') | KeyCode::End,
-                ..
-            } => Some((cursor, line_end_index(buffer, cursor))),
-            KeyEvent {
-                code: KeyCode::Char('0') | KeyCode::Home,
-                ..
-            } => Some((line_start_index(buffer, cursor), cursor)),
-            _ => None,
+                KeyEvent {
+                    code: KeyCode::Char('w'),
+                    ..
+                } => Some((cursor_value, next_word_start(buffer, cursor_value))),
+                KeyEvent {
+                    code: KeyCode::Char('b'),
+                    ..
+                } => {
+                    let delete_start = prev_word_start(buffer, cursor_value);
+                    Some((delete_start, cursor_value))
+                }
+                KeyEvent {
+                    code: KeyCode::Char('$') | KeyCode::End,
+                    ..
+                } => Some((cursor_value, line_end_index(buffer, cursor_value))),
+                KeyEvent {
+                    code: KeyCode::Char('0') | KeyCode::Home,
+                    ..
+                } => Some((line_start_index(buffer, cursor_value), cursor_value)),
+                _ => None,
+            };
+            (cursor_value, range)
         };
 
         if let Some((start, end)) = range
             && start < end
-            && end <= self.composer.len()
         {
-            self.composer.drain(start..end);
-            self.composer_cursor = start.min(self.composer.len());
-            self.composer_dirty = true;
-            self.last_composer_edit = Some(std::time::Instant::now());
+            let changed = {
+                let (buffer, cursor_ref) = self.editor_buffer_cursor_mut(target);
+                if end <= buffer.len() {
+                    buffer.drain(start..end);
+                    *cursor_ref = start.min(buffer.len());
+                    true
+                } else {
+                    false
+                }
+            };
+            if changed {
+                self.mark_editor_dirty(target);
+            }
         }
-        self.status = "Composer mode: Vim Normal".to_string();
+        let _ = cursor;
+        self.status = "Editor mode: Vim Normal".to_string();
         true
+    }
+
+    fn editor_buffer_cursor_mut(&mut self, target: EditorTarget) -> (&mut String, &mut usize) {
+        match target {
+            EditorTarget::Composer => (&mut self.composer, &mut self.composer_cursor),
+            EditorTarget::Notes => (&mut self.bundle.notes, &mut self.notes_cursor),
+        }
+    }
+
+    fn mark_editor_dirty(&mut self, target: EditorTarget) {
+        match target {
+            EditorTarget::Composer => {
+                self.composer_dirty = true;
+                self.last_composer_edit = Some(std::time::Instant::now());
+                self.composer_edit_revision = self.composer_edit_revision.saturating_add(1);
+            }
+            EditorTarget::Notes => {
+                self.bundle.notes_dirty = true;
+                self.bundle.last_notes_edit = Some(std::time::Instant::now());
+                self.notes_edit_revision = self.notes_edit_revision.saturating_add(1);
+            }
+        }
     }
 
     async fn submit_prompt(&mut self) {
@@ -1519,9 +1596,14 @@ impl App {
             );
         } else {
             frame.render_widget(
-                Paragraph::new(self.bundle.notes.as_str())
-                    .block(panel_block(composer_title, self.focus == Focus::Composer))
-                    .wrap(Wrap { trim: false }),
+                Paragraph::new(render_editor_buffer(
+                    &self.bundle.notes,
+                    self.notes_cursor.min(self.bundle.notes.len()),
+                    self.focus == Focus::Composer && self.selected_pane == Pane::Notes,
+                    self.editor_mode,
+                ))
+                .block(panel_block(composer_title, self.focus == Focus::Composer))
+                .wrap(Wrap { trim: false }),
                 chunks[2],
             );
         }
@@ -2097,7 +2179,7 @@ impl App {
                 &rename.name,
                 rename.cursor,
                 true,
-                ComposerEditorMode::Standard,
+                self.editor_mode,
             ))
             .block(panel_block("Name", false))
             .wrap(Wrap { trim: false }),
@@ -2169,7 +2251,7 @@ impl App {
     fn composer_status_line(&self) -> Line<'static> {
         let draft = self.draft_status_label();
         let queue = self.queue_status_label();
-        let mode = self.composer_editor_mode_label();
+        let mode = self.editor_mode_label();
         let draft_style = if self.composer_queue_conflict {
             Style::default().fg(Color::Yellow)
         } else if self.composer_dirty {
@@ -2250,20 +2332,20 @@ impl App {
         Line::from(spans)
     }
 
-    fn composer_editor_mode_label(&self) -> &'static str {
-        match self.composer_editor_mode {
+    fn editor_mode_label(&self) -> &'static str {
+        match self.editor_mode {
             ComposerEditorMode::Standard => "standard",
             ComposerEditorMode::Vim(VimMode::Insert) => "vim insert",
             ComposerEditorMode::Vim(VimMode::Normal) => "vim normal",
         }
     }
 
-    fn toggle_composer_editor_mode(&mut self) {
-        self.composer_editor_mode = match self.composer_editor_mode {
+    fn toggle_editor_mode(&mut self) {
+        self.editor_mode = match self.editor_mode {
             ComposerEditorMode::Standard => ComposerEditorMode::Vim(VimMode::Insert),
             ComposerEditorMode::Vim(_) => ComposerEditorMode::Standard,
         };
-        self.status = format!("Composer mode: {}", self.composer_editor_mode_label());
+        self.status = format!("Editor mode: {}", self.editor_mode_label());
     }
 
     fn render_composer_text(&self) -> Text<'static> {
@@ -2272,7 +2354,7 @@ impl App {
             &self.composer,
             self.composer_cursor.min(self.composer.len()),
             show_cursor,
-            self.composer_editor_mode,
+            self.editor_mode,
         )
     }
 
