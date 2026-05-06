@@ -936,13 +936,7 @@ impl App {
             state.select(Some(index));
         }
 
-        let block = Block::default()
-            .title(if self.focus == Focus::WorkspaceList {
-                "Workspaces *"
-            } else {
-                "Workspaces"
-            })
-            .borders(Borders::ALL);
+        let block = panel_block("Workspaces", self.focus == Focus::WorkspaceList);
         let list = List::new(items).block(block).highlight_style(
             Style::default()
                 .bg(Color::Rgb(28, 38, 48))
@@ -968,7 +962,7 @@ impl App {
                 .map(|pane| Line::from(Span::raw(pane.title())))
                 .collect::<Vec<_>>(),
         )
-        .block(Block::default().borders(Borders::ALL).title("Pane"))
+        .block(panel_block("Pane", self.focus == Focus::Main))
         .select(
             Pane::all()
                 .iter()
@@ -993,20 +987,8 @@ impl App {
         }
 
         let composer_title = match self.selected_pane {
-            Pane::Notes => {
-                if self.focus == Focus::Composer {
-                    "Notes Editor *"
-                } else {
-                    "Notes Editor"
-                }
-            }
-            _ => {
-                if self.focus == Focus::Composer {
-                    "Composer *"
-                } else {
-                    "Composer"
-                }
-            }
+            Pane::Notes => "Notes Editor",
+            _ => "Composer",
         };
         let composer_text = match self.selected_pane {
             Pane::Notes => self.bundle.notes.as_str(),
@@ -1014,11 +996,11 @@ impl App {
         };
         let composer = if self.selected_pane == Pane::Chat {
             Paragraph::new(self.composer_panel_text(composer_text))
-                .block(Block::default().borders(Borders::ALL).title(composer_title))
+                .block(panel_block(composer_title, self.focus == Focus::Composer))
                 .wrap(Wrap { trim: false })
         } else {
             Paragraph::new(composer_text)
-                .block(Block::default().borders(Borders::ALL).title(composer_title))
+                .block(panel_block(composer_title, self.focus == Focus::Composer))
                 .wrap(Wrap { trim: false })
         };
         frame.render_widget(composer, chunks[2]);
@@ -1050,7 +1032,7 @@ impl App {
         };
         frame.render_widget(
             Paragraph::new(Text::from(workspace_info))
-                .block(Block::default().borders(Borders::ALL).title("Workspace")),
+                .block(panel_block("Workspace", false)),
             chunks[0],
         );
 
@@ -1085,13 +1067,7 @@ impl App {
         }
         frame.render_stateful_widget(
             List::new(sessions)
-                .block(Block::default().borders(Borders::ALL).title(
-                    if self.focus == Focus::Detail {
-                        "Sessions *"
-                    } else {
-                        "Sessions"
-                    },
-                ))
+                .block(panel_block("Sessions", self.focus == Focus::Detail))
                 .highlight_style(Style::default().fg(Color::Cyan).bg(Color::Rgb(28, 38, 48))),
             chunks[1],
             &mut state,
@@ -1123,7 +1099,7 @@ impl App {
             .collect::<Vec<_>>();
         frame.render_widget(
             List::new(process_lines)
-                .block(Block::default().borders(Borders::ALL).title("Processes")),
+                .block(panel_block("Processes", false)),
             chunks[2],
         );
     }
@@ -1142,7 +1118,7 @@ impl App {
         };
         frame.render_widget(
             Paragraph::new(Text::from(lines))
-                .block(Block::default().borders(Borders::ALL).title(title))
+                .block(panel_block(title, self.focus == Focus::Main))
                 .scroll((self.bundle.log_scroll, 0))
                 .wrap(Wrap { trim: false }),
             area,
@@ -1177,7 +1153,7 @@ impl App {
         }
         frame.render_stateful_widget(
             List::new(items)
-                .block(Block::default().borders(Borders::ALL).title("Files"))
+                .block(panel_block("Files", self.focus == Focus::Detail))
                 .highlight_style(Style::default().fg(Color::Cyan).bg(Color::Rgb(28, 38, 48))),
             chunks[0],
             &mut state,
@@ -1191,7 +1167,7 @@ impl App {
             .unwrap_or_else(|| "No diff selected".to_string());
         frame.render_widget(
             Paragraph::new(diff_text)
-                .block(Block::default().borders(Borders::ALL).title("Diff"))
+                .block(panel_block("Diff", self.focus == Focus::Main))
                 .wrap(Wrap { trim: false }),
             chunks[1],
         );
@@ -1207,7 +1183,7 @@ impl App {
             .collect::<Vec<_>>();
         frame.render_widget(
             Paragraph::new(Text::from(lines))
-                .block(Block::default().borders(Borders::ALL).title("Logs"))
+                .block(panel_block("Logs", self.focus == Focus::Main))
                 .scroll((self.bundle.log_scroll, 0))
                 .wrap(Wrap { trim: false }),
             area,
@@ -1266,7 +1242,7 @@ impl App {
         };
         frame.render_widget(
             Paragraph::new(Text::from(lines))
-                .block(Block::default().borders(Borders::ALL).title("Git"))
+                .block(panel_block("Git", self.focus == Focus::Main))
                 .wrap(Wrap { trim: false }),
             area,
         );
@@ -1289,7 +1265,7 @@ impl App {
         } else {
             "Terminal"
         };
-        let block = Block::default().borders(Borders::ALL).title(title);
+        let block = panel_block(title, self.focus == Focus::Main);
         frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
         if let Some(error) = &self.bundle.terminal.error {
             let popup = centered_rect(70, 20, area);
@@ -1310,7 +1286,7 @@ impl App {
     fn render_notes(&self, frame: &mut Frame, area: Rect) {
         frame.render_widget(
             Paragraph::new(self.bundle.notes.as_str())
-                .block(Block::default().borders(Borders::ALL).title("Notes"))
+                .block(panel_block("Notes", self.focus == Focus::Main))
                 .wrap(Wrap { trim: false }),
             area,
         );
@@ -2076,6 +2052,21 @@ fn render_diff_text(diff: &crate::model::LocalDiff) -> String {
     }
     let file = diff_title(diff);
     utils::diff::create_unified_diff(&file, old, new)
+}
+
+fn panel_block<'a>(title: &'a str, active: bool) -> Block<'a> {
+    let style = if active {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(style)
+        .title(Span::styled(title.to_string(), style))
 }
 
 fn default_variant_to_none(variant: String) -> Option<String> {
