@@ -310,10 +310,11 @@ impl App {
                     let previous_count = self.bundle.process_map.len();
                     self.bundle.process_map = processes;
                     let previous_process_id = self.bundle.selected_process_id;
-                    let next_process_id = previous_process_id
-                        .filter(|selected| self.bundle.process_map.contains_key(selected))
+                    let next_process_id = active_process(&self.bundle.process_map)
+                        .map(|process| process.id)
                         .or_else(|| {
-                            active_process(&self.bundle.process_map).map(|process| process.id)
+                            previous_process_id
+                                .filter(|selected| self.bundle.process_map.contains_key(selected))
                         });
                     let changed = next_process_id != previous_process_id;
                     self.bundle.selected_process_id = next_process_id;
