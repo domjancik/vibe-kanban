@@ -2035,18 +2035,6 @@ impl App {
             self.optimistic_entries.clear();
             return;
         };
-        let selected_process_has_activity = self
-            .bundle
-            .selected_process_id
-            .and_then(|process_id| self.conversation_process_entries.get(&process_id))
-            .is_some_and(|entries| !entries.is_empty());
-        let latest_process_has_activity = self
-            .conversation_process_order
-            .last()
-            .and_then(|process_id| self.conversation_process_entries.get(process_id))
-            .is_some_and(|entries| !entries.is_empty());
-        let active_process_has_activity =
-            selected_process_has_activity || latest_process_has_activity;
         let canonical_messages = self
             .canonical_chat_entries()
             .into_iter()
@@ -2065,19 +2053,49 @@ impl App {
         self.optimistic_entries.retain(|entry| {
             entry.scope != scope
                 || entry.state == OptimisticState::Failed
-                || (!canonical_messages
+                || !canonical_messages
                     .iter()
                     .any(|message| message == entry.message.trim())
-                    && !active_process_has_activity)
         });
     }
 
     fn canonical_chat_entries(&self) -> Vec<PatchType> {
         self.conversation_process_order
             .iter()
-            .filter_map(|process_id| self.conversation_process_entries.get(process_id))
-            .flat_map(|entries| entries.iter().cloned())
+            .flat_map(|process_id| self.process_chat_entries(*process_id))
             .collect()
+    }
+
+    fn process_chat_entries(&self, process_id: Uuid) -> Vec<PatchType> {
+        let mut entries = Vec::new();
+        let process_entries = self
+            .conversation_process_entries
+            .get(&process_id)
+            .cloned()
+            .unwrap_or_default();
+
+        let has_user_message = process_entries.iter().any(|entry| {
+            matches!(
+                entry,
+                PatchType::NormalizedEntry(entry)
+                    if matches!(entry.entry_type, executors::logs::NormalizedEntryType::UserMessage)
+            )
+        });
+
+        if !has_user_message
+            && let Some(process) = self.bundle.process_map.get(&process_id)
+            && let Some(prompt) = process_prompt(process)
+        {
+            entries.push(PatchType::NormalizedEntry(executors::logs::NormalizedEntry {
+                timestamp: Some(process.created_at.to_rfc3339()),
+                entry_type: executors::logs::NormalizedEntryType::UserMessage,
+                content: prompt,
+                metadata: None,
+            }));
+        }
+
+        entries.extend(process_entries);
+        entries
     }
 
     fn chat_line_count(&self) -> usize {
@@ -3503,6 +3521,30 @@ fn summarize_action(action_type: &executors::logs::ActionType) -> String {
         ActionType::TodoManagement { operation, .. } => format!("todo {operation}"),
         ActionType::AskUserQuestion { .. } => "ask user".to_string(),
         ActionType::Other { description } => description.clone(),
+    }
+}
+
+fn process_prompt(process: &ExecutionProcess) -> Option<String> {
+    use executors::actions::ExecutorActionType;
+
+    let db::models::execution_process::ExecutorActionField::ExecutorAction(action) =
+        &process.executor_action.0
+    else {
+        return None;
+    };
+
+    let prompt = match action.typ() {
+        ExecutorActionType::CodingAgentInitialRequest(request) => Some(request.prompt.as_str()),
+        ExecutorActionType::CodingAgentFollowUpRequest(request) => Some(request.prompt.as_str()),
+        ExecutorActionType::ReviewRequest(request) => Some(request.prompt.as_str()),
+        ExecutorActionType::ScriptRequest(_) => None,
+    }?;
+
+    let trimmed = prompt.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 
