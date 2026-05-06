@@ -48,6 +48,18 @@ struct AgentPickerState {
     selected: usize,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ComposerEditorMode {
+    Standard,
+    Vim(VimMode),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VimMode {
+    Normal,
+    Insert,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 enum ConversationScope {
     Session(Uuid),
@@ -93,6 +105,7 @@ pub struct App {
     composer_options: Option<ExecutorDiscoveredOptions>,
     composer: String,
     composer_cursor: usize,
+    composer_editor_mode: ComposerEditorMode,
     composer_dirty: bool,
     composer_queue_conflict: bool,
     composer_scratch_id: Option<Uuid>,
@@ -146,6 +159,7 @@ impl App {
             composer_options: None,
             composer: String::new(),
             composer_cursor: 0,
+            composer_editor_mode: ComposerEditorMode::Standard,
             composer_dirty: false,
             composer_queue_conflict: false,
             composer_scratch_id: None,
@@ -461,11 +475,7 @@ impl App {
         if self.focus == Focus::Composer {
             match self.selected_pane {
                 Pane::Chat => {
-                    if key.code == KeyCode::Esc {
-                        self.focus = Focus::Main;
-                    } else {
-                        self.handle_text_input(key, false).await;
-                    }
+                    self.handle_composer_key(key).await;
                     return;
                 }
                 Pane::Notes => {
@@ -481,6 +491,10 @@ impl App {
         }
 
         match key {
+            KeyEvent {
+                code: KeyCode::F(2),
+                ..
+            } => self.toggle_composer_editor_mode(),
             KeyEvent {
                 code: KeyCode::Char('q'),
                 ..
@@ -715,6 +729,34 @@ impl App {
                 ..
             } => *cursor = (*cursor + 1).min(buffer.len()),
             KeyEvent {
+                code: KeyCode::Up, ..
+            } => *cursor = move_cursor_vertical(buffer, *cursor, -1),
+            KeyEvent {
+                code: KeyCode::Down,
+                ..
+            } => *cursor = move_cursor_vertical(buffer, *cursor, 1),
+            KeyEvent {
+                code: KeyCode::Home,
+                ..
+            } => *cursor = line_start_index(buffer, *cursor),
+            KeyEvent {
+                code: KeyCode::End, ..
+            } => *cursor = line_end_index(buffer, *cursor),
+            KeyEvent {
+                code: KeyCode::Char('a'),
+                modifiers,
+                ..
+            } if modifiers == KeyModifiers::CONTROL => {
+                *cursor = line_start_index(buffer, *cursor);
+            }
+            KeyEvent {
+                code: KeyCode::Char('e'),
+                modifiers,
+                ..
+            } if modifiers == KeyModifiers::CONTROL => {
+                *cursor = line_end_index(buffer, *cursor);
+            }
+            KeyEvent {
                 code: KeyCode::Char(ch),
                 modifiers,
                 ..
@@ -731,6 +773,171 @@ impl App {
         } else if changed {
             self.composer_dirty = true;
             self.last_composer_edit = Some(std::time::Instant::now());
+        }
+    }
+
+    async fn handle_composer_key(&mut self, key: KeyEvent) {
+        if let KeyEvent {
+            code: KeyCode::F(2),
+            ..
+        } = key
+        {
+            self.toggle_composer_editor_mode();
+            return;
+        }
+
+        match self.composer_editor_mode {
+            ComposerEditorMode::Standard => {
+                if key.code == KeyCode::Esc {
+                    self.focus = Focus::Main;
+                } else {
+                    self.handle_text_input(key, false).await;
+                }
+            }
+            ComposerEditorMode::Vim(VimMode::Insert) => {
+                if key.code == KeyCode::Esc {
+                    self.composer_editor_mode = ComposerEditorMode::Vim(VimMode::Normal);
+                    self.status = "Composer mode: Vim Normal".to_string();
+                } else {
+                    self.handle_text_input(key, false).await;
+                }
+            }
+            ComposerEditorMode::Vim(VimMode::Normal) => {
+                if self.handle_vim_normal_key(key).await {
+                    return;
+                }
+                if key.code == KeyCode::Esc {
+                    self.focus = Focus::Main;
+                }
+            }
+        }
+    }
+
+    async fn handle_vim_normal_key(&mut self, key: KeyEvent) -> bool {
+        match key {
+            KeyEvent {
+                code: KeyCode::Enter,
+                ..
+            } => {
+                self.submit_prompt().await;
+                true
+            }
+            KeyEvent {
+                code: KeyCode::Char('i'),
+                ..
+            } => {
+                self.composer_editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
+                self.status = "Composer mode: Vim Insert".to_string();
+                true
+            }
+            KeyEvent {
+                code: KeyCode::Char('a'),
+                ..
+            } => {
+                self.composer_cursor = (self.composer_cursor + 1).min(self.composer.len());
+                self.composer_editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
+                self.status = "Composer mode: Vim Insert".to_string();
+                true
+            }
+            KeyEvent {
+                code: KeyCode::Char('I'),
+                ..
+            } => {
+                self.composer_cursor = line_start_index(&self.composer, self.composer_cursor);
+                self.composer_editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
+                self.status = "Composer mode: Vim Insert".to_string();
+                true
+            }
+            KeyEvent {
+                code: KeyCode::Char('A'),
+                ..
+            } => {
+                self.composer_cursor = line_end_index(&self.composer, self.composer_cursor);
+                self.composer_editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
+                self.status = "Composer mode: Vim Insert".to_string();
+                true
+            }
+            KeyEvent {
+                code: KeyCode::Char('h') | KeyCode::Left,
+                ..
+            } => {
+                self.composer_cursor = self.composer_cursor.saturating_sub(1);
+                true
+            }
+            KeyEvent {
+                code: KeyCode::Char('l') | KeyCode::Right,
+                ..
+            } => {
+                self.composer_cursor = (self.composer_cursor + 1).min(self.composer.len());
+                true
+            }
+            KeyEvent {
+                code: KeyCode::Char('k') | KeyCode::Up,
+                ..
+            } => {
+                self.composer_cursor =
+                    move_cursor_vertical(&self.composer, self.composer_cursor, -1);
+                true
+            }
+            KeyEvent {
+                code: KeyCode::Char('j') | KeyCode::Down,
+                ..
+            } => {
+                self.composer_cursor =
+                    move_cursor_vertical(&self.composer, self.composer_cursor, 1);
+                true
+            }
+            KeyEvent {
+                code: KeyCode::Char('0') | KeyCode::Home,
+                ..
+            } => {
+                self.composer_cursor = line_start_index(&self.composer, self.composer_cursor);
+                true
+            }
+            KeyEvent {
+                code: KeyCode::Char('$') | KeyCode::End,
+                ..
+            } => {
+                self.composer_cursor = line_end_index(&self.composer, self.composer_cursor);
+                true
+            }
+            KeyEvent {
+                code: KeyCode::Char('x') | KeyCode::Delete,
+                ..
+            } => {
+                if self.composer_cursor < self.composer.len() {
+                    self.composer.remove(self.composer_cursor);
+                    self.composer_dirty = true;
+                    self.last_composer_edit = Some(std::time::Instant::now());
+                }
+                true
+            }
+            KeyEvent {
+                code: KeyCode::Char('o'),
+                ..
+            } => {
+                self.composer_cursor = line_end_index(&self.composer, self.composer_cursor);
+                self.composer.insert(self.composer_cursor, '\n');
+                self.composer_cursor += 1;
+                self.composer_dirty = true;
+                self.last_composer_edit = Some(std::time::Instant::now());
+                self.composer_editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
+                self.status = "Composer mode: Vim Insert".to_string();
+                true
+            }
+            KeyEvent {
+                code: KeyCode::Char('O'),
+                ..
+            } => {
+                self.composer_cursor = line_start_index(&self.composer, self.composer_cursor);
+                self.composer.insert(self.composer_cursor, '\n');
+                self.composer_dirty = true;
+                self.last_composer_edit = Some(std::time::Instant::now());
+                self.composer_editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
+                self.status = "Composer mode: Vim Insert".to_string();
+                true
+            }
+            _ => false,
         }
     }
 
@@ -1278,10 +1485,6 @@ impl App {
             Pane::Notes => "Notes Editor",
             _ => "Composer",
         };
-        let composer_text = match self.selected_pane {
-            Pane::Notes => self.bundle.notes.as_str(),
-            _ => self.composer.as_str(),
-        };
         if self.selected_pane == Pane::Chat {
             frame.render_widget(
                 Paragraph::new(Text::from(vec![
@@ -1293,14 +1496,14 @@ impl App {
                 chunks[2],
             );
             frame.render_widget(
-                Paragraph::new(composer_text)
+                Paragraph::new(self.render_composer_text())
                     .block(panel_block(composer_title, self.focus == Focus::Composer))
                     .wrap(Wrap { trim: false }),
                 chunks[3],
             );
         } else {
             frame.render_widget(
-                Paragraph::new(composer_text)
+                Paragraph::new(self.bundle.notes.as_str())
                     .block(panel_block(composer_title, self.focus == Focus::Composer))
                     .wrap(Wrap { trim: false }),
                 chunks[2],
@@ -1829,6 +2032,7 @@ impl App {
     fn composer_status_line(&self) -> Line<'static> {
         let draft = self.draft_status_label();
         let queue = self.queue_status_label();
+        let mode = self.composer_editor_mode_label();
         let draft_style = if self.composer_queue_conflict {
             Style::default().fg(Color::Yellow)
         } else if self.composer_dirty {
@@ -1844,11 +2048,22 @@ impl App {
             Style::default().fg(Color::DarkGray)
         };
         Line::from(vec![
+            Span::styled("Mode ", Style::default().fg(Color::Gray)),
+            Span::styled(mode, Style::default().fg(Color::LightMagenta)),
+            Span::raw("  "),
             Span::styled("Draft ", Style::default().fg(Color::Gray)),
             Span::styled(draft, draft_style),
             Span::raw("  "),
             Span::styled("Queue ", Style::default().fg(Color::Gray)),
             Span::styled(queue, queue_style),
+            Span::raw("  "),
+            Span::styled(
+                "F2",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" editor mode ", Style::default().fg(Color::DarkGray)),
             Span::raw("  "),
             Span::styled(
                 "Q",
@@ -1872,6 +2087,32 @@ impl App {
             ),
             Span::styled(" discard", Style::default().fg(Color::DarkGray)),
         ])
+    }
+
+    fn composer_editor_mode_label(&self) -> &'static str {
+        match self.composer_editor_mode {
+            ComposerEditorMode::Standard => "standard",
+            ComposerEditorMode::Vim(VimMode::Insert) => "vim insert",
+            ComposerEditorMode::Vim(VimMode::Normal) => "vim normal",
+        }
+    }
+
+    fn toggle_composer_editor_mode(&mut self) {
+        self.composer_editor_mode = match self.composer_editor_mode {
+            ComposerEditorMode::Standard => ComposerEditorMode::Vim(VimMode::Insert),
+            ComposerEditorMode::Vim(_) => ComposerEditorMode::Standard,
+        };
+        self.status = format!("Composer mode: {}", self.composer_editor_mode_label());
+    }
+
+    fn render_composer_text(&self) -> Text<'static> {
+        let show_cursor = self.focus == Focus::Composer && self.selected_pane == Pane::Chat;
+        render_editor_buffer(
+            &self.composer,
+            self.composer_cursor.min(self.composer.len()),
+            show_cursor,
+            self.composer_editor_mode,
+        )
     }
 
     fn draft_status_label(&self) -> String {
@@ -3858,6 +4099,109 @@ fn render_log_entry(index: usize, entry: &PatchType) -> Vec<Line<'static>> {
         .collect()
 }
 
+fn render_editor_buffer(
+    buffer: &str,
+    cursor: usize,
+    show_cursor: bool,
+    mode: ComposerEditorMode,
+) -> Text<'static> {
+    let cursor = cursor.min(buffer.len());
+    let cursor_style = match mode {
+        ComposerEditorMode::Standard | ComposerEditorMode::Vim(VimMode::Insert) => {
+            Style::default().bg(Color::Cyan).fg(Color::Black)
+        }
+        ComposerEditorMode::Vim(VimMode::Normal) => {
+            Style::default()
+                .bg(Color::Yellow)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD)
+        }
+    };
+
+    let mut lines = Vec::new();
+    let mut current_spans = Vec::new();
+    let mut index = 0usize;
+
+    while index < buffer.len() {
+        if show_cursor && index == cursor {
+            let ch = buffer[index..].chars().next().unwrap_or(' ');
+            if ch == '\n' {
+                current_spans.push(Span::styled(" ", cursor_style));
+                lines.push(Line::from(std::mem::take(&mut current_spans)));
+                index += ch.len_utf8();
+                continue;
+            }
+            current_spans.push(Span::styled(ch.to_string(), cursor_style));
+            index += ch.len_utf8();
+            continue;
+        }
+
+        let ch = buffer[index..].chars().next().unwrap_or(' ');
+        index += ch.len_utf8();
+        if ch == '\n' {
+            lines.push(Line::from(std::mem::take(&mut current_spans)));
+        } else {
+            current_spans.push(Span::raw(ch.to_string()));
+        }
+    }
+
+    if show_cursor && cursor == buffer.len() {
+        current_spans.push(Span::styled(" ", cursor_style));
+    }
+
+    lines.push(Line::from(current_spans));
+    Text::from(lines)
+}
+
+fn line_start_index(buffer: &str, cursor: usize) -> usize {
+    let cursor = cursor.min(buffer.len());
+    buffer[..cursor].rfind('\n').map_or(0, |index| index + 1)
+}
+
+fn line_end_index(buffer: &str, cursor: usize) -> usize {
+    let cursor = cursor.min(buffer.len());
+    buffer[cursor..]
+        .find('\n')
+        .map_or(buffer.len(), |offset| cursor + offset)
+}
+
+fn cursor_column(buffer: &str, cursor: usize) -> usize {
+    let start = line_start_index(buffer, cursor);
+    buffer[start..cursor.min(buffer.len())].chars().count()
+}
+
+fn byte_index_for_column(line: &str, column: usize) -> usize {
+    line.char_indices()
+        .nth(column)
+        .map(|(index, _)| index)
+        .unwrap_or(line.len())
+}
+
+fn move_cursor_vertical(buffer: &str, cursor: usize, direction: i32) -> usize {
+    let cursor = cursor.min(buffer.len());
+    let current_line_start = line_start_index(buffer, cursor);
+    let current_column = cursor_column(buffer, cursor);
+
+    if direction < 0 {
+        if current_line_start == 0 {
+            return cursor;
+        }
+        let previous_line_end = current_line_start.saturating_sub(1);
+        let previous_line_start = line_start_index(buffer, previous_line_end);
+        let previous_line = &buffer[previous_line_start..previous_line_end];
+        return previous_line_start + byte_index_for_column(previous_line, current_column);
+    }
+
+    let current_line_end = line_end_index(buffer, cursor);
+    if current_line_end >= buffer.len() {
+        return cursor;
+    }
+    let next_line_start = current_line_end + 1;
+    let next_line_end = line_end_index(buffer, next_line_start);
+    let next_line = &buffer[next_line_start..next_line_end];
+    next_line_start + byte_index_for_column(next_line, current_column)
+}
+
 #[cfg(test)]
 mod tests {
     use executors::logs::{ActionType, NormalizedEntry, NormalizedEntryType, ToolStatus};
@@ -3866,7 +4210,10 @@ mod tests {
         text::Line,
     };
 
-    use super::{parse_inline_markdown, render_normalized_chat_entry, wrap_line};
+    use super::{
+        ComposerEditorMode, VimMode, move_cursor_vertical, parse_inline_markdown,
+        render_editor_buffer, render_normalized_chat_entry, wrap_line,
+    };
 
     fn entry(entry_type: NormalizedEntryType, content: &str) -> NormalizedEntry {
         NormalizedEntry {
@@ -3942,6 +4289,23 @@ mod tests {
         ));
         assert_eq!(lines[0].spans[0].content.as_ref(), "    ");
         assert_eq!(lines[0].spans[1].content.as_ref(), "tool");
+    }
+
+    #[test]
+    fn composer_renderer_shows_cursor_span() {
+        let text = render_editor_buffer("hello", 1, true, ComposerEditorMode::Vim(VimMode::Normal));
+        assert_eq!(text.lines[0].spans[0].content.as_ref(), "h");
+        assert_eq!(text.lines[0].spans[1].content.as_ref(), "e");
+        assert_eq!(text.lines[0].spans[1].style.bg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn vertical_cursor_movement_clamps_to_shorter_line_end() {
+        let buffer = "abcd\nxy\nwxyz";
+        let down = move_cursor_vertical(buffer, 3, 1);
+        assert_eq!(down, 7);
+        let up = move_cursor_vertical(buffer, 7, -1);
+        assert_eq!(up, 2);
     }
 }
 
