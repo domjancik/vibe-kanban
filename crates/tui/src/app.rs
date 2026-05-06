@@ -2034,6 +2034,18 @@ impl App {
             self.optimistic_entries.clear();
             return;
         };
+        let selected_process_has_activity = self
+            .bundle
+            .selected_process_id
+            .and_then(|process_id| self.conversation_process_entries.get(&process_id))
+            .is_some_and(|entries| !entries.is_empty());
+        let latest_process_has_activity = self
+            .conversation_process_order
+            .last()
+            .and_then(|process_id| self.conversation_process_entries.get(process_id))
+            .is_some_and(|entries| !entries.is_empty());
+        let active_process_has_activity =
+            selected_process_has_activity || latest_process_has_activity;
         let canonical_messages = self
             .canonical_chat_entries()
             .into_iter()
@@ -2052,9 +2064,10 @@ impl App {
         self.optimistic_entries.retain(|entry| {
             entry.scope != scope
                 || entry.state == OptimisticState::Failed
-                || !canonical_messages
+                || (!canonical_messages
                     .iter()
                     .any(|message| message == entry.message.trim())
+                    && !active_process_has_activity)
         });
     }
 
