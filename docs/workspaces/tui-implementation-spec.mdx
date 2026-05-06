@@ -1,0 +1,854 @@
+---
+title: "TUI Implementation Spec"
+description: "Detailed implementation specification for a Ratatui-based Workspaces interface"
+---
+
+# Ratatui Workspaces TUI
+
+This document defines an alternative terminal UI for Vibe Kanban that mirrors the current Workspaces web interface while remaining idiomatic for a terminal environment.
+
+<Info>
+This specification is intentionally scoped to the Workspaces experience first. A terminal-based Projects view is treated as a follow-on extension, not part of the initial delivery.
+</Info>
+
+## Goals
+
+You should design the TUI to preserve the core value of the web Workspaces interface:
+
+- browse and manage workspaces
+- inspect live workspace status
+- switch between sessions
+- converse with coding agents
+- review changes and logs
+- access terminal, git, and notes without leaving the workspace
+
+The TUI should feel like the same product, not a thin debug console.
+
+## Non-goals
+
+The first release should not attempt to replicate every web-only capability:
+
+- embedded browser preview
+- rich WYSIWYG editing
+- inline code review comments rendered exactly like the web app
+- mobile-specific layout behaviour
+- the full Projects view
+
+Where the web app depends on a graphical primitive, the TUI should provide a terminal-native equivalent instead of a degraded fake.
+
+## Product scope
+
+### In scope for v1
+
+- workspace list with active and archived sections
+- status indicators from the existing workspace streams and summaries
+- workspace selection and navigation
+- session picker and new-session flow
+- message composer for follow-up prompts
+- live conversation timeline
+- changes panel with file list and diff viewer
+- logs/process panel
+- git summary panel
+- integrated PTY terminal
+- workspace notes backed by scratch
+- workspace actions: pin, archive, stop execution, start/stop dev server, open in editor
+
+### Deferred to v2+
+
+- workspace creation wizard
+- preview replacement flow for dev servers
+- PR creation and advanced git actions
+- approval UX parity with the web UI
+- project-centric navigation
+- multi-host or remote host switching
+
+## UX model
+
+## High-level layout
+
+The web app uses a four-panel layout:
+
+- workspace sidebar
+- conversation panel
+- context panel
+- details sidebar
+
+The TUI should keep the same mental model, but compress it into a layout that works in 100-180 columns.
+
+### Desktop terminal layout
+
+Default layout for terminals `>= 140` columns:
+
+- left rail: workspace list
+- centre: conversation timeline plus composer
+- right upper: context pane
+- right lower: details pane
+
+Suggested split:
+
+- left rail: 28-34 columns
+- centre: remaining width minus right pane
+- right pane: 40-52 columns
+
+### Compact terminal layout
+
+For terminals `< 140` columns:
+
+- left rail remains visible
+- centre/right content becomes tabbed instead of simultaneously visible
+
+Tabs:
+
+- `Chat`
+- `Changes`
+- `Logs`
+- `Git`
+- `Terminal`
+- `Notes`
+
+### Very narrow layout
+
+For terminals `< 110` columns:
+
+- workspace list becomes a modal overlay or collapsible drawer
+- only one primary pane is visible at a time
+
+## View hierarchy
+
+The first milestone should ship one top-level route:
+
+- `WorkspacesHome`
+
+Within it:
+
+- `WorkspaceListPane`
+- `WorkspaceMainPane`
+- `WorkspaceContextPane`
+- `WorkspaceDetailsPane`
+- `CommandPalette`
+- `ModalLayer`
+- `ToastLayer`
+
+The future extension should add:
+
+- `ProjectsHome`
+
+## Core interaction model
+
+The TUI should be keyboard-first. Mouse support is optional and should not drive the architecture.
+
+### Global keys
+
+- `q`: quit current modal or exit app from root
+- `Ctrl+c`: force quit
+- `?`: show keymap help
+- `:` or `Ctrl+p`: open command palette
+- `Tab` and `Shift+Tab`: cycle focus regions
+- `1` `2` `3` `4`: jump to main regions
+- `/`: search within the currently focused list or log buffer
+
+### Workspace list keys
+
+- `j` `k` or arrows: move selection
+- `Enter`: open workspace
+- `a`: toggle archived section
+- `p`: pin or unpin workspace
+- `e`: rename workspace
+- `x`: archive or unarchive workspace
+- `n`: start new session for selected workspace
+- `f`: focus workspace filter
+- `s`: open sort options
+
+### Conversation keys
+
+- `i`: focus composer
+- `Esc`: leave composer focus
+- `Enter`: submit prompt
+- `Ctrl+n` `Ctrl+p`: switch session
+- `[` `]`: previous or next unread or user turn
+- `r`: retry selected or latest turn when supported
+- `u`: jump to pending approval
+
+### Context/details keys
+
+- `g`: git pane
+- `d`: diff pane
+- `l`: logs pane
+- `t`: terminal pane
+- `o`: notes pane
+- `v`: dev server controls
+- `Space`: expand or collapse current section
+
+## Workspace list specification
+
+The workspace list should mirror the existing web sidebar data model, which combines:
+
+- `GET /api/workspaces/streams/ws?archived=false`
+- `GET /api/workspaces/streams/ws?archived=true`
+- `POST /api/workspaces/summaries`
+
+### Data shown per row
+
+- workspace name, falling back to branch
+- branch
+- pinned marker
+- running marker
+- pending approval marker
+- unseen activity marker
+- dev server marker
+- PR status marker
+- relative last activity time
+- diff stats summary
+
+### Grouping modes
+
+Support two list modes, matching the web intent:
+
+- flat
+- grouped
+
+Grouped mode should use these buckets:
+
+- `Needs Attention`
+- `Running`
+- `Idle`
+- `Archived`
+
+### Filtering
+
+The first implementation should support:
+
+- text filter by workspace name or branch
+- archived toggle
+- PR filter: all, has PR, no PR
+
+Project filtering can wait until the Projects extension or until project metadata is exposed locally in a simpler way.
+
+## Workspace detail specification
+
+When a workspace is selected, the TUI should hydrate:
+
+- workspace metadata
+- sessions
+- repos
+- summary state
+- diff stream
+- execution process stream for the selected session
+- scratch state for notes
+
+### Primary data sources
+
+- `GET /api/workspaces/{id}`
+- `GET /api/sessions?workspace_id={id}`
+- `GET /api/workspaces/{id}/repos`
+- `GET /api/workspaces/{id}/git/diff/ws`
+- `GET /api/execution-processes/stream/session/ws?session_id={id}`
+- `GET /api/terminal/ws?workspace_id={id}`
+- `GET /api/scratch/workspace_notes/{workspace_id}`
+- `GET /api/scratch/workspace_notes/{workspace_id}/stream/ws`
+
+<Note>
+The current web app uses scratch-backed notes and websocket-backed patch streams. The TUI should reuse those protocols rather than introducing a separate polling path.
+</Note>
+
+## Conversation pane specification
+
+### Behaviour
+
+The conversation pane should behave like the web Workspaces main panel:
+
+- show the current session timeline
+- allow session switching
+- support new-session mode
+- keep the composer visible
+- stream agent output incrementally
+
+### Session model
+
+Use the existing session ordering contract:
+
+- `GET /api/sessions?workspace_id={workspace_id}`
+- select the first session by default
+- allow a synthetic `new session` state when the user wants a fresh thread
+
+### Sending a prompt
+
+Existing sessions:
+
+- `POST /api/sessions/{session_id}/follow-up`
+
+New session flow:
+
+1. `POST /api/sessions`
+2. `POST /api/sessions/{session_id}/follow-up`
+
+### Conversation rendering
+
+Render turns as a scrollable timeline with compact metadata:
+
+- role
+- timestamp
+- executor
+- process state
+- approval needed state
+
+Use a terminal-native style:
+
+- user turns left-aligned with a strong label
+- assistant turns boxed or indented
+- tool and log fragments collapsible
+
+### Streaming model
+
+The TUI should separate three related streams:
+
+- execution process list for the selected session
+- normalized log stream for the active execution process
+- optional raw log stream for a dedicated logs mode
+
+The active execution process should be the latest non-soft-deleted process in the selected session.
+
+## Changes pane specification
+
+The changes pane should mirror the web `Changes` view, but in a terminal-native split view.
+
+### Layout
+
+- left sub-pane: changed files tree
+- right sub-pane: unified diff viewer
+
+### Behaviour
+
+- stream diff data from `/api/workspaces/{id}/git/diff/ws`
+- maintain tree selection separately from workspace selection
+- support filtering by file name
+- render diff hunks with syntax-like colour coding
+- show added, removed, and modified counts in the header
+
+### Diff rendering rules
+
+- default to unified diff
+- side-by-side diff is optional and should not block v1
+- preserve long lines with horizontal scrolling instead of hard wrapping
+- allow jump-by-hunk and jump-by-file navigation
+
+## Logs pane specification
+
+The logs pane should expose the same information as the web logs panel.
+
+### Layout
+
+- top: process tabs or process list
+- body: log buffer
+- footer: process status and stream state
+
+### Data sources
+
+- `/api/execution-processes/stream/session/ws?session_id={session_id}`
+- `/api/execution-processes/{execution_process_id}/normalized-logs/ws`
+- `/api/execution-processes/{execution_process_id}/raw-logs/ws`
+
+### Behaviour
+
+- auto-follow when the cursor is at bottom
+- pause auto-follow when the user scrolls up
+- allow process switching
+- keep buffers cached per process to avoid refetching on every focus change
+
+## Git pane specification
+
+The Git pane should focus on operational summary rather than exposing every git action on day one.
+
+### Required content
+
+- repositories in the workspace
+- current branch per repo
+- target branch per repo
+- ahead/behind status where available
+- change counts
+- merge or rebase conflict state
+
+### Actions for v1
+
+- change target branch if existing endpoint already supports it
+- stop execution
+- start dev server
+- run setup script
+- run cleanup script
+- archive workspace
+
+Advanced actions such as push, force-push, PR creation, and merge can be added after the base TUI is stable.
+
+## Terminal pane specification
+
+The integrated terminal is a strong fit for a TUI and should be first-class.
+
+### Transport
+
+Reuse the existing websocket PTY endpoint:
+
+- `/api/terminal/ws?workspace_id={workspace_id}&cols={cols}&rows={rows}`
+
+### Behaviour
+
+- terminal pane can take focus and capture raw key input
+- resize events must propagate to the backend PTY
+- terminal should default to the sole repo directory when the workspace has one repo, matching the server route behaviour
+- provide an escape hatch such as `Ctrl+]` to leave terminal input mode
+
+### Rendering
+
+Use a dedicated terminal emulator component for Ratatui rather than treating terminal output as plain text. If a mature Ratatui-compatible emulator is not viable, implement:
+
+- ANSI parsing
+- screen buffer
+- cursor tracking
+- alternate screen handling
+
+This is the riskiest UI subsystem in the first milestone.
+
+## Notes pane specification
+
+Workspace notes should use the existing scratch mechanism.
+
+### Transport
+
+- `GET /api/scratch/workspace_notes/{workspace_id}`
+- `PUT /api/scratch/workspace_notes/{workspace_id}`
+- `GET /api/scratch/workspace_notes/{workspace_id}/stream/ws`
+
+### Editing model
+
+- plain-text or markdown-style editing is sufficient for v1
+- debounce writes, matching the web app behaviour
+- do not attempt WYSIWYG parity in the terminal
+
+## Command palette
+
+The web UI already leans on a command bar. The TUI should centralise infrequent actions there instead of overloading the base keymap.
+
+### Commands for v1
+
+- open workspace by fuzzy search
+- switch session
+- new session
+- pin or unpin workspace
+- archive or unarchive workspace
+- start or stop dev server
+- run setup or cleanup script
+- open editor
+- toggle grouped layout
+- toggle archived list
+
+## Rust architecture
+
+## Crate strategy
+
+Add a new workspace crate:
+
+- `crates/tui`
+
+This crate should own:
+
+- the Ratatui app shell
+- local state store
+- API client wrappers
+- websocket task orchestration
+- rendering and input handling
+
+The binary should build as:
+
+- `cargo run -p tui`
+
+Optionally expose a top-level binary name later:
+
+- `vibe-kanban-tui`
+
+### Why a separate crate
+
+- keeps terminal-specific dependencies out of `server`
+- allows rapid iteration without coupling UI state to Axum routes
+- matches the existing multi-crate workspace structure
+
+## Suggested module layout
+
+```text
+crates/tui/src/
+  app.rs
+  bootstrap.rs
+  config.rs
+  errors.rs
+  main.rs
+  runtime/
+    mod.rs
+    tasks.rs
+    event_bus.rs
+  api/
+    mod.rs
+    rest.rs
+    ws.rs
+    models.rs
+  state/
+    mod.rs
+    app_state.rs
+    workspace_list.rs
+    workspace_view.rs
+    sessions.rs
+    terminal.rs
+    notes.rs
+  ui/
+    mod.rs
+    layout.rs
+    theme.rs
+    components/
+      workspace_list.rs
+      conversation.rs
+      composer.rs
+      diff_tree.rs
+      diff_view.rs
+      logs.rs
+      git.rs
+      terminal.rs
+      notes.rs
+      palette.rs
+      modal.rs
+  input/
+    mod.rs
+    keymap.rs
+    focus.rs
+    actions.rs
+```
+
+## Dependency recommendations
+
+- `ratatui`
+- `crossterm`
+- `tokio`
+- `reqwest`
+- `tokio-tungstenite`
+- `serde`
+- `serde_json`
+- `uuid`
+- `futures-util`
+- `color-eyre`
+- `tracing`
+- `time` or `chrono` for relative timestamps
+- a fuzzy matcher such as `nucleo-matcher` or `fuzzy-matcher`
+
+For terminal emulation, evaluate a crate before writing custom ANSI handling.
+
+## State architecture
+
+Use a single in-memory app store with explicit reducers and background tasks.
+
+### Top-level state
+
+- app mode
+- focused pane
+- layout mode
+- connection status
+- workspace list state
+- current workspace state
+- modal state
+- toast state
+
+### Workspace list state
+
+- active workspaces map
+- archived workspaces map
+- summary map
+- filter text
+- grouping mode
+- sort mode
+- selected workspace id
+
+### Current workspace state
+
+- workspace metadata
+- repos
+- sessions
+- selected session id
+- conversation entries
+- process list
+- active process id
+- diff tree and selected file
+- notes buffer
+- terminal session state
+
+### State update rule
+
+All network tasks should emit typed domain events. UI code should never mutate websocket state directly.
+
+Example event categories:
+
+- `WorkspaceStreamPatched`
+- `WorkspaceSummaryLoaded`
+- `WorkspaceSelected`
+- `SessionsLoaded`
+- `SessionSelected`
+- `ExecutionProcessesPatched`
+- `LogChunkReceived`
+- `DiffPatched`
+- `NotesPatched`
+- `TerminalOutputReceived`
+- `ApiActionFailed`
+
+## Runtime architecture
+
+Use three cooperating loops:
+
+1. input loop
+2. network task supervisor
+3. render loop
+
+### Input loop
+
+- reads keyboard and resize events from `crossterm`
+- maps them to intent actions
+- dispatches actions into the store
+
+### Network supervisor
+
+- spawns long-lived websocket tasks
+- owns reconnect policy
+- translates payloads into domain events
+
+### Render loop
+
+- renders on:
+  - input
+  - network event
+  - timer tick for relative timestamps and cursor blink
+
+Target render cadence:
+
+- event-driven by default
+- periodic tick every `100-250ms`
+
+## Networking specification
+
+## REST hydration
+
+On startup:
+
+1. fetch active workspace summaries after active stream initialises
+2. fetch archived workspace summaries after archived stream initialises
+3. select most relevant workspace
+
+When a workspace is selected:
+
+1. fetch workspace metadata
+2. fetch sessions
+3. fetch repos
+4. fetch notes snapshot
+5. subscribe to per-workspace and per-session streams
+
+## Websocket subscriptions
+
+At app level:
+
+- active workspace stream
+- archived workspace stream
+
+At selected workspace level:
+
+- diff stream
+- notes scratch stream
+
+At selected session level:
+
+- execution processes stream
+- normalized logs stream for active process
+
+At terminal focus level:
+
+- terminal PTY websocket
+
+## Reconnect policy
+
+Mirror the web app's basic strategy:
+
+- exponential backoff
+- preserve last good state during reconnect
+- surface disconnected state in headers
+
+## Rendering specification
+
+## Visual language
+
+Do not style the TUI as a generic ncurses admin panel. The current Workspaces UI uses a restrained, high-contrast, information-dense design. The TUI should reflect that:
+
+- dark background by default
+- restrained accent colour for active selections and running state
+- mono-first typography assumptions
+- compact spacing
+- strong borders only where they improve scanability
+
+### Status colours
+
+- running: blue or cyan
+- pending approval: yellow
+- failed: red
+- success or merged: green
+- archived or secondary metadata: dim grey
+
+## Persistence
+
+Persist lightweight user preferences locally:
+
+- focused layout mode
+- workspace grouping mode
+- last selected workspace
+- last selected panel per workspace
+- filter text history, optionally
+
+Store in a small local config file under the existing user config directory conventions if available.
+
+## Error handling
+
+The TUI should degrade gracefully when individual subsystems fail.
+
+### Failure cases
+
+- websocket disconnect
+- selected workspace deleted while open
+- session has no execution process
+- terminal PTY creation fails
+- diff stream unavailable because worktree was removed
+
+### Required UX
+
+- show inline error banners
+- keep unaffected panes usable
+- allow manual reconnect from the command palette
+
+## Backend gaps and recommended additions
+
+The current API surface is already strong enough for a first TUI, but a few additions would reduce complexity.
+
+### Recommended additions
+
+1. Add a dedicated workspace detail aggregation endpoint returning:
+   - workspace
+   - repos
+   - latest sessions
+   - workspace summary
+
+2. Add a compact conversation endpoint if the current conversation timeline is only derivable indirectly from log streams.
+
+3. Add a plain-text notes mode or markdown contract for workspace notes so the TUI does not need to interpret rich-text payloads later.
+
+4. Add a server-side command endpoint for frequent composite actions if the TUI ends up chaining multiple mutations often.
+
+<Warning>
+Do not block the TUI on a backend rewrite. The first implementation should reuse the existing REST and websocket routes and add server changes only where the current contracts create repeated client-side complexity.
+</Warning>
+
+## Phased delivery plan
+
+## Phase 0: technical spike
+
+Deliver a non-polished crate that proves:
+
+- Ratatui app bootstrap
+- workspace list rendering
+- workspace stream consumption
+- session list loading
+- one live log stream
+- PTY terminal viability
+
+Exit criteria:
+
+- can open the app and watch a running workspace update live
+
+## Phase 1: workspaces MVP
+
+Deliver:
+
+- workspace sidebar
+- conversation pane
+- sessions
+- logs
+- diff viewer
+- git summary
+- notes
+- integrated terminal
+
+Exit criteria:
+
+- a user can complete a normal workspace follow-up loop without opening the web app
+
+## Phase 2: workflow completeness
+
+Deliver:
+
+- workspace create flow
+- approval flows
+- setup and cleanup actions
+- richer command palette
+- open-in-editor integration
+
+Exit criteria:
+
+- the TUI covers the majority of day-to-day local workspace usage
+
+## Phase 3: projects extension
+
+Deliver a terminal-native Projects view:
+
+- project list
+- issue list
+- filters
+- issue detail
+- linked workspaces
+
+This should reuse the same shell, store, and command palette rather than becoming a second app.
+
+## Testing strategy
+
+## Unit tests
+
+- reducers and state transitions
+- query and filter logic
+- workspace grouping
+- keymap resolution
+- relative layout calculation
+
+## Integration tests
+
+- websocket patch application
+- session selection and process switching
+- terminal resize handling
+- notes debounce and update flow
+
+## Snapshot tests
+
+Use Ratatui buffer snapshots for:
+
+- workspace list
+- conversation pane
+- diff pane
+- logs pane
+- compact layout
+
+## Manual verification checklist
+
+- open app with no workspaces
+- open app with many active and archived workspaces
+- switch sessions rapidly
+- send follow-up prompt
+- watch logs stream while agent runs
+- inspect diffs while logs continue to stream
+- enter and exit terminal mode
+- resize terminal aggressively
+- disconnect network or server and verify reconnect behaviour
+
+## Success criteria
+
+The design is successful if:
+
+- users recognise the Workspaces model immediately
+- the TUI feels faster than the web UI for navigation-heavy workflows
+- streaming state remains stable during long-running sessions
+- terminal mode is reliable enough that users stop reaching for a second shell
+- the later Projects extension can share the same shell and store
