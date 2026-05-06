@@ -27,6 +27,9 @@ use crate::model::{
     WorkspaceStreamState, WorkspaceSummaryRequest, WorkspaceSummaryResponse,
 };
 
+const SCRATCH_TYPE_DRAFT_FOLLOW_UP: &str = "DRAFT_FOLLOW_UP";
+const SCRATCH_TYPE_WORKSPACE_NOTES: &str = "WORKSPACE_NOTES";
+
 #[derive(Clone)]
 pub struct Api {
     pub base_url: String,
@@ -60,16 +63,18 @@ impl Api {
     }
 
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+        log_api(format!("HTTP GET {path}"));
         let response = self
             .client
             .get(format!("{}{}", self.base_url, path))
             .send()
             .await
             .with_context(|| format!("GET {path} failed"))?;
-        parse_api_response(response).await
+        parse_api_response("GET", path, response).await
     }
 
     pub async fn post<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T> {
+        log_api(format!("HTTP POST {path}"));
         let response = self
             .client
             .post(format!("{}{}", self.base_url, path))
@@ -77,10 +82,11 @@ impl Api {
             .send()
             .await
             .with_context(|| format!("POST {path} failed"))?;
-        parse_api_response(response).await
+        parse_api_response("POST", path, response).await
     }
 
     pub async fn put<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T> {
+        log_api(format!("HTTP PUT {path}"));
         let response = self
             .client
             .put(format!("{}{}", self.base_url, path))
@@ -88,7 +94,7 @@ impl Api {
             .send()
             .await
             .with_context(|| format!("PUT {path} failed"))?;
-        parse_api_response(response).await
+        parse_api_response("PUT", path, response).await
     }
 
     pub async fn post_no_content<B: Serialize>(&self, path: &str, body: &B) -> Result<()> {
@@ -97,24 +103,26 @@ impl Api {
     }
 
     pub async fn post_empty(&self, path: &str) -> Result<()> {
+        log_api(format!("HTTP POST {path}"));
         let response = self
             .client
             .post(format!("{}{}", self.base_url, path))
             .send()
             .await
             .with_context(|| format!("POST {path} failed"))?;
-        let _: Value = parse_api_response(response).await?;
+        let _: Value = parse_api_response("POST", path, response).await?;
         Ok(())
     }
 
     pub async fn delete_empty(&self, path: &str) -> Result<()> {
+        log_api(format!("HTTP DELETE {path}"));
         let response = self
             .client
             .delete(format!("{}{}", self.base_url, path))
             .send()
             .await
             .with_context(|| format!("DELETE {path} failed"))?;
-        let _: () = parse_api_response(response).await?;
+        let _: () = parse_api_response("DELETE", path, response).await?;
         Ok(())
     }
 
@@ -232,7 +240,9 @@ impl Api {
         let api = self.clone();
         tokio::spawn(async move {
             match api
-                .get::<ScratchRecord>(&format!("/api/scratch/workspace_notes/{workspace_id}"))
+                .get::<ScratchRecord>(&format!(
+                    "/api/scratch/{SCRATCH_TYPE_WORKSPACE_NOTES}/{workspace_id}"
+                ))
                 .await
             {
                 Ok(scratch) => {
@@ -361,7 +371,7 @@ impl Api {
         };
         let _: ScratchRecord = self
             .put(
-                &format!("/api/scratch/workspace_notes/{workspace_id}"),
+                &format!("/api/scratch/{SCRATCH_TYPE_WORKSPACE_NOTES}/{workspace_id}"),
                 &request,
             )
             .await?;
@@ -395,7 +405,7 @@ impl Api {
         };
         let _: ScratchRecord = self
             .put(
-                &format!("/api/scratch/draft_follow_up/{scratch_id}"),
+                &format!("/api/scratch/{SCRATCH_TYPE_DRAFT_FOLLOW_UP}/{scratch_id}"),
                 &request,
             )
             .await?;
@@ -403,7 +413,9 @@ impl Api {
     }
 
     pub async fn delete_follow_up_draft(&self, scratch_id: Uuid) -> Result<()> {
-        self.delete_empty(&format!("/api/scratch/draft_follow_up/{scratch_id}"))
+        self.delete_empty(&format!(
+            "/api/scratch/{SCRATCH_TYPE_DRAFT_FOLLOW_UP}/{scratch_id}"
+        ))
             .await
     }
 
@@ -433,7 +445,7 @@ impl Api {
             .send()
             .await
             .with_context(|| format!("DELETE /api/sessions/{session_id}/queue failed"))?;
-        parse_api_response(response).await
+        parse_api_response("DELETE", &format!("/api/sessions/{session_id}/queue"), response).await
     }
 
     pub async fn fetch_process_log_snapshot(&self, process_id: Uuid) -> Result<Vec<PatchType>> {
@@ -602,12 +614,27 @@ pub fn detect_base_url() -> String {
     "http://127.0.0.1:3001".to_string()
 }
 
-async fn parse_api_response<T: DeserializeOwned>(response: reqwest::Response) -> Result<T> {
+async fn parse_api_response<T: DeserializeOwned>(
+    method: &str,
+    path: &str,
+    response: reqwest::Response,
+) -> Result<T> {
     let status = response.status();
     let body = response.text().await?;
+    log_api(format!("HTTP {method} {path} -> {status}"));
     let envelope: ApiEnvelope<T> =
-        serde_json::from_str(&body).with_context(|| format!("invalid API response: {body}"))?;
+        serde_json::from_str(&body).with_context(|| {
+            log_api(format!(
+                "HTTP {method} {path} parse error body={}",
+                truncate_for_log(&body)
+            ));
+            format!("invalid API response: {body}")
+        })?;
     if !status.is_success() || !envelope.success {
+        log_api(format!(
+            "HTTP {method} {path} api error body={}",
+            truncate_for_log(&body)
+        ));
         return Err(anyhow!(
             envelope
                 .message
@@ -617,6 +644,19 @@ async fn parse_api_response<T: DeserializeOwned>(response: reqwest::Response) ->
     envelope
         .data
         .ok_or_else(|| anyhow!("API response did not include data"))
+}
+
+fn log_api(message: String) {
+    eprintln!("[tui-api] {message}");
+}
+
+fn truncate_for_log(body: &str) -> String {
+    const LIMIT: usize = 400;
+    if body.len() <= LIMIT {
+        body.to_string()
+    } else {
+        format!("{}...", &body[..LIMIT])
+    }
 }
 
 fn spawn_workspace_stream(
@@ -720,7 +760,7 @@ fn spawn_notes_stream(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let endpoint = format!(
-            "{}/api/scratch/workspace_notes/{workspace_id}/stream/ws",
+            "{}/api/scratch/{SCRATCH_TYPE_WORKSPACE_NOTES}/{workspace_id}/stream/ws",
             ws_base(&api.base_url)
         );
         let result = run_patch_stream::<ScratchStreamState, _>(
@@ -753,7 +793,7 @@ fn spawn_notes_stream(
 fn spawn_draft_stream(api: Api, scratch_id: Uuid, tx: UnboundedSender<NetEvent>) -> JoinHandle<()> {
     tokio::spawn(async move {
         let endpoint = format!(
-            "{}/api/scratch/draft_follow_up/{scratch_id}/stream/ws",
+            "{}/api/scratch/{SCRATCH_TYPE_DRAFT_FOLLOW_UP}/{scratch_id}/stream/ws",
             ws_base(&api.base_url)
         );
         let result = run_patch_stream::<ScratchStreamState, _>(
