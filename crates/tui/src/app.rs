@@ -1360,27 +1360,36 @@ impl App {
         let permission = config
             .map(|config| display_permission(config.permission_policy.as_ref()).to_string())
             .unwrap_or_else(|| "default".to_string());
+        let shortcut_style = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+            .add_modifier(Modifier::UNDERLINED);
+        let label_style = Style::default().fg(Color::DarkGray);
 
         Line::from(vec![
-            Span::styled("Exec ", Style::default().fg(Color::DarkGray)),
+            Span::styled("E", shortcut_style),
+            Span::styled("xec ", label_style),
             Span::styled(executor, Style::default().fg(Color::Cyan)),
             Span::raw("  "),
-            Span::styled("Var ", Style::default().fg(Color::DarkGray)),
+            Span::styled("V", shortcut_style),
+            Span::styled("ar ", label_style),
             Span::styled(variant, Style::default().fg(Color::Yellow)),
             Span::raw("  "),
-            Span::styled("Model ", Style::default().fg(Color::DarkGray)),
+            Span::styled("M", shortcut_style),
+            Span::styled("odel ", label_style),
             Span::styled(model, Style::default().fg(Color::Green)),
             Span::raw("  "),
-            Span::styled("Rsn ", Style::default().fg(Color::DarkGray)),
+            Span::styled("R", shortcut_style),
+            Span::styled("sn ", label_style),
             Span::styled(reasoning, Style::default().fg(Color::Magenta)),
             Span::raw("  "),
-            Span::styled("Mode ", Style::default().fg(Color::DarkGray)),
+            Span::styled("A", shortcut_style),
+            Span::styled("gt ", label_style),
             Span::styled(agent_mode, Style::default().fg(Color::LightBlue)),
             Span::raw("  "),
-            Span::styled("Perm ", Style::default().fg(Color::DarkGray)),
+            Span::styled("P", shortcut_style),
+            Span::styled("erm ", label_style),
             Span::styled(permission, Style::default().fg(Color::LightRed)),
-            Span::raw("  "),
-            Span::styled("Keys E/V/M/R/A/P", Style::default().fg(Color::DarkGray)),
         ])
     }
 
