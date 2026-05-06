@@ -3524,7 +3524,8 @@ fn render_markdown_labeled_content(
         label.to_string(),
         Style::default()
             .fg(label_color)
-            .add_modifier(Modifier::BOLD),
+            .add_modifier(Modifier::BOLD)
+            .add_modifier(Modifier::UNDERLINED),
     )];
     if content.is_empty() {
         lines.push(Line::styled(
@@ -3552,7 +3553,9 @@ fn render_markdown_lines(content: &str, base_style: Style) -> Vec<Line<'static>>
         if in_code_block {
             lines.push(Line::styled(
                 format!("  {raw_line}"),
-                base_style.fg(Color::Yellow),
+                base_style
+                    .bg(Color::Rgb(32, 32, 32))
+                    .add_modifier(Modifier::DIM),
             ));
             continue;
         }
@@ -3578,12 +3581,13 @@ fn render_markdown_lines(content: &str, base_style: Style) -> Vec<Line<'static>>
         }
 
         if let Some(text) = raw_line.trim_start().strip_prefix("> ") {
-            let mut spans = vec![Span::styled("> ", Style::default().fg(Color::DarkGray))];
+            let mut spans = vec![Span::styled(
+                "> ",
+                base_style.fg(Color::DarkGray).add_modifier(Modifier::DIM),
+            )];
             spans.extend(parse_inline_markdown(
                 text,
-                base_style
-                    .fg(Color::Gray)
-                    .add_modifier(Modifier::ITALIC),
+                base_style.add_modifier(Modifier::ITALIC).add_modifier(Modifier::DIM),
             ));
             lines.push(Line::from(spans));
             continue;
@@ -3592,7 +3596,7 @@ fn render_markdown_lines(content: &str, base_style: Style) -> Vec<Line<'static>>
         if let Some((prefix, text)) = markdown_list_prefix(raw_line) {
             let mut spans = vec![Span::styled(
                 format!("  {prefix} "),
-                Style::default().fg(Color::DarkGray),
+                base_style.fg(Color::DarkGray).add_modifier(Modifier::DIM),
             )];
             spans.extend(parse_inline_markdown(text, base_style));
             lines.push(Line::from(spans));
@@ -3671,7 +3675,9 @@ fn parse_inline_markdown(content: &str, base_style: Style) -> Vec<Span<'static>>
             style = style.add_modifier(Modifier::CROSSED_OUT);
         }
         if code {
-            style = style.fg(Color::Yellow);
+            style = style
+                .bg(Color::Rgb(32, 32, 32))
+                .add_modifier(Modifier::BOLD);
         }
         spans.push(Span::styled(std::mem::take(buffer), style));
     };
@@ -3691,9 +3697,7 @@ fn parse_inline_markdown(content: &str, base_style: Style) -> Vec<Span<'static>>
                 let text = chars[index + 1..close_bracket].iter().collect::<String>();
                 spans.push(Span::styled(
                     text,
-                    base_style
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::UNDERLINED),
+                    base_style.add_modifier(Modifier::UNDERLINED),
                 ));
                 index = close_paren + 1;
                 continue;
