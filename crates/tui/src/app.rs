@@ -3773,7 +3773,9 @@ fn parse_inline_markdown(content: &str, base_style: Style) -> Vec<Span<'static>>
             index += 1;
             continue;
         }
-        if chars[index] == '*' || chars[index] == '_' {
+        if (chars[index] == '*' || chars[index] == '_')
+            && is_italic_delimiter(&chars, index)
+        {
             flush(&mut spans, &mut buffer, bold, italic, strike, code);
             italic = !italic;
             index += 1;
@@ -3786,6 +3788,18 @@ fn parse_inline_markdown(content: &str, base_style: Style) -> Vec<Span<'static>>
 
     flush(&mut spans, &mut buffer, bold, italic, strike, code);
     spans
+}
+
+fn is_italic_delimiter(chars: &[char], index: usize) -> bool {
+    let marker = chars[index];
+    let prev = index.checked_sub(1).and_then(|idx| chars.get(idx));
+    let next = chars.get(index + 1);
+
+    if prev.is_some_and(|ch| ch.is_alphanumeric()) && next.is_some_and(|ch| ch.is_alphanumeric()) {
+        return false;
+    }
+
+    chars[index + 1..].contains(&marker)
 }
 
 fn render_log_entry(index: usize, entry: &PatchType) -> Vec<Line<'static>> {
@@ -3831,7 +3845,7 @@ fn render_log_entry(index: usize, entry: &PatchType) -> Vec<Line<'static>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{render_normalized_chat_entry, wrap_line};
+    use super::{parse_inline_markdown, render_normalized_chat_entry, wrap_line};
     use executors::logs::{NormalizedEntry, NormalizedEntryType};
     use ratatui::{
         style::{Color, Modifier, Style},
@@ -3883,6 +3897,20 @@ mod tests {
             4,
         );
         assert!(lines.iter().all(|line| line.style.fg == Some(Color::Green)));
+    }
+
+    #[test]
+    fn underscores_inside_identifiers_do_not_trigger_italics() {
+        let spans = parse_inline_markdown("render_chat after", Style::default());
+        let rendered = spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert_eq!(rendered, "render_chat after");
+        assert!(
+            spans.iter()
+                .all(|span| !span.style.add_modifier.contains(Modifier::ITALIC))
+        );
     }
 }
 
