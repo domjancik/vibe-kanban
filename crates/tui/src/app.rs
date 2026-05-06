@@ -1935,22 +1935,32 @@ impl App {
         };
 
         let visible_lines = content_area.height.max(1) as usize;
-        let chat_end_offset = self.chat_end_offset as usize;
-        let (total_lines, latest_token_usage, lines) = {
+        let requested_end_offset = self.chat_end_offset as usize;
+        let (total_lines, latest_token_usage, clamped_end_offset, start, end) = {
             let cache = self.chat_render_cache(content_area.width.max(1) as usize);
-            let end = cache.lines.len().saturating_sub(chat_end_offset);
-            let start = end.saturating_sub(visible_lines);
+            let (clamped_end_offset, start, end, _) =
+                chat_window_bounds(cache.lines.len(), visible_lines, requested_end_offset);
             (
                 cache.lines.len(),
                 cache.latest_token_usage,
-                cache.lines[start..end].to_vec(),
+                clamped_end_offset,
+                start,
+                end,
             )
+        };
+        if clamped_end_offset != self.chat_end_offset as usize {
+            self.chat_end_offset = clamped_end_offset.min(u16::MAX as usize) as u16;
+        }
+        let lines = {
+            let cache = self.chat_render_cache(content_area.width.max(1) as usize);
+            cache.lines[start..end].to_vec()
         };
         frame.render_widget(
             Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
             content_area,
         );
-        let top_offset = total_lines.saturating_sub(visible_lines.saturating_add(chat_end_offset));
+        let (_, _, _, top_offset) =
+            chat_window_bounds(total_lines, visible_lines, clamped_end_offset);
         render_vertical_scrollbar(frame, area, total_lines, visible_lines, top_offset);
 
         if let Some(status_area) = status_area {
@@ -4786,6 +4796,20 @@ fn render_vertical_scrollbar(
     frame.render_widget(Paragraph::new(lines), scrollbar_area);
 }
 
+fn chat_window_bounds(
+    total_lines: usize,
+    visible_lines: usize,
+    requested_end_offset: usize,
+) -> (usize, usize, usize, usize) {
+    let visible_lines = visible_lines.max(1);
+    let max_end_offset = total_lines.saturating_sub(visible_lines);
+    let clamped_end_offset = requested_end_offset.min(max_end_offset);
+    let end = total_lines.saturating_sub(clamped_end_offset);
+    let start = end.saturating_sub(visible_lines);
+    let top_offset = total_lines.saturating_sub(visible_lines.saturating_add(clamped_end_offset));
+    (clamped_end_offset, start, end, top_offset)
+}
+
 fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
@@ -4871,8 +4895,9 @@ mod tests {
     };
 
     use super::{
-        ComposerEditorMode, VimMode, move_cursor_vertical, next_word_start, parse_inline_markdown,
-        prev_word_start, render_editor_buffer, render_normalized_chat_entry, wrap_line,
+        ComposerEditorMode, VimMode, chat_window_bounds, move_cursor_vertical, next_word_start,
+        parse_inline_markdown, prev_word_start, render_editor_buffer,
+        render_normalized_chat_entry, wrap_line,
     };
 
     fn entry(entry_type: NormalizedEntryType, content: &str) -> NormalizedEntry {
@@ -4991,6 +5016,15 @@ mod tests {
     #[test]
     fn next_word_crosses_newlines() {
         assert_eq!(next_word_start("hello\nworld", 0), 6);
+    }
+
+    #[test]
+    fn chat_window_bounds_clamp_end_offset_to_last_full_page() {
+        let (clamped, start, end, top_offset) = chat_window_bounds(100, 10, 99);
+        assert_eq!(clamped, 90);
+        assert_eq!(start, 0);
+        assert_eq!(end, 10);
+        assert_eq!(top_offset, 0);
     }
 
     #[test]
