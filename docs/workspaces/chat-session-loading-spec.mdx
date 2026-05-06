@@ -1,0 +1,532 @@
+---
+title: "Chat Session Loading Spec"
+description: "Specification for fast conversation hydration, optimistic local send visibility, and background backfill"
+---
+
+# Chat Session Loading Spec
+
+This document specifies the correct chat-loading model for Workspaces given the primitives that already exist in the codebase.
+
+It focuses on three requirements:
+
+- load the full session eventually
+- show the user’s sent message immediately
+- prioritise the most recent interaction first for fast perceived performance, whilst loading the rest of the session in the background without moving focus
+
+## Existing primitives
+
+The current implementation already has the right building blocks.
+
+### Session and execution index
+
+- session-scoped execution process stream
+- `ExecutionProcessesProvider`
+- `useExecutionProcessesContext`
+
+This gives the client the ordered list of execution processes for the active session and their status transitions.
+
+### Entry loading
+
+- `streamJsonPatchEntries(...)`
+- normalized log websocket
+- raw log websocket
+- `useConversationHistory`
+
+This already supports:
+
+- replaying full process history
+- streaming live process output
+- initial partial hydration
+- remaining-history background batching
+
+### Current fast-load constants
+
+- `MIN_INITIAL_ENTRIES = 10`
+- `REMAINING_BATCH_SIZE = 50`
+
+### Conversation state and derivation
+
+- `EntriesProvider`
+- `deriveConversationEntries`
+- `deriveConversationTimeline`
+- virtualized `ConversationList`
+
+### Draft and queue support
+
+- persisted `DRAFT_FOLLOW_UP` scratch
+- session queue API
+
+These matter because optimistic send and failed-send recovery must cooperate with draft persistence and queue state.
+
+## Core design decision
+
+The correct model is not:
+
+- load the whole session before rendering
+- or append a fake optimistic message and then rebuild the entire timeline from scratch
+
+The correct model is:
+
+1. bootstrap from the session’s newest interaction window
+2. render the recent tail first
+3. backfill older history in batches behind the viewport
+4. maintain a separate optimistic overlay for locally sent-but-not-yet-canonical entries
+5. reconcile optimistic entries into canonical history once the backend emits the real turn
+
+## Definitions
+
+## Session
+
+The active selected session in a workspace.
+
+## Interaction
+
+One user turn and the agent work that follows from it, including:
+
+- user message
+- agent response
+- tool use
+- logs
+- diffs
+- completion or failure state
+
+## Recent tail
+
+The newest visible portion of the session, anchored on the most recent interaction.
+
+## Canonical entries
+
+Entries derived from execution processes and their persisted logs.
+
+## Optimistic entries
+
+Temporary local entries inserted immediately after the user sends a message, before the canonical backend-backed user message has arrived.
+
+## UX goals
+
+The user should experience:
+
+- near-instant open for long sessions
+- immediate local feedback when they send
+- stable scroll position
+- no jump away from the composer or the newest interaction
+- ability to scroll upwards into older content as it arrives
+
+## Non-goals
+
+This spec does not require:
+
+- loading every historic entry before first paint
+- preserving exact DOM identity from old implementation details
+- eliminating all history batching
+
+## Correct loading model
+
+## Phase 1: session bootstrap
+
+When a session becomes active:
+
+1. subscribe to the execution process list for the session
+2. identify the relevant processes for chat history
+3. separate:
+   - running or latest process
+   - recently completed processes
+   - older historic processes
+
+The client should not wait for every historic process to load.
+
+### Ordering
+
+Use canonical process order by creation time, but load in reverse for bootstrap:
+
+- newest relevant process first
+- then older processes until the recent tail is sufficiently populated
+
+This is already close to what `useConversationHistory` does by reversing the execution process list for historic loading.
+
+## Phase 2: recent-tail hydration
+
+The initial hydration goal is not “first N raw entries”. It is “enough content to render the most recent interaction window”.
+
+### Bootstrap stop condition
+
+Stop loading initial history when one of these becomes true:
+
+- the newest complete interaction is fully materialised
+- the conversation tail contains at least a minimum target of renderable entries
+- the latest running process has enough context to render the current turn cleanly
+
+### Recommendation
+
+Keep `MIN_INITIAL_ENTRIES` as a guardrail, but define the real stop condition in interaction terms:
+
+- load at least the full newest completed turn
+- if the newest process is running, include the previous completed turn as context
+- only fall back to entry-count minimum when turn boundaries are unclear
+
+This produces a better UX than a pure count-based cutoff.
+
+## Phase 3: immediate render
+
+As soon as the recent tail is ready:
+
+- derive display entries
+- mount the conversation list
+- anchor viewport at the bottom or the newest visible user turn
+
+The user should now be able to:
+
+- read the latest turn
+- type into the composer
+- scroll upwards if they want older history
+
+## Phase 4: background backfill
+
+After initial render:
+
+- load older historic processes in batches
+- merge them into the canonical history
+- preserve the current viewport anchor
+- do not shift visual focus away from the most recent interaction
+
+The user should notice older content becoming scrollable, but their current reading or typing position should not move.
+
+## Scroll and focus invariants
+
+Background history loading must obey these invariants:
+
+- if the user is at the bottom, they remain anchored to the bottom
+- if the user is reading the recent tail, older prepends do not move the visible interaction
+- if the user has scrolled up intentionally, the content under their eye remains stable
+- keyboard focus stays where it was:
+  - composer stays focused if typing
+  - list stays focused if navigating history
+
+## Optimistic local send model
+
+## Why optimistic send is needed
+
+Today, canonical user messages appear only once the backend creates and streams the execution process history. That can take enough time to feel laggy, even when the send succeeded.
+
+The UI should therefore display the sent message immediately.
+
+## Required behaviour
+
+On send:
+
+1. clear the composer input immediately
+2. insert a local optimistic user entry into the visible conversation
+3. keep the viewport anchored on that new optimistic message
+4. continue waiting for canonical backend history
+
+If the send fails:
+
+1. mark the optimistic entry as failed
+2. restore the draft into the composer, or allow “retry from failed optimistic entry”
+3. do not silently drop the message
+
+## Where optimistic entries should live
+
+Do not mix optimistic entries directly into canonical execution-process history state.
+
+Instead, add a separate overlay state:
+
+- keyed by session scope
+- ordered after the current newest canonical tail
+- reconciled away when canonical history catches up
+
+### Suggested state shape
+
+```ts
+type OptimisticConversationEntry = {
+  localId: string;
+  sessionId: string;
+  createdAt: string;
+  type: 'user_message_pending' | 'user_message_failed';
+  message: string;
+  executorConfig: ExecutorConfig;
+  sourceDraftId: string | null;
+};
+```
+
+### Why separate overlay state is correct
+
+- canonical history remains derivable from execution processes alone
+- optimistic reconciliation is explicit
+- failed-send recovery is simple
+- resetting or switching sessions can drop the overlay cleanly
+
+## Reconciliation model
+
+When canonical history updates:
+
+1. derive canonical display entries
+2. inspect the newest canonical user message(s)
+3. match them against optimistic pending entries
+4. remove any optimistic entry that has been canonically materialised
+
+### Matching rules
+
+Match on:
+
+- same session
+- same message content
+- sufficiently close timestamp window
+- optionally same selected executor config
+
+Do not rely on exact patch keys, because optimistic entries exist before canonical patch keys are known.
+
+### Failure timeout
+
+If canonical confirmation does not arrive within a reasonable threshold and the follow-up API call already returned an error, flip the optimistic entry to `failed`.
+
+If the API call returned success but canonical history is merely delayed, keep the optimistic row in `pending` state until the backend catches up.
+
+## Interaction-first background history
+
+The session should load “newest interaction first”, not “newest process list first” in a shallow way.
+
+### Practical algorithm
+
+1. get ordered execution processes for session
+2. start from newest relevant process and walk backwards
+3. load process entries
+4. derive turn boundaries incrementally
+5. stop bootstrap once the latest usable interaction window is complete
+6. render
+7. continue walking backwards in batches
+
+This uses the existing process-log primitives, but adjusts the stopping rule to be interaction-aware.
+
+## Viewport preservation during backfill
+
+The existing UI already recognises the need to preserve scroll while history changes above the viewport.
+
+The correct rule is:
+
+- prepend older rows
+- preserve the screen position of the current anchor row
+
+### Anchor choice
+
+When backfilling older history:
+
+- if the user is focused near the bottom, anchor to the first visible row in the recent tail
+- if the user is reading older content, anchor to the topmost visible row
+
+### Implementation requirement
+
+Compute:
+
+- anchor row id
+- anchor row offset before merge
+- anchor row offset after merge
+
+Then:
+
+- adjust scroll by delta
+
+This ensures older content becomes available without moving the user’s visible focus.
+
+## Fast UX recommendations using current primitives
+
+## Recommendation 1
+
+Keep using execution-process streams as the source of truth for which processes exist.
+
+## Recommendation 2
+
+Keep using `streamJsonPatchEntries` for both:
+
+- live process streaming
+- historic replay
+
+This avoids inventing a second conversation-transport path.
+
+## Recommendation 3
+
+Change the initial-history policy from:
+
+- “load until `MIN_INITIAL_ENTRIES`”
+
+to:
+
+- “load until the latest interaction window is complete, with `MIN_INITIAL_ENTRIES` as fallback floor”
+
+## Recommendation 4
+
+Add an optimistic entry overlay store rather than rewriting canonical history state.
+
+## Recommendation 5
+
+Expose explicit loading phases in UI state:
+
+- `bootstrapping_recent_tail`
+- `ready_with_backfill`
+- `backfilling_history`
+- `streaming_live`
+
+The UI can then show a subtle “Loading older messages…” affordance without blocking the session.
+
+## Proposed state model
+
+## Canonical state
+
+```ts
+type ConversationHistoryState = {
+  executionProcessState: ExecutionProcessStateStore;
+  isBootstrappingRecentTail: boolean;
+  isBackfillingOlderHistory: boolean;
+  hasHydratedInitialTail: boolean;
+};
+```
+
+## Optimistic overlay state
+
+```ts
+type ConversationOptimisticState = {
+  pending: OptimisticConversationEntry[];
+};
+```
+
+## Combined derived state
+
+```ts
+type ConversationViewState = {
+  canonicalEntries: DisplayEntry[];
+  optimisticEntries: OptimisticConversationEntry[];
+  mergedVisibleEntries: DisplayEntry[];
+};
+```
+
+The merge step should happen after canonical derivation, not before.
+
+## Behaviour on session switch
+
+When switching sessions:
+
+- reset canonical in-memory timeline for the old session scope
+- drop optimistic entries for the old session scope
+- bootstrap the new session’s recent tail
+- keep the old session’s persisted draft in scratch untouched
+
+This prevents stale optimistic rows leaking between sessions.
+
+## Behaviour on reset or retry
+
+When a reset or retry rebuilds execution history:
+
+- canonical timeline may shrink or change
+- optimistic overlay must be rechecked
+- unmatched optimistic rows should either:
+  - remain pending if the send is still active
+  - or be marked failed if the underlying mutation failed
+
+Do not assume old patch keys survive reset flows.
+
+## Behaviour with queued messages
+
+Queued messages are not the same as optimistic local sends.
+
+- optimistic send = a message the user just submitted now
+- queued message = backend-held follow-up that will execute later
+
+The conversation UI should therefore distinguish:
+
+- pending optimistic message in the visible timeline
+- queued follow-up in queue state UI
+
+Do not render queued messages as if they were already part of canonical conversation history.
+
+## API and data-flow sequence
+
+## Open existing session
+
+1. subscribe to session execution processes
+2. load newest process history first
+3. backfill older processes in batches
+4. stream live updates for running process
+
+## Send follow-up
+
+1. persist or clear draft state as appropriate
+2. call follow-up mutation
+3. insert optimistic local message immediately
+4. await execution-process appearance
+5. load or stream canonical entries for the new process
+6. reconcile and remove optimistic row
+
+## Send failure
+
+1. optimistic row becomes failed
+2. draft is restored or preserved
+3. user can retry
+
+## Rendering guidance
+
+## Recent-tail priority
+
+When first opening the session:
+
+- show newest interaction first
+- never start at the top of the session
+
+## Older-history affordance
+
+While backfilling:
+
+- show lightweight status such as `Loading older messages…`
+- do not block scroll
+- do not overlay a full-screen spinner once the recent tail is visible
+
+## Optimistic row styling
+
+Pending optimistic rows should look like real sent messages, but with a subtle state indicator:
+
+- `Sending…`
+- or a spinner
+
+Failed rows should expose:
+
+- `Retry`
+- `Restore to composer`
+
+## What should change in current implementation
+
+## Keep
+
+- execution-process source of truth
+- historic entry replay
+- background batching
+- virtualization
+
+## Change
+
+- upgrade initial-load stop condition to be interaction-aware
+- add optimistic overlay state for sent messages
+- reconcile optimistic rows against canonical history
+- make viewport preservation an explicit invariant during backfill
+- expose loading phases instead of a single generic loading state
+
+## TUI applicability
+
+This same architecture is the correct model for the Ratatui client as well.
+
+The TUI should:
+
+- hydrate the recent tail first
+- append optimistic local send immediately
+- load older history in the background
+- preserve the visible anchor while older messages are prepended
+- keep the composer focused unless the user explicitly shifts focus
+
+The transport primitives can stay the same; only the loading, overlay, and anchoring model needs to be made explicit.
+
+## Success criteria
+
+This design is successful if:
+
+- opening a long session shows useful recent context almost immediately
+- sending a message feels immediate even before canonical history arrives
+- older messages become scrollable without disturbing the current reading or typing position
+- users never lose focus because background history loaded above them
