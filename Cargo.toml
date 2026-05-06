@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/api-types",
+    "crates/tui",
     "crates/relay-client",
     "crates/server",
     "crates/relay-types",
