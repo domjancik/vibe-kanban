@@ -1101,13 +1101,14 @@ impl App {
 
     fn render_main(&self, frame: &mut Frame, area: Rect) {
         let chunks = if self.selected_pane == Pane::Chat {
+            let composer_height = self.chat_composer_height(area.width);
             Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(3),
-                    Constraint::Min(10),
+                    Constraint::Min(8),
                     Constraint::Length(4),
-                    Constraint::Length(7),
+                    Constraint::Length(composer_height),
                 ])
                 .split(area)
         } else {
@@ -1183,6 +1184,20 @@ impl App {
                 chunks[2],
             );
         }
+    }
+
+    fn chat_composer_height(&self, area_width: u16) -> u16 {
+        let inner_width = area_width.saturating_sub(2).max(12) as usize;
+        let wrapped_lines = if self.composer.is_empty() {
+            1
+        } else {
+            self.composer
+                .split('\n')
+                .map(|line| line.chars().count().max(1).div_ceil(inner_width))
+                .sum::<usize>()
+                .max(1)
+        };
+        wrapped_lines.saturating_add(2).clamp(7, 16) as u16
     }
 
     fn render_detail(&self, frame: &mut Frame, area: Rect) {
