@@ -2,6 +2,7 @@ mod api;
 mod app;
 mod conversation;
 mod editor;
+mod input;
 mod model;
 mod ui;
 

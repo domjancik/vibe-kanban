@@ -40,6 +40,7 @@ use crate::{
         ComposerEditorMode, VimMode, VimOperator, line_end_index, line_start_index,
         move_cursor_vertical, next_word_start, prev_word_start, render_editor_buffer,
     },
+    input::{AppIntent, map_app_key, next_focus, prev_focus},
     model::{
         Focus, NetEvent, Pane, PatchType, QueueStatus, TerminalState, WorkspaceBundle,
         WorkspaceSummary, active_process, diff_title, display_permission, display_variant,
@@ -574,73 +575,29 @@ impl App {
             }
         }
 
-        match key {
-            KeyEvent {
-                code: KeyCode::Esc, ..
-            } if self.creating_new_session && self.selected_pane == Pane::Chat => {
-                self.cancel_new_session_flow();
-            }
-            KeyEvent {
-                code: KeyCode::F(2),
-                ..
-            } => self.toggle_composer_editor_mode(),
-            KeyEvent {
-                code: KeyCode::Char('q'),
-                ..
-            } => self.should_quit = true,
-            KeyEvent {
-                code: KeyCode::Tab, ..
-            } => self.focus = next_focus(&self.focus),
-            KeyEvent {
-                code: KeyCode::BackTab,
-                ..
-            } => self.focus = prev_focus(&self.focus),
-            KeyEvent {
-                code: KeyCode::Char('?'),
-                ..
-            } => {
+        if let Some(intent) = map_app_key(key, self.creating_new_session, &self.selected_pane) {
+            self.handle_app_intent(intent, size).await;
+        }
+    }
+
+    async fn handle_app_intent(&mut self, intent: AppIntent, size: Rect) {
+        match intent {
+            AppIntent::CancelNewSession => self.cancel_new_session_flow(),
+            AppIntent::ToggleComposerEditorMode => self.toggle_composer_editor_mode(),
+            AppIntent::Quit => self.should_quit = true,
+            AppIntent::FocusNext => self.focus = next_focus(&self.focus),
+            AppIntent::FocusPrev => self.focus = prev_focus(&self.focus),
+            AppIntent::ShowHelp => {
                 self.status = "Keys: Tab focus, j/k nav, 1-6 panes, i edit, Enter open/send, r rename session, E executor, V variant, M model, R reasoning, A agent menu, P permission, p pin, x archive, n new session, s start dev, c cleanup, e editor, Esc/C-]/C-g leave terminal".to_string();
             }
-            KeyEvent {
-                code: KeyCode::Char('1'),
-                ..
-            } => self.selected_pane = Pane::Chat,
-            KeyEvent {
-                code: KeyCode::Char('2'),
-                ..
-            } => self.selected_pane = Pane::Changes,
-            KeyEvent {
-                code: KeyCode::Char('3'),
-                ..
-            } => self.selected_pane = Pane::Logs,
-            KeyEvent {
-                code: KeyCode::Char('4'),
-                ..
-            } => self.selected_pane = Pane::Git,
-            KeyEvent {
-                code: KeyCode::Char('5'),
-                ..
-            } => self.selected_pane = Pane::Terminal,
-            KeyEvent {
-                code: KeyCode::Char('6'),
-                ..
-            } => self.selected_pane = Pane::Notes,
-            KeyEvent {
-                code: KeyCode::Char('a'),
-                ..
-            } => self.show_archived = !self.show_archived,
-            KeyEvent {
-                code: KeyCode::Char('i'),
-                ..
-            } => {
+            AppIntent::SelectPane(pane) => self.selected_pane = pane,
+            AppIntent::ToggleShowArchived => self.show_archived = !self.show_archived,
+            AppIntent::EnterEditMode => {
                 if matches!(self.selected_pane, Pane::Chat | Pane::Notes) {
                     self.focus = Focus::Composer;
                 }
             }
-            KeyEvent {
-                code: KeyCode::Char('n'),
-                ..
-            } => {
+            AppIntent::StartNewSession => {
                 self.creating_new_session = true;
                 self.selected_pane = Pane::Chat;
                 self.focus = Focus::Composer;
@@ -648,126 +605,34 @@ impl App {
                 self.sync_composer_context();
                 self.status = "New session: type a prompt and press Enter".to_string();
             }
-            KeyEvent {
-                code: KeyCode::Char('p'),
-                ..
-            } => self.toggle_pinned().await,
-            KeyEvent {
-                code: KeyCode::Char('x'),
-                ..
-            } => self.toggle_archived().await,
-            KeyEvent {
-                code: KeyCode::Char('s'),
-                ..
-            } => self.start_dev_server().await,
-            KeyEvent {
-                code: KeyCode::Char('c'),
-                ..
-            } => self.run_cleanup().await,
-            KeyEvent {
-                code: KeyCode::Char('v'),
-                ..
-            } => self.stop_workspace().await,
-            KeyEvent {
-                code: KeyCode::Char('e'),
-                ..
-            } => self.open_editor().await,
-            KeyEvent {
-                code: KeyCode::Char('r'),
-                ..
-            } => self.open_session_rename(),
-            KeyEvent {
-                code: KeyCode::Char('E'),
-                ..
-            } => self.cycle_executor().await,
-            KeyEvent {
-                code: KeyCode::Char('V'),
-                ..
-            } => self.cycle_variant().await,
-            KeyEvent {
-                code: KeyCode::Char('M'),
-                ..
-            } => self.cycle_model(),
-            KeyEvent {
-                code: KeyCode::Char('R'),
-                ..
-            } => self.cycle_reasoning(),
-            KeyEvent {
-                code: KeyCode::Char('A'),
-                ..
-            } => self.open_agent_picker(),
-            KeyEvent {
-                code: KeyCode::Char('P'),
-                ..
-            } => self.cycle_permission_mode(),
-            KeyEvent {
-                code: KeyCode::Char('Q'),
-                ..
-            } => self.queue_prompt().await,
-            KeyEvent {
-                code: KeyCode::Char('X'),
-                ..
-            } => self.cancel_queued_prompt().await,
-            KeyEvent {
-                code: KeyCode::Char('D'),
-                ..
-            } => self.discard_draft().await,
-            KeyEvent {
-                code: KeyCode::Enter,
-                ..
-            } => self.handle_enter(size).await,
-            KeyEvent {
-                code: KeyCode::Home,
-                ..
-            } => self.jump_to_boundary(false, size),
-            KeyEvent {
-                code: KeyCode::End, ..
-            } => self.jump_to_boundary(true, size),
-            KeyEvent {
-                code: KeyCode::Left,
-                modifiers,
-                ..
-            } if modifiers.contains(KeyModifiers::SUPER) => self.jump_to_boundary(false, size),
-            KeyEvent {
-                code: KeyCode::Right,
-                modifiers,
-                ..
-            } if modifiers.contains(KeyModifiers::SUPER) => self.jump_to_boundary(true, size),
-            KeyEvent {
-                code: KeyCode::Up,
-                modifiers,
-                ..
-            } if modifiers.contains(KeyModifiers::SUPER) => self.jump_to_boundary(false, size),
-            KeyEvent {
-                code: KeyCode::Down,
-                modifiers,
-                ..
-            } if modifiers.contains(KeyModifiers::SUPER) => self.jump_to_boundary(true, size),
-            KeyEvent {
-                code: KeyCode::Char('j') | KeyCode::Down,
-                ..
-            } => self.move_selection(1, size),
-            KeyEvent {
-                code: KeyCode::Char('k') | KeyCode::Up,
-                ..
-            } => self.move_selection(-1, size),
-            KeyEvent {
-                code: KeyCode::PageDown,
-                ..
-            } => self.move_selection(self.page_step(size), size),
-            KeyEvent {
-                code: KeyCode::PageUp,
-                ..
-            } => self.move_selection(-self.page_step(size), size),
-            KeyEvent {
-                code: KeyCode::Char('t'),
-                ..
-            } => {
+            AppIntent::TogglePinned => self.toggle_pinned().await,
+            AppIntent::ToggleArchived => self.toggle_archived().await,
+            AppIntent::StartDevServer => self.start_dev_server().await,
+            AppIntent::RunCleanup => self.run_cleanup().await,
+            AppIntent::StopWorkspace => self.stop_workspace().await,
+            AppIntent::OpenEditor => self.open_editor().await,
+            AppIntent::OpenSessionRename => self.open_session_rename(),
+            AppIntent::CycleExecutor => self.cycle_executor().await,
+            AppIntent::CycleVariant => self.cycle_variant().await,
+            AppIntent::CycleModel => self.cycle_model(),
+            AppIntent::CycleReasoning => self.cycle_reasoning(),
+            AppIntent::OpenAgentPicker => self.open_agent_picker(),
+            AppIntent::CyclePermissionMode => self.cycle_permission_mode(),
+            AppIntent::QueuePrompt => self.queue_prompt().await,
+            AppIntent::CancelQueuedPrompt => self.cancel_queued_prompt().await,
+            AppIntent::DiscardDraft => self.discard_draft().await,
+            AppIntent::Enter => self.handle_enter(size).await,
+            AppIntent::JumpToStart => self.jump_to_boundary(false, size),
+            AppIntent::JumpToEnd => self.jump_to_boundary(true, size),
+            AppIntent::MoveSelection(delta) => self.move_selection(delta, size),
+            AppIntent::PageSelection(direction) => {
+                self.move_selection(direction * self.page_step(size), size)
+            }
+            AppIntent::EnterTerminalInputMode => {
                 self.selected_pane = Pane::Terminal;
                 self.bundle.terminal.input_mode = true;
                 self.status = "Terminal input mode enabled".to_string();
             }
-            _ => {}
         }
     }
 
@@ -3983,24 +3848,6 @@ impl App {
             _ => return,
         };
         let _ = tx.send(TerminalCommand::Input(bytes));
-    }
-}
-
-fn next_focus(current: &Focus) -> Focus {
-    match current {
-        Focus::WorkspaceList => Focus::Main,
-        Focus::Main => Focus::Detail,
-        Focus::Detail => Focus::Composer,
-        Focus::Composer => Focus::WorkspaceList,
-    }
-}
-
-fn prev_focus(current: &Focus) -> Focus {
-    match current {
-        Focus::WorkspaceList => Focus::Composer,
-        Focus::Main => Focus::WorkspaceList,
-        Focus::Detail => Focus::Main,
-        Focus::Composer => Focus::Detail,
     }
 }
 
