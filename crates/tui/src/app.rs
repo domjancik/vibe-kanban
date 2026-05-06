@@ -1430,9 +1430,6 @@ impl App {
         if self.agent_picker.is_some() {
             self.render_agent_picker(frame, frame.area());
         }
-        if self.session_rename.is_some() {
-            self.render_session_rename(frame, frame.area());
-        }
     }
 
     fn render_workspace_list(&self, frame: &mut Frame, area: Rect) {
@@ -1574,10 +1571,7 @@ impl App {
             Pane::Notes => self.render_notes(frame, chunks[1]),
         }
 
-        let composer_title = match self.selected_pane {
-            Pane::Notes => "Notes Editor",
-            _ => "Composer",
-        };
+        let composer_title = self.editor_panel_title();
         if self.selected_pane == Pane::Chat {
             frame.render_widget(
                 Paragraph::new(Text::from(vec![
@@ -1590,7 +1584,7 @@ impl App {
             );
             frame.render_widget(
                 Paragraph::new(self.render_composer_text())
-                    .block(panel_block(composer_title, self.focus == Focus::Composer))
+                    .block(panel_block(&composer_title, self.focus == Focus::Composer))
                     .wrap(Wrap { trim: false }),
                 chunks[3],
             );
@@ -1602,7 +1596,7 @@ impl App {
                     self.focus == Focus::Composer && self.selected_pane == Pane::Notes,
                     self.editor_mode,
                 ))
-                .block(panel_block(composer_title, self.focus == Focus::Composer))
+                .block(panel_block(&composer_title, self.focus == Focus::Composer))
                 .wrap(Wrap { trim: false }),
                 chunks[2],
             );
@@ -1686,20 +1680,7 @@ impl App {
                         Style::default().fg(Color::DarkGray),
                     ),
                 ])),
-                SessionRow::Session(session) => {
-                    let name = session
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| session.id.to_string());
-                    let executor = session
-                        .executor
-                        .clone()
-                        .unwrap_or_else(|| "unknown".to_string());
-                    ListItem::new(Text::from(vec![
-                        Line::raw(name),
-                        Line::styled(executor, Style::default().fg(Color::DarkGray)),
-                    ]))
-                }
+                SessionRow::Session(session) => self.render_session_row(session),
             })
             .collect::<Vec<_>>();
         let mut state = ListState::default();
@@ -2158,45 +2139,6 @@ impl App {
         );
     }
 
-    fn render_session_rename(&self, frame: &mut Frame, area: Rect) {
-        let Some(rename) = self.session_rename.as_ref() else {
-            return;
-        };
-        let popup = centered_rect(64, 24, area);
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Length(3),
-                Constraint::Length(1),
-            ])
-            .split(popup);
-
-        frame.render_widget(Clear, popup);
-        frame.render_widget(panel_block("Rename Session", true), popup);
-        frame.render_widget(
-            Paragraph::new(render_editor_buffer(
-                &rename.name,
-                rename.cursor,
-                true,
-                self.editor_mode,
-            ))
-            .block(panel_block("Name", false))
-            .wrap(Wrap { trim: false }),
-            chunks[0],
-        );
-        frame.render_widget(
-            Paragraph::new("Enter save  Esc cancel")
-                .block(panel_block("Hints", false))
-                .wrap(Wrap { trim: false }),
-            chunks[1],
-        );
-        frame.render_widget(
-            Paragraph::new("Rename the selected session in this workspace."),
-            chunks[2],
-        );
-    }
-
     fn composer_selection_line(&self) -> Line<'static> {
         let config = self.composer_config.as_ref();
         let executor = config
@@ -2251,7 +2193,6 @@ impl App {
     fn composer_status_line(&self) -> Line<'static> {
         let draft = self.draft_status_label();
         let queue = self.queue_status_label();
-        let mode = self.editor_mode_label();
         let draft_style = if self.composer_queue_conflict {
             Style::default().fg(Color::Yellow)
         } else if self.composer_dirty {
@@ -2267,9 +2208,6 @@ impl App {
             Style::default().fg(Color::DarkGray)
         };
         let mut spans = vec![
-            Span::styled("Mode ", Style::default().fg(Color::Gray)),
-            Span::styled(mode, Style::default().fg(Color::LightMagenta)),
-            Span::raw("  "),
             Span::styled("Draft ", Style::default().fg(Color::Gray)),
             Span::styled(draft, draft_style),
             Span::raw("  "),
@@ -2340,6 +2278,14 @@ impl App {
         }
     }
 
+    fn editor_panel_title(&self) -> String {
+        let label = match self.selected_pane {
+            Pane::Notes => "Notes Editor",
+            _ => "Composer",
+        };
+        format!("{label} [{}]", self.editor_mode_label())
+    }
+
     fn toggle_editor_mode(&mut self) {
         self.editor_mode = match self.editor_mode {
             ComposerEditorMode::Standard => ComposerEditorMode::Vim(VimMode::Insert),
@@ -2368,6 +2314,45 @@ impl App {
         } else {
             "loading".to_string()
         }
+    }
+
+    fn render_session_row(&self, session: &Session) -> ListItem<'static> {
+        let is_renaming = self
+            .session_rename
+            .as_ref()
+            .is_some_and(|rename| rename.session_id == session.id);
+
+        if is_renaming && let Some(rename) = self.session_rename.as_ref() {
+            let mut lines = vec![
+                Line::styled(
+                    "rename",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Line::styled(
+                    "Enter save  Esc cancel",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ];
+            lines.extend(
+                render_editor_buffer(&rename.name, rename.cursor, true, self.editor_mode).lines,
+            );
+            return ListItem::new(Text::from(lines));
+        }
+
+        let name = session
+            .name
+            .clone()
+            .unwrap_or_else(|| session.id.to_string());
+        let executor = session
+            .executor
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+        ListItem::new(Text::from(vec![
+            Line::raw(name),
+            Line::styled(executor, Style::default().fg(Color::DarkGray)),
+        ]))
     }
 
     fn queue_status_label(&self) -> String {
