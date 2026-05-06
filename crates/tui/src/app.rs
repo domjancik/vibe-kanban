@@ -101,6 +101,7 @@ pub struct App {
     queue_status: QueueStatus,
     queue_pending: bool,
     last_composer_edit: Option<std::time::Instant>,
+    chat_end_offset: u16,
     conversation_loader: Option<tokio::task::JoinHandle<()>>,
     conversation_process_entries: HashMap<Uuid, Vec<PatchType>>,
     conversation_process_order: Vec<Uuid>,
@@ -153,6 +154,7 @@ impl App {
             queue_status: QueueStatus::Empty,
             queue_pending: false,
             last_composer_edit: None,
+            chat_end_offset: 0,
             conversation_loader: None,
             conversation_process_entries: HashMap::new(),
             conversation_process_order: Vec::new(),
@@ -337,6 +339,7 @@ impl App {
             } => {
                 if Some(process_id) == self.bundle.selected_process_id {
                     self.bundle.log_entries = entries.clone();
+                    self.chat_end_offset = 0;
                 }
                 if self.conversation_process_order.contains(&process_id) {
                     self.conversation_process_entries
@@ -385,21 +388,10 @@ impl App {
                 entries,
             } => {
                 if Some(session_id) == self.bundle.selected_session_id {
-                    let previous_lines = self.chat_line_count();
                     self.conversation_process_entries
                         .insert(process_id, entries);
                     self.reconcile_optimistic_entries();
-                    let next_lines = self.chat_line_count();
-                    if self.selected_pane == Pane::Chat {
-                        if previous_lines == 0 {
-                            self.bundle.log_scroll = self.max_scroll_for_selected_pane();
-                        } else if next_lines > previous_lines {
-                            self.bundle.log_scroll = self
-                                .bundle
-                                .log_scroll
-                                .saturating_add((next_lines - previous_lines) as u16);
-                        }
-                    }
+                    self.chat_end_offset = 0;
                 }
             }
             NetEvent::ConversationBootstrapComplete { session_id } => {
@@ -980,7 +972,8 @@ impl App {
                 _ => {}
             },
             Focus::Main | Focus::Composer => match self.selected_pane {
-                Pane::Logs | Pane::Chat => {
+                Pane::Chat => self.adjust_chat_scroll(delta),
+                Pane::Logs => {
                     let scroll = self.bundle.log_scroll as i32 + delta;
                     self.bundle.log_scroll = scroll.clamp(0, u16::MAX as i32) as u16;
                 }
@@ -1046,7 +1039,8 @@ impl App {
                 _ => {}
             },
             Focus::Main | Focus::Composer => match self.selected_pane {
-                Pane::Chat | Pane::Logs | Pane::Git => {
+                Pane::Chat => self.chat_end_offset = if to_end { 0 } else { u16::MAX },
+                Pane::Logs | Pane::Git => {
                     self.bundle.log_scroll = if to_end {
                         self.max_scroll_for_selected_pane()
                     } else {
@@ -1077,6 +1071,11 @@ impl App {
             _ => 0,
         };
         lines.saturating_sub(1).min(u16::MAX as usize) as u16
+    }
+
+    fn adjust_chat_scroll(&mut self, delta: i32) {
+        let offset = self.chat_end_offset as i32 - delta;
+        self.chat_end_offset = offset.clamp(0, u16::MAX as i32) as u16;
     }
 
     fn render(&mut self, frame: &mut Frame) {
@@ -1414,10 +1413,11 @@ impl App {
         } else {
             "Conversation"
         };
+        let inner_height = area.height.saturating_sub(2) as usize;
+        let lines = self.chat_window_lines(inner_height.max(1));
         frame.render_widget(
-            Paragraph::new(Text::from(self.chat_lines()))
+            Paragraph::new(Text::from(lines))
                 .block(panel_block(title, self.focus == Focus::Main))
-                .scroll((self.bundle.log_scroll, 0))
                 .wrap(Wrap { trim: false }),
             area,
         );
@@ -2084,6 +2084,99 @@ impl App {
         self.chat_lines().len()
     }
 
+    fn chat_window_lines(&self, viewport_height: usize) -> Vec<Line<'static>> {
+        if viewport_height == 0 {
+            return Vec::new();
+        }
+
+        let target_tail_lines = viewport_height.saturating_add(self.chat_end_offset as usize);
+        let mut tail_groups: Vec<Vec<Line<'static>>> = Vec::new();
+        let mut collected_tail_lines = 0usize;
+
+        for entry in self
+            .optimistic_entries
+            .iter()
+            .filter(|entry| Some(&entry.scope) == self.current_conversation_scope().as_ref())
+            .rev()
+        {
+            let lines = render_optimistic_chat_entry(entry);
+            collected_tail_lines = collected_tail_lines.saturating_add(lines.len());
+            tail_groups.push(lines);
+            if collected_tail_lines >= target_tail_lines {
+                break;
+            }
+        }
+
+        if collected_tail_lines < target_tail_lines {
+            for entry in self.canonical_chat_entries().iter().rev() {
+                let lines = render_chat_entry(entry);
+                collected_tail_lines = collected_tail_lines.saturating_add(lines.len());
+                tail_groups.push(lines);
+                if collected_tail_lines >= target_tail_lines {
+                    break;
+                }
+            }
+        }
+
+        if collected_tail_lines < target_tail_lines {
+            if let QueueStatus::Queued { message } = &self.queue_status {
+                let mut lines = vec![Line::styled(
+                    "queued follow-up",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )];
+                for line in message.data.message.lines() {
+                    lines.push(Line::styled(
+                        format!("  {line}"),
+                        Style::default().fg(Color::LightYellow),
+                    ));
+                }
+                lines.push(Line::styled(
+                    format!("  executor {}", message.data.executor_config.executor),
+                    Style::default().fg(Color::DarkGray),
+                ));
+                lines.push(Line::raw(""));
+                collected_tail_lines = collected_tail_lines.saturating_add(lines.len());
+                tail_groups.push(lines);
+            }
+        }
+
+        if collected_tail_lines < target_tail_lines {
+            let leading_lines = if self.conversation_bootstrapping && self.conversation_process_entries.is_empty() {
+                vec![
+                    Line::styled(
+                        "Loading recent conversation...",
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Line::raw(""),
+                ]
+            } else if self.conversation_backfilling {
+                vec![
+                    Line::styled(
+                        "Loading older messages...",
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Line::raw(""),
+                ]
+            } else {
+                Vec::new()
+            };
+            if !leading_lines.is_empty() {
+                tail_groups.push(leading_lines);
+            }
+        }
+
+        let mut tail_lines = Vec::new();
+        for group in tail_groups.into_iter().rev() {
+            tail_lines.extend(group);
+        }
+
+        let end = tail_lines.len().saturating_sub(self.chat_end_offset as usize);
+        let start = end.saturating_sub(viewport_height);
+        tail_lines[start..end].to_vec()
+    }
+
     fn chat_lines(&self) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         if self.conversation_bootstrapping && self.conversation_process_entries.is_empty() {
@@ -2643,6 +2736,7 @@ impl App {
             return;
         };
         self.creating_new_session = false;
+        self.chat_end_offset = 0;
         self.bundle = WorkspaceBundle::default();
         self.bundle.terminal = TerminalState::default();
         self.composer.clear();
@@ -2667,6 +2761,7 @@ impl App {
     }
 
     fn rebind_session_streams(&mut self) {
+        self.chat_end_offset = 0;
         self.api.replace_process_stream(
             self.bundle.selected_session_id,
             self.tx.clone(),
