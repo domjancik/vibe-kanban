@@ -894,10 +894,12 @@ impl App {
     fn handle_terminal_resize(&mut self, size: Rect) {
         let cols = size.width.saturating_sub(2).max(1);
         let rows = size.height.saturating_sub(2).max(1);
-        self.bundle.terminal.size = (cols, rows);
-        self.bundle.terminal.parser.set_size(rows, cols);
-        if let Some(tx) = &self.subscriptions.terminal_tx {
-            let _ = tx.send(TerminalCommand::Resize(cols, rows));
+        if self.bundle.terminal.size != (cols, rows) {
+            self.bundle.terminal.size = (cols, rows);
+            self.bundle.terminal.parser.set_size(rows, cols);
+            if let Some(tx) = &self.subscriptions.terminal_tx {
+                let _ = tx.send(TerminalCommand::Resize(cols, rows));
+            }
         }
     }
 
@@ -1071,6 +1073,44 @@ impl App {
             _ => 0,
         };
         lines.saturating_sub(1).min(u16::MAX as usize) as u16
+    }
+
+    fn terminal_stream_size(&self, size: Rect) -> (u16, u16) {
+        let outer = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(2),
+            ])
+            .split(size);
+        let body = if size.width >= 140 {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(32),
+                    Constraint::Min(50),
+                    Constraint::Length(44),
+                ])
+                .split(outer[1])[1]
+        } else {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(32), Constraint::Min(40)])
+                .split(outer[1])[1]
+        };
+        let main = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(10),
+                Constraint::Length(5),
+            ])
+            .split(body)[1];
+        (
+            main.width.saturating_sub(2).max(1),
+            main.height.saturating_sub(2).max(1),
+        )
     }
 
     fn adjust_chat_scroll(&mut self, delta: i32) {
@@ -2755,8 +2795,13 @@ impl App {
         };
         self.creating_new_session = false;
         self.chat_end_offset = 0;
+        let terminal_size = self.terminal_stream_size(size);
         self.bundle = WorkspaceBundle::default();
         self.bundle.terminal = TerminalState::default();
+        self.bundle.terminal.size = terminal_size;
+        self.bundle.terminal
+            .parser
+            .set_size(terminal_size.1, terminal_size.0);
         self.composer.clear();
         self.composer_cursor = 0;
         self.composer_dirty = false;
@@ -2772,7 +2817,7 @@ impl App {
             workspace_id,
             None,
             None,
-            (size.width.saturating_sub(40), size.height.saturating_sub(6)),
+            terminal_size,
             self.tx.clone(),
             &mut self.subscriptions,
         );
