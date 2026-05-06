@@ -5041,6 +5041,15 @@ mod tests {
     }
 
     #[test]
+    fn chat_window_bounds_keep_short_transcript_visible_when_overscrolled() {
+        let (clamped, start, end, top_offset) = chat_window_bounds(3, 10, usize::MAX);
+        assert_eq!(clamped, 0);
+        assert_eq!(start, 0);
+        assert_eq!(end, 3);
+        assert_eq!(top_offset, 0);
+    }
+
+    #[test]
     fn prev_word_moves_to_previous_word_start() {
         assert_eq!(prev_word_start("hello world", 11), 6);
         assert_eq!(prev_word_start("hello world", 6), 0);

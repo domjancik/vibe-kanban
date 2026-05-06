@@ -44,6 +44,7 @@ Where the web app depends on a graphical primitive, the TUI should provide a ter
 - status indicators from the existing workspace streams and summaries
 - workspace selection and navigation
 - session picker and new-session flow
+- session rename from the Sessions panel
 - message composer for follow-up prompts
 - composer-side executor/profile/model configuration controls
 - live conversation timeline
@@ -182,6 +183,7 @@ On macOS terminals, the TUI should also support the common equivalents when the 
 - `A`: open agent mode picker with fuzzy search when the selection strip is focused
 - `P`: cycle permission mode when the selection strip is focused
 - `Ctrl+n` `Ctrl+p`: switch session
+- `r`: rename the selected real session from the Sessions panel
 - `[` `]`: previous or next unread or user turn
 - `r`: retry selected or latest turn when supported
 - `u`: jump to pending approval
@@ -518,6 +520,8 @@ Use the existing session ordering contract:
 - `GET /api/sessions?workspace_id={workspace_id}`
 - select the first session by default
 - allow a synthetic `new session` state when the user wants a fresh thread
+- allow renaming an existing selected session inline from the Sessions panel
+- do not allow renaming the synthetic `new session` row
 
 ### Sending a prompt
 
