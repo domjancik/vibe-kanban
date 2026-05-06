@@ -1346,7 +1346,13 @@ impl App {
                 _ => {}
             },
             Focus::Main | Focus::Composer => match self.selected_pane {
-                Pane::Chat => self.chat_end_offset = if to_end { 0 } else { u16::MAX },
+                Pane::Chat => {
+                    self.chat_end_offset = if to_end {
+                        0
+                    } else {
+                        self.max_scroll_for_selected_pane()
+                    }
+                }
                 Pane::Logs | Pane::Git => {
                     self.bundle.log_scroll = if to_end {
                         self.max_scroll_for_selected_pane()
