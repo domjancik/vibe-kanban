@@ -1,4 +1,4 @@
-use std::{collections::HashMap, str::FromStr, time::Duration};
+use std::{str::FromStr, time::Duration};
 
 use anyhow::Result;
 use crossterm::event::{Event as CrosstermEvent, EventStream, KeyCode, KeyEvent, KeyModifiers};
@@ -6,13 +6,11 @@ use db::models::{
     execution_process::{ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus},
     scratch::DraftFollowUpData,
     session::Session,
-    workspace::WorkspaceWithStatus,
 };
 use executors::{
-    executor_discovery::ExecutorDiscoveredOptions,
     executors::BaseCodingAgent,
     model_selector::{AgentInfo, ModelInfo, PermissionPolicy},
-    profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},
+    profile::ExecutorConfig,
 };
 use futures_util::StreamExt;
 use ratatui::{
@@ -22,192 +20,32 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Tabs, Wrap},
 };
-use tokio::{
-    select,
-    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
-    time::interval,
-};
+use tokio::{select, time::interval};
 use uuid::Uuid;
 
+pub use crate::app_state::App;
 use crate::{
-    api::{Api, TerminalCommand, WorkspaceSubscriptions},
+    api::TerminalCommand,
+    app_state::AgentPickerState,
     conversation::{
         ChatRenderCache, ConversationScope, OptimisticConversationEntry, OptimisticState,
         chat_window_bounds, initial_conversation_process_ids, process_prompt, render_chat_entry,
         render_log_entry, render_optimistic_chat_entry, wrap_lines,
     },
-    editor::{
-        ComposerEditorMode, VimMode, VimOperator, apply_text_edit_action, line_end_index,
-        line_start_index, move_cursor_vertical, next_word_start, prev_word_start,
-        render_editor_buffer,
-    },
-    input::{
-        AppIntent, TextInputEvent, TextInputOptions, map_app_key, map_text_input_key, next_focus,
-        prev_focus,
-    },
+    editor::render_editor_buffer,
+    input::{TerminalInput, map_app_key, map_terminal_key},
     model::{
-        Focus, NetEvent, Pane, PatchType, QueueStatus, TerminalState, WorkspaceBundle,
-        WorkspaceSummary, active_process, diff_title, display_permission, display_variant,
-        format_relative_time, workspace_title,
+        Focus, NetEvent, Pane, PatchType, QueueStatus, diff_title, display_permission,
+        display_variant, format_relative_time, workspace_title,
     },
     ui::{
         centered_rect, panel_block, rect_from_size, render_vertical_scrollbar,
         terminal_content_area,
     },
+    workspace::{SessionRow, WorkspaceRow, session_target},
 };
 
-enum WorkspaceRow<'a> {
-    Header(&'static str),
-    Workspace(&'a WorkspaceWithStatus),
-}
-
-enum SessionRow<'a> {
-    NewSession,
-    Session(&'a Session),
-}
-
-#[derive(Clone, Copy)]
-enum SessionTarget {
-    NewSession,
-    Existing(Uuid),
-}
-
-struct AgentPickerState {
-    query: String,
-    selected: usize,
-}
-
-struct SessionRenameState {
-    session_id: Uuid,
-    name: String,
-    cursor: usize,
-}
-
-#[derive(Clone, Copy)]
-enum EditorTarget {
-    Composer,
-    Notes,
-}
-
-pub struct App {
-    api: Api,
-    rx: UnboundedReceiver<NetEvent>,
-    tx: UnboundedSender<NetEvent>,
-    workspace_streams: Vec<tokio::task::JoinHandle<()>>,
-    summary_streams: Vec<tokio::task::JoinHandle<()>>,
-    subscriptions: WorkspaceSubscriptions,
-    active_workspaces: HashMap<Uuid, WorkspaceWithStatus>,
-    archived_workspaces: HashMap<Uuid, WorkspaceWithStatus>,
-    summaries: HashMap<Uuid, WorkspaceSummary>,
-    selected_workspace_id: Option<Uuid>,
-    selected_pane: Pane,
-    focus: Focus,
-    show_archived: bool,
-    filter: String,
-    status: String,
-    error: Option<String>,
-    bundle: WorkspaceBundle,
-    executor_profiles: ExecutorConfigs,
-    default_executor_profile: Option<ExecutorProfileId>,
-    composer_config: Option<ExecutorConfig>,
-    composer_options: Option<ExecutorDiscoveredOptions>,
-    composer: String,
-    composer_cursor: usize,
-    editor_mode: ComposerEditorMode,
-    vim_pending_operator: Option<VimOperator>,
-    composer_dirty: bool,
-    composer_edit_revision: u64,
-    draft_save_in_flight: bool,
-    composer_queue_conflict: bool,
-    composer_scratch_id: Option<Uuid>,
-    composer_scratch_loaded: bool,
-    queue_session_id: Option<Uuid>,
-    queue_status: QueueStatus,
-    queue_pending: bool,
-    last_composer_edit: Option<std::time::Instant>,
-    chat_end_offset: u16,
-    chat_render_cache: Option<ChatRenderCache>,
-    chat_render_cache_dirty: bool,
-    last_chat_render_cache_build: Option<std::time::Instant>,
-    conversation_loader: Option<tokio::task::JoinHandle<()>>,
-    conversation_process_entries: HashMap<Uuid, Vec<PatchType>>,
-    conversation_process_order: Vec<Uuid>,
-    conversation_bootstrapping: bool,
-    conversation_backfilling: bool,
-    optimistic_entries: Vec<OptimisticConversationEntry>,
-    notes_cursor: usize,
-    notes_edit_revision: u64,
-    notes_save_in_flight: bool,
-    agent_picker: Option<AgentPickerState>,
-    session_rename: Option<SessionRenameState>,
-    creating_new_session: bool,
-    should_quit: bool,
-}
-
 impl App {
-    pub fn new(api: Api) -> Self {
-        let (tx, rx) = unbounded_channel();
-        let workspace_streams = api.spawn_workspace_streams(tx.clone());
-        let summary_streams = api.spawn_summary_pollers(tx.clone());
-        api.load_user_system_info(tx.clone());
-        Self {
-            api,
-            rx,
-            tx,
-            workspace_streams,
-            summary_streams,
-            subscriptions: WorkspaceSubscriptions::default(),
-            active_workspaces: HashMap::new(),
-            archived_workspaces: HashMap::new(),
-            summaries: HashMap::new(),
-            selected_workspace_id: None,
-            selected_pane: Pane::Chat,
-            focus: Focus::WorkspaceList,
-            show_archived: false,
-            filter: String::new(),
-            status: String::new(),
-            error: None,
-            bundle: WorkspaceBundle::default(),
-            executor_profiles: ExecutorConfigs {
-                executors: HashMap::new(),
-            },
-            default_executor_profile: None,
-            composer_config: None,
-            composer_options: None,
-            composer: String::new(),
-            composer_cursor: 0,
-            editor_mode: ComposerEditorMode::Standard,
-            vim_pending_operator: None,
-            composer_dirty: false,
-            composer_edit_revision: 0,
-            draft_save_in_flight: false,
-            composer_queue_conflict: false,
-            composer_scratch_id: None,
-            composer_scratch_loaded: false,
-            queue_session_id: None,
-            queue_status: QueueStatus::Empty,
-            queue_pending: false,
-            last_composer_edit: None,
-            chat_end_offset: 0,
-            chat_render_cache: None,
-            chat_render_cache_dirty: true,
-            last_chat_render_cache_build: None,
-            conversation_loader: None,
-            conversation_process_entries: HashMap::new(),
-            conversation_process_order: Vec::new(),
-            conversation_bootstrapping: false,
-            conversation_backfilling: false,
-            optimistic_entries: Vec::new(),
-            notes_cursor: 0,
-            notes_edit_revision: 0,
-            notes_save_in_flight: false,
-            agent_picker: None,
-            session_rename: None,
-            creating_new_session: false,
-            should_quit: false,
-        }
-    }
-
     pub async fn run(mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let mut events = EventStream::new();
         let mut ticker = interval(Duration::from_millis(150));
@@ -246,306 +84,6 @@ impl App {
         Ok(())
     }
 
-    async fn handle_net_event(&mut self, event: NetEvent, size: Rect) {
-        match event {
-            NetEvent::UserSystemLoaded(info) => {
-                self.default_executor_profile = Some(info.config.executor_profile.clone());
-                self.executor_profiles = info.profiles;
-                if self.composer_config.is_none() {
-                    self.composer_config = Some(ExecutorConfig::from(info.config.executor_profile));
-                }
-                self.rebind_discovery_stream();
-            }
-            NetEvent::ActiveWorkspaces(state) => {
-                self.active_workspaces = state
-                    .workspaces
-                    .into_values()
-                    .map(|workspace| (workspace.id, workspace))
-                    .collect();
-                self.ensure_workspace_selected(size);
-            }
-            NetEvent::ArchivedWorkspaces(state) => {
-                self.archived_workspaces = state
-                    .workspaces
-                    .into_values()
-                    .map(|workspace| (workspace.id, workspace))
-                    .collect();
-                self.ensure_workspace_selected(size);
-            }
-            NetEvent::Summaries(data) => {
-                for summary in data {
-                    self.summaries.insert(summary.workspace_id, summary);
-                }
-            }
-            NetEvent::WorkspaceLoaded(workspace) => {
-                self.bundle.workspace = Some(workspace);
-            }
-            NetEvent::SessionsLoaded {
-                workspace_id,
-                sessions,
-            } => {
-                if Some(workspace_id) == self.selected_workspace_id {
-                    let previous = self.bundle.selected_session_id;
-                    self.bundle.sessions = sessions;
-                    let next_selected = previous
-                        .filter(|selected| {
-                            self.bundle
-                                .sessions
-                                .iter()
-                                .any(|session| session.id == *selected)
-                        })
-                        .or_else(|| self.bundle.sessions.first().map(|session| session.id));
-                    let changed = next_selected != self.bundle.selected_session_id;
-                    self.bundle.selected_session_id = next_selected;
-                    if changed {
-                        self.bundle.process_map.clear();
-                        self.bundle.log_entries.clear();
-                        self.bundle.selected_process_id = None;
-                        self.rebind_session_streams();
-                    }
-                    self.rebind_discovery_stream();
-                    self.sync_composer_context();
-                }
-            }
-            NetEvent::ReposLoaded {
-                workspace_id,
-                repos,
-            } => {
-                if Some(workspace_id) == self.selected_workspace_id {
-                    self.bundle.repos = repos;
-                }
-            }
-            NetEvent::GitStatusLoaded {
-                workspace_id,
-                statuses,
-            } => {
-                if Some(workspace_id) == self.selected_workspace_id {
-                    self.bundle.git_status = statuses;
-                }
-            }
-            NetEvent::NotesLoaded {
-                workspace_id,
-                notes,
-            } => {
-                if Some(workspace_id) == self.selected_workspace_id && !self.bundle.notes_dirty {
-                    self.bundle.notes = notes;
-                    self.notes_cursor = self.bundle.notes.len();
-                }
-            }
-            NetEvent::NotesSaved {
-                workspace_id,
-                revision,
-            } => {
-                if Some(workspace_id) == self.selected_workspace_id {
-                    self.notes_save_in_flight = false;
-                    if revision == self.notes_edit_revision {
-                        self.bundle.notes_dirty = false;
-                        self.bundle.last_notes_edit = None;
-                    }
-                    self.status = "Notes saved".to_string();
-                }
-            }
-            NetEvent::NotesSaveFailed {
-                workspace_id,
-                revision,
-                message,
-            } => {
-                if Some(workspace_id) == self.selected_workspace_id
-                    && revision == self.notes_edit_revision
-                {
-                    self.notes_save_in_flight = false;
-                    self.error = Some(message.clone());
-                    self.status = message;
-                } else if Some(workspace_id) == self.selected_workspace_id {
-                    self.notes_save_in_flight = false;
-                }
-            }
-            NetEvent::DiffsUpdated {
-                workspace_id,
-                diffs,
-            } => {
-                if Some(workspace_id) == self.selected_workspace_id {
-                    self.bundle.diffs = diffs;
-                    if self.bundle.selected_diff_index >= self.bundle.diffs.len() {
-                        self.bundle.selected_diff_index = self.bundle.diffs.len().saturating_sub(1);
-                    }
-                }
-            }
-            NetEvent::ProcessesUpdated {
-                session_id,
-                processes,
-            } => {
-                if Some(session_id) == self.bundle.selected_session_id {
-                    let had_running = self.has_running_process();
-                    let previous_count = self.bundle.process_map.len();
-                    self.bundle.process_map = processes;
-                    let previous_process_id = self.bundle.selected_process_id;
-                    let next_process_id = active_process(&self.bundle.process_map)
-                        .map(|process| process.id)
-                        .or_else(|| {
-                            previous_process_id
-                                .filter(|selected| self.bundle.process_map.contains_key(selected))
-                        });
-                    let changed = next_process_id != previous_process_id;
-                    self.bundle.selected_process_id = next_process_id;
-                    if changed {
-                        self.bundle.log_entries.clear();
-                        self.rebind_logs_only();
-                    }
-                    self.sync_composer_executor_with_session();
-                    if had_running != self.has_running_process()
-                        || previous_count != self.bundle.process_map.len()
-                    {
-                        self.refresh_queue_status();
-                    }
-                    self.mark_chat_render_cache_dirty();
-                    self.refresh_conversation_history();
-                }
-            }
-            NetEvent::LogsUpdated {
-                process_id,
-                entries,
-            } => {
-                if Some(process_id) == self.bundle.selected_process_id {
-                    self.bundle.log_entries = entries.clone();
-                    self.chat_end_offset = 0;
-                }
-                if self.conversation_process_order.contains(&process_id) {
-                    self.conversation_process_entries
-                        .insert(process_id, entries);
-                    self.reconcile_optimistic_entries();
-                    self.mark_chat_render_cache_dirty();
-                }
-            }
-            NetEvent::ExecutorOptionsUpdated { executor, options } => {
-                if self
-                    .composer_config
-                    .as_ref()
-                    .is_some_and(|config| config.executor == executor)
-                {
-                    self.composer_options = Some(options);
-                }
-            }
-            NetEvent::DraftLoaded { scratch_id, draft } => {
-                if Some(scratch_id) == self.current_composer_scratch_id()
-                    && (!self.composer_scratch_loaded || !self.composer_dirty)
-                {
-                    self.composer = draft
-                        .as_ref()
-                        .map(|draft| draft.message.trim_end_matches('\n').to_string())
-                        .unwrap_or_default();
-                    self.composer_cursor = self.composer.len();
-                    self.composer_scratch_loaded = true;
-                    self.composer_dirty = false;
-                    self.last_composer_edit = None;
-                    self.composer_queue_conflict = false;
-                    if let Some(draft) = draft {
-                        let executor_changed = self
-                            .composer_config
-                            .as_ref()
-                            .map(|config| config.executor != draft.executor_config.executor)
-                            .unwrap_or(true);
-                        self.composer_config = Some(draft.executor_config);
-                        if executor_changed {
-                            self.rebind_discovery_stream();
-                        }
-                    }
-                }
-            }
-            NetEvent::DraftSaved {
-                scratch_id,
-                revision,
-            } => {
-                if Some(scratch_id) == self.current_composer_scratch_id() {
-                    self.draft_save_in_flight = false;
-                    if revision == self.composer_edit_revision {
-                        self.composer_dirty = false;
-                        self.last_composer_edit = None;
-                        self.composer_queue_conflict = false;
-                    }
-                }
-            }
-            NetEvent::DraftSaveFailed {
-                scratch_id,
-                revision,
-                message,
-            } => {
-                if Some(scratch_id) == self.current_composer_scratch_id()
-                    && revision == self.composer_edit_revision
-                {
-                    self.draft_save_in_flight = false;
-                    if message.contains("queued") {
-                        self.composer_queue_conflict = true;
-                    }
-                    self.error = Some(message.clone());
-                    self.status = message;
-                } else if Some(scratch_id) == self.current_composer_scratch_id() {
-                    self.draft_save_in_flight = false;
-                }
-            }
-            NetEvent::ConversationHistoryLoaded {
-                session_id,
-                process_id,
-                entries,
-            } => {
-                if Some(session_id) == self.bundle.selected_session_id {
-                    self.conversation_process_entries
-                        .insert(process_id, entries);
-                    self.reconcile_optimistic_entries();
-                    self.mark_chat_render_cache_dirty();
-                    self.chat_end_offset = 0;
-                }
-            }
-            NetEvent::ConversationBootstrapComplete { session_id } => {
-                if Some(session_id) == self.bundle.selected_session_id {
-                    self.conversation_bootstrapping = false;
-                    self.conversation_backfilling = self.conversation_process_entries.len()
-                        < self.conversation_process_order.len();
-                    self.mark_chat_render_cache_dirty();
-                }
-            }
-            NetEvent::ConversationBackfillComplete { session_id } => {
-                if Some(session_id) == self.bundle.selected_session_id {
-                    self.conversation_bootstrapping = false;
-                    self.conversation_backfilling = false;
-                    self.mark_chat_render_cache_dirty();
-                }
-            }
-            NetEvent::QueueLoaded { session_id, status } => {
-                if Some(session_id) == self.current_queue_session_id() {
-                    self.queue_session_id = Some(session_id);
-                    self.queue_status = status;
-                    self.queue_pending = false;
-                    if matches!(self.queue_status, QueueStatus::Empty) {
-                        self.composer_queue_conflict = false;
-                    }
-                    self.mark_chat_render_cache_dirty();
-                }
-            }
-            NetEvent::TerminalConnected(workspace_id) => {
-                if Some(workspace_id) == self.selected_workspace_id {
-                    self.bundle.terminal.connected = true;
-                    self.bundle.terminal.error = None;
-                }
-            }
-            NetEvent::TerminalOutput(workspace_id, bytes) => {
-                if Some(workspace_id) == self.selected_workspace_id {
-                    self.bundle.terminal.parser.process(&bytes);
-                }
-            }
-            NetEvent::TerminalError(workspace_id, error) => {
-                if Some(workspace_id) == self.selected_workspace_id {
-                    self.bundle.terminal.error = Some(error);
-                    self.bundle.terminal.connected = false;
-                }
-            }
-            NetEvent::Error(message) => {
-                self.error = Some(message.clone());
-                self.status = message;
-            }
-        }
-    }
-
     async fn handle_key(&mut self, key: KeyEvent, size: Rect) {
         if self.agent_picker.is_some() {
             self.handle_agent_picker_key(key);
@@ -557,24 +95,26 @@ impl App {
         }
 
         if self.bundle.terminal.input_mode && self.selected_pane == Pane::Terminal {
-            if is_terminal_exit_key(&key) {
-                self.bundle.terminal.input_mode = false;
-                self.focus = Focus::Main;
-                self.status = "Left terminal input mode".to_string();
-                return;
+            match map_terminal_key(key) {
+                Some(TerminalInput::ExitInputMode) => {
+                    self.bundle.terminal.input_mode = false;
+                    self.focus = Focus::Main;
+                    self.status = "Left terminal input mode".to_string();
+                }
+                Some(TerminalInput::SendBytes(bytes)) => self.send_terminal_input(bytes),
+                None => {}
             }
-            self.forward_terminal_key(key);
             return;
         }
 
         if self.focus == Focus::Composer {
             match self.selected_pane {
                 Pane::Chat => {
-                    self.handle_editor_key(key, EditorTarget::Composer).await;
+                    self.handle_editor_key(key, false).await;
                     return;
                 }
                 Pane::Notes => {
-                    self.handle_editor_key(key, EditorTarget::Notes).await;
+                    self.handle_editor_key(key, true).await;
                     return;
                 }
                 _ => {}
@@ -586,444 +126,7 @@ impl App {
         }
     }
 
-    async fn handle_app_intent(&mut self, intent: AppIntent, size: Rect) {
-        match intent {
-            AppIntent::CancelNewSession => self.cancel_new_session_flow(),
-            AppIntent::ToggleComposerEditorMode => self.toggle_editor_mode(),
-            AppIntent::Quit => self.should_quit = true,
-            AppIntent::FocusNext => self.focus = next_focus(&self.focus),
-            AppIntent::FocusPrev => self.focus = prev_focus(&self.focus),
-            AppIntent::ShowHelp => {
-                self.status = "Keys: Tab focus, j/k nav, 1-6 panes, i edit, Enter open/send, r rename session, E executor, V variant, M model, R reasoning, A agent menu, P permission, p pin, x archive, n new session, s start dev, c cleanup, e editor, Esc/C-]/C-g leave terminal".to_string();
-            }
-            AppIntent::SelectPane(pane) => self.selected_pane = pane,
-            AppIntent::ToggleShowArchived => self.show_archived = !self.show_archived,
-            AppIntent::EnterEditMode => {
-                if matches!(self.selected_pane, Pane::Chat | Pane::Notes) {
-                    self.focus = Focus::Composer;
-                }
-            }
-            AppIntent::StartNewSession => {
-                self.creating_new_session = true;
-                self.selected_pane = Pane::Chat;
-                self.focus = Focus::Composer;
-                self.rebind_discovery_stream();
-                self.sync_composer_context();
-                self.status = "New session: type a prompt and press Enter".to_string();
-            }
-            AppIntent::TogglePinned => self.toggle_pinned().await,
-            AppIntent::ToggleArchived => self.toggle_archived().await,
-            AppIntent::StartDevServer => self.start_dev_server().await,
-            AppIntent::RunCleanup => self.run_cleanup().await,
-            AppIntent::StopWorkspace => self.stop_workspace().await,
-            AppIntent::OpenEditor => self.open_editor().await,
-            AppIntent::OpenSessionRename => self.open_session_rename(),
-            AppIntent::CycleExecutor => self.cycle_executor().await,
-            AppIntent::CycleVariant => self.cycle_variant().await,
-            AppIntent::CycleModel => self.cycle_model(),
-            AppIntent::CycleReasoning => self.cycle_reasoning(),
-            AppIntent::OpenAgentPicker => self.open_agent_picker(),
-            AppIntent::CyclePermissionMode => self.cycle_permission_mode(),
-            AppIntent::QueuePrompt => self.queue_prompt().await,
-            AppIntent::CancelQueuedPrompt => self.cancel_queued_prompt().await,
-            AppIntent::DiscardDraft => self.discard_draft().await,
-            AppIntent::Enter => self.handle_enter(size).await,
-            AppIntent::JumpToStart => self.jump_to_boundary(false, size),
-            AppIntent::JumpToEnd => self.jump_to_boundary(true, size),
-            AppIntent::MoveSelection(delta) => self.move_selection(delta, size),
-            AppIntent::PageSelection(direction) => {
-                self.move_selection(direction * self.page_step(size), size)
-            }
-            AppIntent::EnterTerminalInputMode => {
-                self.selected_pane = Pane::Terminal;
-                self.bundle.terminal.input_mode = true;
-                self.status = "Terminal input mode enabled".to_string();
-            }
-        }
-    }
-
-    async fn handle_text_input(&mut self, key: KeyEvent, notes: bool) {
-        let (buffer, cursor) = if notes {
-            (&mut self.bundle.notes, &mut self.notes_cursor)
-        } else {
-            (&mut self.composer, &mut self.composer_cursor)
-        };
-        let mut changed = false;
-        let options = if notes {
-            TextInputOptions {
-                submit_on_enter: false,
-                enter_inserts_newline: true,
-                shift_enter_inserts_newline: false,
-            }
-        } else {
-            TextInputOptions {
-                submit_on_enter: true,
-                enter_inserts_newline: false,
-                shift_enter_inserts_newline: true,
-            }
-        };
-
-        match map_text_input_key(key, options) {
-            Some(TextInputEvent::Submit) => self.submit_prompt().await,
-            Some(TextInputEvent::Edit(action)) => {
-                let before = (buffer.clone(), *cursor);
-                apply_text_edit_action(buffer, cursor, action);
-                changed = before.0 != *buffer || before.1 != *cursor;
-            }
-            None => {}
-        }
-        if notes && changed {
-            self.bundle.notes_dirty = true;
-            self.bundle.last_notes_edit = Some(std::time::Instant::now());
-            self.notes_edit_revision = self.notes_edit_revision.saturating_add(1);
-        } else if changed {
-            self.composer_dirty = true;
-            self.last_composer_edit = Some(std::time::Instant::now());
-            self.composer_edit_revision = self.composer_edit_revision.saturating_add(1);
-        }
-    }
-
-    async fn handle_editor_key(&mut self, key: KeyEvent, target: EditorTarget) {
-        if let KeyEvent {
-            code: KeyCode::F(2),
-            ..
-        } = key
-        {
-            self.toggle_editor_mode();
-            return;
-        }
-
-        match self.editor_mode {
-            ComposerEditorMode::Standard => {
-                if key.code == KeyCode::Esc {
-                    if matches!(target, EditorTarget::Composer)
-                        && self.creating_new_session
-                        && self.composer.trim().is_empty()
-                    {
-                        self.cancel_new_session_flow();
-                    } else {
-                        self.focus = Focus::Main;
-                    }
-                } else {
-                    self.handle_text_input(key, matches!(target, EditorTarget::Notes))
-                        .await;
-                }
-            }
-            ComposerEditorMode::Vim(VimMode::Insert) => {
-                if key.code == KeyCode::Esc {
-                    if matches!(target, EditorTarget::Composer)
-                        && self.creating_new_session
-                        && self.composer.trim().is_empty()
-                    {
-                        self.cancel_new_session_flow();
-                    } else {
-                        self.editor_mode = ComposerEditorMode::Vim(VimMode::Normal);
-                        self.status = "Editor mode: Vim Normal".to_string();
-                    }
-                } else {
-                    self.handle_text_input(key, matches!(target, EditorTarget::Notes))
-                        .await;
-                }
-            }
-            ComposerEditorMode::Vim(VimMode::Normal) => {
-                if self.handle_vim_normal_key(key, target).await {
-                    return;
-                }
-                if key.code == KeyCode::Esc {
-                    if matches!(target, EditorTarget::Composer)
-                        && self.creating_new_session
-                        && self.composer.trim().is_empty()
-                    {
-                        self.cancel_new_session_flow();
-                    } else {
-                        self.focus = Focus::Main;
-                    }
-                }
-            }
-        }
-    }
-
-    async fn handle_vim_normal_key(&mut self, key: KeyEvent, target: EditorTarget) -> bool {
-        if let Some(operator) = self.vim_pending_operator.take() {
-            return self.execute_vim_operator(operator, key, target);
-        }
-
-        match key {
-            KeyEvent {
-                code: KeyCode::Enter,
-                ..
-            } => {
-                if matches!(target, EditorTarget::Composer) {
-                    self.submit_prompt().await;
-                }
-                true
-            }
-            KeyEvent {
-                code: KeyCode::Char('i'),
-                ..
-            } => {
-                self.editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
-                self.status = "Editor mode: Vim Insert".to_string();
-                true
-            }
-            KeyEvent {
-                code: KeyCode::Char('a'),
-                ..
-            } => {
-                {
-                    let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
-                    *cursor = (*cursor + 1).min(buffer.len());
-                }
-                self.editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
-                self.status = "Editor mode: Vim Insert".to_string();
-                true
-            }
-            KeyEvent {
-                code: KeyCode::Char('I'),
-                ..
-            } => {
-                {
-                    let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
-                    *cursor = line_start_index(buffer, *cursor);
-                }
-                self.editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
-                self.status = "Editor mode: Vim Insert".to_string();
-                true
-            }
-            KeyEvent {
-                code: KeyCode::Char('A'),
-                ..
-            } => {
-                {
-                    let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
-                    *cursor = line_end_index(buffer, *cursor);
-                }
-                self.editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
-                self.status = "Editor mode: Vim Insert".to_string();
-                true
-            }
-            KeyEvent {
-                code: KeyCode::Char('h') | KeyCode::Left,
-                ..
-            } => {
-                let (_, cursor) = self.editor_buffer_cursor_mut(target);
-                *cursor = cursor.saturating_sub(1);
-                true
-            }
-            KeyEvent {
-                code: KeyCode::Char('l') | KeyCode::Right,
-                ..
-            } => {
-                let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
-                *cursor = (*cursor + 1).min(buffer.len());
-                true
-            }
-            KeyEvent {
-                code: KeyCode::Char('k') | KeyCode::Up,
-                ..
-            } => {
-                let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
-                *cursor = move_cursor_vertical(buffer, *cursor, -1);
-                true
-            }
-            KeyEvent {
-                code: KeyCode::Char('j') | KeyCode::Down,
-                ..
-            } => {
-                let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
-                *cursor = move_cursor_vertical(buffer, *cursor, 1);
-                true
-            }
-            KeyEvent {
-                code: KeyCode::Char('w'),
-                ..
-            } => {
-                let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
-                *cursor = next_word_start(buffer, *cursor);
-                true
-            }
-            KeyEvent {
-                code: KeyCode::Char('b'),
-                ..
-            } => {
-                let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
-                *cursor = prev_word_start(buffer, *cursor);
-                true
-            }
-            KeyEvent {
-                code: KeyCode::Char('d'),
-                ..
-            } => {
-                self.vim_pending_operator = Some(VimOperator::Delete);
-                self.status = "d...".to_string();
-                true
-            }
-            KeyEvent {
-                code: KeyCode::Char('0') | KeyCode::Home,
-                ..
-            } => {
-                let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
-                *cursor = line_start_index(buffer, *cursor);
-                true
-            }
-            KeyEvent {
-                code: KeyCode::Char('$') | KeyCode::End,
-                ..
-            } => {
-                let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
-                *cursor = line_end_index(buffer, *cursor);
-                true
-            }
-            KeyEvent {
-                code: KeyCode::Char('x') | KeyCode::Delete,
-                ..
-            } => {
-                let changed = {
-                    let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
-                    if *cursor < buffer.len() {
-                        buffer.remove(*cursor);
-                        true
-                    } else {
-                        false
-                    }
-                };
-                if changed {
-                    self.mark_editor_dirty(target);
-                }
-                true
-            }
-            KeyEvent {
-                code: KeyCode::Char('o'),
-                ..
-            } => {
-                {
-                    let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
-                    *cursor = line_end_index(buffer, *cursor);
-                    buffer.insert(*cursor, '\n');
-                    *cursor += 1;
-                }
-                self.mark_editor_dirty(target);
-                self.editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
-                self.status = "Editor mode: Vim Insert".to_string();
-                true
-            }
-            KeyEvent {
-                code: KeyCode::Char('O'),
-                ..
-            } => {
-                {
-                    let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
-                    *cursor = line_start_index(buffer, *cursor);
-                    buffer.insert(*cursor, '\n');
-                }
-                self.mark_editor_dirty(target);
-                self.editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
-                self.status = "Editor mode: Vim Insert".to_string();
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn execute_vim_operator(
-        &mut self,
-        operator: VimOperator,
-        key: KeyEvent,
-        target: EditorTarget,
-    ) -> bool {
-        match operator {
-            VimOperator::Delete => self.execute_vim_delete(key, target),
-        }
-    }
-
-    fn execute_vim_delete(&mut self, key: KeyEvent, target: EditorTarget) -> bool {
-        let (cursor, range) = {
-            let (buffer, cursor) = self.editor_buffer_cursor_mut(target);
-            let cursor_value = *cursor;
-            let range = match key {
-                KeyEvent {
-                    code: KeyCode::Char('d'),
-                    ..
-                } => {
-                    let line_start = line_start_index(buffer, cursor_value);
-                    let line_end = line_end_index(buffer, cursor_value);
-                    if line_end < buffer.len() {
-                        Some((line_start, line_end + 1))
-                    } else if line_start > 0 {
-                        Some((line_start - 1, line_end))
-                    } else {
-                        Some((0, line_end))
-                    }
-                }
-                KeyEvent {
-                    code: KeyCode::Char('w'),
-                    ..
-                } => Some((cursor_value, next_word_start(buffer, cursor_value))),
-                KeyEvent {
-                    code: KeyCode::Char('b'),
-                    ..
-                } => {
-                    let delete_start = prev_word_start(buffer, cursor_value);
-                    Some((delete_start, cursor_value))
-                }
-                KeyEvent {
-                    code: KeyCode::Char('$') | KeyCode::End,
-                    ..
-                } => Some((cursor_value, line_end_index(buffer, cursor_value))),
-                KeyEvent {
-                    code: KeyCode::Char('0') | KeyCode::Home,
-                    ..
-                } => Some((line_start_index(buffer, cursor_value), cursor_value)),
-                _ => None,
-            };
-            (cursor_value, range)
-        };
-
-        if let Some((start, end)) = range
-            && start < end
-        {
-            let changed = {
-                let (buffer, cursor_ref) = self.editor_buffer_cursor_mut(target);
-                if end <= buffer.len() {
-                    buffer.drain(start..end);
-                    *cursor_ref = start.min(buffer.len());
-                    true
-                } else {
-                    false
-                }
-            };
-            if changed {
-                self.mark_editor_dirty(target);
-            }
-        }
-        let _ = cursor;
-        self.status = "Editor mode: Vim Normal".to_string();
-        true
-    }
-
-    fn editor_buffer_cursor_mut(&mut self, target: EditorTarget) -> (&mut String, &mut usize) {
-        match target {
-            EditorTarget::Composer => (&mut self.composer, &mut self.composer_cursor),
-            EditorTarget::Notes => (&mut self.bundle.notes, &mut self.notes_cursor),
-        }
-    }
-
-    fn mark_editor_dirty(&mut self, target: EditorTarget) {
-        match target {
-            EditorTarget::Composer => {
-                self.composer_dirty = true;
-                self.last_composer_edit = Some(std::time::Instant::now());
-                self.composer_edit_revision = self.composer_edit_revision.saturating_add(1);
-            }
-            EditorTarget::Notes => {
-                self.bundle.notes_dirty = true;
-                self.bundle.last_notes_edit = Some(std::time::Instant::now());
-                self.notes_edit_revision = self.notes_edit_revision.saturating_add(1);
-            }
-        }
-    }
-
-    async fn submit_prompt(&mut self) {
+    pub(crate) async fn submit_prompt(&mut self) {
         let Some(workspace_id) = self.selected_workspace_id else {
             self.status = "No workspace selected".to_string();
             return;
@@ -1189,7 +292,7 @@ impl App {
         }
     }
 
-    async fn handle_enter(&mut self, size: Rect) {
+    pub(crate) async fn handle_enter(&mut self, size: Rect) {
         match self.focus {
             Focus::WorkspaceList => {
                 self.ensure_workspace_selected(size);
@@ -1205,7 +308,7 @@ impl App {
         }
     }
 
-    fn move_selection(&mut self, delta: i32, size: Rect) {
+    pub(crate) fn move_selection(&mut self, delta: i32, size: Rect) {
         match self.focus {
             Focus::WorkspaceList => {
                 let ids = self.visible_workspace_ids();
@@ -1260,7 +363,7 @@ impl App {
         }
     }
 
-    fn page_step(&self, size: Rect) -> i32 {
+    pub(crate) fn page_step(&self, size: Rect) -> i32 {
         match self.focus {
             Focus::WorkspaceList => ((size.height.saturating_sub(4) / 3).max(1)) as i32,
             Focus::Detail => 5,
@@ -1268,7 +371,7 @@ impl App {
         }
     }
 
-    fn jump_to_boundary(&mut self, to_end: bool, size: Rect) {
+    pub(crate) fn jump_to_boundary(&mut self, to_end: bool, size: Rect) {
         match self.focus {
             Focus::WorkspaceList => {
                 let ids = self.visible_workspace_ids();
@@ -1351,7 +454,7 @@ impl App {
         lines.saturating_sub(1).min(u16::MAX as usize) as u16
     }
 
-    fn terminal_stream_size(&self, size: Rect) -> (u16, u16) {
+    pub(crate) fn terminal_stream_size(&self, size: Rect) -> (u16, u16) {
         let outer = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -2270,40 +1373,6 @@ impl App {
         Line::from(spans)
     }
 
-    fn editor_mode_label(&self) -> &'static str {
-        match self.editor_mode {
-            ComposerEditorMode::Standard => "standard",
-            ComposerEditorMode::Vim(VimMode::Insert) => "vim insert",
-            ComposerEditorMode::Vim(VimMode::Normal) => "vim normal",
-        }
-    }
-
-    fn editor_panel_title(&self) -> String {
-        let label = match self.selected_pane {
-            Pane::Notes => "Notes Editor",
-            _ => "Composer",
-        };
-        format!("{label} [{}]", self.editor_mode_label())
-    }
-
-    fn toggle_editor_mode(&mut self) {
-        self.editor_mode = match self.editor_mode {
-            ComposerEditorMode::Standard => ComposerEditorMode::Vim(VimMode::Insert),
-            ComposerEditorMode::Vim(_) => ComposerEditorMode::Standard,
-        };
-        self.status = format!("Editor mode: {}", self.editor_mode_label());
-    }
-
-    fn render_composer_text(&self) -> Text<'static> {
-        let show_cursor = self.focus == Focus::Composer && self.selected_pane == Pane::Chat;
-        render_editor_buffer(
-            &self.composer,
-            self.composer_cursor.min(self.composer.len()),
-            show_cursor,
-            self.editor_mode,
-        )
-    }
-
     fn draft_status_label(&self) -> String {
         if self.composer_queue_conflict {
             "blocked by queued follow-up".to_string()
@@ -2375,7 +1444,7 @@ impl App {
         }
     }
 
-    fn current_composer_scratch_id(&self) -> Option<Uuid> {
+    pub(crate) fn current_composer_scratch_id(&self) -> Option<Uuid> {
         if self.creating_new_session {
             self.selected_workspace_id
         } else {
@@ -2383,7 +1452,7 @@ impl App {
         }
     }
 
-    fn current_queue_session_id(&self) -> Option<Uuid> {
+    pub(crate) fn current_queue_session_id(&self) -> Option<Uuid> {
         if self.creating_new_session {
             None
         } else {
@@ -2391,7 +1460,7 @@ impl App {
         }
     }
 
-    fn sync_composer_context(&mut self) {
+    pub(crate) fn sync_composer_context(&mut self) {
         let current_scope = self.current_conversation_scope();
         let optimistic_before = self.optimistic_entries.len();
         self.optimistic_entries
@@ -2423,7 +1492,7 @@ impl App {
         self.refresh_queue_status();
     }
 
-    fn refresh_queue_status(&mut self) {
+    pub(crate) fn refresh_queue_status(&mut self) {
         if let Some(session_id) = self.current_queue_session_id() {
             self.queue_pending = true;
             self.api.load_queue_status(session_id, self.tx.clone());
@@ -2437,7 +1506,7 @@ impl App {
         }
     }
 
-    fn has_running_process(&self) -> bool {
+    pub(crate) fn has_running_process(&self) -> bool {
         self.bundle
             .process_map
             .values()
@@ -2497,7 +1566,7 @@ impl App {
         self.mark_chat_render_cache_dirty();
     }
 
-    fn reset_conversation_state(&mut self) {
+    pub(crate) fn reset_conversation_state(&mut self) {
         if let Some(handle) = self.conversation_loader.take() {
             handle.abort();
         }
@@ -2509,7 +1578,7 @@ impl App {
         self.reset_chat_render_cache();
     }
 
-    fn refresh_conversation_history(&mut self) {
+    pub(crate) fn refresh_conversation_history(&mut self) {
         let Some(session_id) = self.bundle.selected_session_id else {
             self.conversation_process_entries.clear();
             self.conversation_process_order.clear();
@@ -2595,7 +1664,7 @@ impl App {
         }));
     }
 
-    fn reconcile_optimistic_entries(&mut self) {
+    pub(crate) fn reconcile_optimistic_entries(&mut self) {
         let Some(scope) = self.current_conversation_scope() else {
             self.optimistic_entries.clear();
             self.mark_chat_render_cache_dirty();
@@ -2716,7 +1785,7 @@ impl App {
         }
     }
 
-    fn mark_chat_render_cache_dirty(&mut self) {
+    pub(crate) fn mark_chat_render_cache_dirty(&mut self) {
         self.chat_render_cache_dirty = true;
     }
 
@@ -2778,7 +1847,7 @@ impl App {
         lines
     }
 
-    fn rebind_discovery_stream(&mut self) {
+    pub(crate) fn rebind_discovery_stream(&mut self) {
         let Some(config) = self.composer_config.as_ref() else {
             return;
         };
@@ -2974,7 +2043,7 @@ impl App {
             .unwrap_or(0)
     }
 
-    fn open_agent_picker(&mut self) {
+    pub(crate) fn open_agent_picker(&mut self) {
         let options = self.agent_mode_options();
         if options.is_empty() {
             self.status = "No agent modes available".to_string();
@@ -3099,98 +2168,6 @@ impl App {
         self.agent_picker = None;
     }
 
-    fn open_session_rename(&mut self) {
-        if self.focus != Focus::Detail || !matches!(self.selected_pane, Pane::Chat | Pane::Logs) {
-            return;
-        }
-        let Some(session) = self.selected_session_for_rename() else {
-            self.status = "Select a real session to rename".to_string();
-            return;
-        };
-        let name = session
-            .name
-            .clone()
-            .unwrap_or_else(|| session.id.to_string());
-        self.session_rename = Some(SessionRenameState {
-            session_id: session.id,
-            cursor: name.len(),
-            name,
-        });
-        self.status = "Rename session".to_string();
-        self.error = None;
-    }
-
-    async fn handle_session_rename_key(&mut self, key: KeyEvent) {
-        let Some(rename) = self.session_rename.as_mut() else {
-            return;
-        };
-
-        match key {
-            KeyEvent {
-                code: KeyCode::Esc, ..
-            } => {
-                self.session_rename = None;
-                self.status = "Cancelled session rename".to_string();
-            }
-            _ => match map_text_input_key(
-                key,
-                TextInputOptions {
-                    submit_on_enter: true,
-                    enter_inserts_newline: false,
-                    shift_enter_inserts_newline: false,
-                },
-            ) {
-                Some(TextInputEvent::Submit) => self.submit_session_rename().await,
-                Some(TextInputEvent::Edit(action)) => {
-                    apply_text_edit_action(&mut rename.name, &mut rename.cursor, action);
-                    rename.cursor = rename.cursor.min(rename.name.len());
-                }
-                None => {}
-            },
-        }
-    }
-
-    async fn submit_session_rename(&mut self) {
-        let Some(rename) = self.session_rename.take() else {
-            return;
-        };
-        let trimmed = rename.name.trim().to_string();
-        if trimmed.is_empty() {
-            self.error = Some("Session name cannot be empty".to_string());
-            self.status = "Session name cannot be empty".to_string();
-            self.session_rename = Some(rename);
-            return;
-        }
-
-        match self
-            .api
-            .rename_session(rename.session_id, trimmed.clone())
-            .await
-        {
-            Ok(updated) => {
-                if let Some(session) = self
-                    .bundle
-                    .sessions
-                    .iter_mut()
-                    .find(|session| session.id == updated.id)
-                {
-                    *session = updated;
-                }
-                self.status = format!("Renamed session to {trimmed}");
-                self.error = None;
-            }
-            Err(error) => {
-                self.session_rename = Some(SessionRenameState {
-                    session_id: rename.session_id,
-                    cursor: rename.cursor.min(rename.name.len()),
-                    name: rename.name,
-                });
-                self.error = Some(error.to_string());
-                self.status = error.to_string();
-            }
-        }
-    }
-
     fn selected_agent_mode_label(&self) -> String {
         let Some(selected_id) = self
             .composer_config
@@ -3214,7 +2191,7 @@ impl App {
             .unwrap_or_default()
     }
 
-    async fn cycle_executor(&mut self) {
+    pub(crate) async fn cycle_executor(&mut self) {
         let options = self.executor_options();
         if options.is_empty() {
             self.status = "Executor profiles are still loading".to_string();
@@ -3244,7 +2221,7 @@ impl App {
             .await;
     }
 
-    async fn cycle_variant(&mut self) {
+    pub(crate) async fn cycle_variant(&mut self) {
         let Some(config) = self.composer_config.as_ref() else {
             self.status = "Composer config is still loading".to_string();
             return;
@@ -3268,7 +2245,7 @@ impl App {
         .await;
     }
 
-    fn cycle_model(&mut self) {
+    pub(crate) fn cycle_model(&mut self) {
         let options = self.model_options();
         if options.is_empty() {
             self.status = "No model options available".to_string();
@@ -3288,7 +2265,7 @@ impl App {
         }
     }
 
-    fn cycle_reasoning(&mut self) {
+    pub(crate) fn cycle_reasoning(&mut self) {
         let options = self.reasoning_options();
         if options.is_empty() {
             self.status = "No reasoning options available".to_string();
@@ -3309,7 +2286,7 @@ impl App {
         }
     }
 
-    fn cycle_permission_mode(&mut self) {
+    pub(crate) fn cycle_permission_mode(&mut self) {
         let options = self.permission_options();
         if options.is_empty() {
             self.status = "No permission modes available".to_string();
@@ -3335,7 +2312,7 @@ impl App {
         }
     }
 
-    fn sync_composer_executor_with_session(&mut self) {
+    pub(crate) fn sync_composer_executor_with_session(&mut self) {
         if self.creating_new_session {
             return;
         }
@@ -3364,148 +2341,7 @@ impl App {
         self.rebind_discovery_stream();
     }
 
-    fn ensure_workspace_selected(&mut self, size: Rect) {
-        if self.selected_workspace_id.is_some() {
-            return;
-        }
-        self.selected_workspace_id = self.visible_workspace_ids().first().copied();
-        self.load_selected_workspace(size);
-    }
-
-    fn load_selected_workspace(&mut self, size: Rect) {
-        let Some(workspace_id) = self.selected_workspace_id else {
-            return;
-        };
-        self.creating_new_session = false;
-        self.chat_end_offset = 0;
-        let terminal_size = self.terminal_stream_size(size);
-        self.bundle = WorkspaceBundle::default();
-        self.bundle.terminal = TerminalState::default();
-        self.bundle.terminal.size = terminal_size;
-        self.bundle
-            .terminal
-            .parser
-            .set_size(terminal_size.1, terminal_size.0);
-        self.composer.clear();
-        self.composer_cursor = 0;
-        self.composer_dirty = false;
-        self.draft_save_in_flight = false;
-        self.last_composer_edit = None;
-        self.composer_scratch_loaded = false;
-        self.composer_scratch_id = None;
-        self.notes_save_in_flight = false;
-        self.queue_status = QueueStatus::Empty;
-        self.queue_session_id = None;
-        self.queue_pending = false;
-        self.session_rename = None;
-        self.reset_conversation_state();
-        self.api.load_workspace(workspace_id, self.tx.clone());
-        self.api.replace_workspace_subscriptions(
-            workspace_id,
-            None,
-            None,
-            terminal_size,
-            self.tx.clone(),
-            &mut self.subscriptions,
-        );
-    }
-
-    fn rebind_session_streams(&mut self) {
-        self.chat_end_offset = 0;
-        self.api.replace_process_stream(
-            self.bundle.selected_session_id,
-            self.tx.clone(),
-            &mut self.subscriptions,
-        );
-        self.sync_composer_context();
-    }
-
-    fn rebind_logs_only(&mut self) {
-        self.api.replace_logs_stream(
-            self.bundle.selected_process_id,
-            self.tx.clone(),
-            &mut self.subscriptions,
-        );
-    }
-
-    fn switch_session_or_process(&mut self, size: Rect) {
-        let _ = size;
-        let rows = self.session_rows();
-        let index = self.selected_session_row_index(&rows).unwrap_or(0);
-        if let Some(row) = rows.get(index) {
-            if let Some(target) = session_target(row) {
-                self.select_session_target(target);
-            }
-        }
-    }
-
-    fn session_rows(&self) -> Vec<SessionRow<'_>> {
-        let mut rows = Vec::with_capacity(self.bundle.sessions.len() + 1);
-        rows.push(SessionRow::NewSession);
-        rows.extend(self.bundle.sessions.iter().map(SessionRow::Session));
-        rows
-    }
-
-    fn selected_session_row_index(&self, rows: &[SessionRow<'_>]) -> Option<usize> {
-        if self.creating_new_session {
-            return Some(0);
-        }
-        let selected = self.bundle.selected_session_id?;
-        rows.iter().position(|row| match row {
-            SessionRow::NewSession => false,
-            SessionRow::Session(session) => session.id == selected,
-        })
-    }
-
-    fn selected_session_for_rename(&self) -> Option<&Session> {
-        let rows = self.session_rows();
-        let index = self.selected_session_row_index(&rows)?;
-        match rows.get(index)? {
-            SessionRow::Session(session) => Some(session),
-            SessionRow::NewSession => None,
-        }
-    }
-
-    fn select_session_target(&mut self, target: SessionTarget) {
-        match target {
-            SessionTarget::NewSession => {
-                self.session_rename = None;
-                self.creating_new_session = true;
-                self.selected_pane = Pane::Chat;
-                self.rebind_discovery_stream();
-                self.sync_composer_context();
-                self.status = "New session: type a prompt and press Enter".to_string();
-            }
-            SessionTarget::Existing(session_id) => {
-                if self.bundle.selected_session_id != Some(session_id) || self.creating_new_session
-                {
-                    self.session_rename = None;
-                    self.bundle.selected_session_id = Some(session_id);
-                    self.creating_new_session = false;
-                    self.rebind_session_streams();
-                    self.rebind_discovery_stream();
-                }
-            }
-        }
-    }
-
-    fn cancel_new_session_flow(&mut self) {
-        if !self.creating_new_session {
-            return;
-        }
-        self.creating_new_session = false;
-        self.sync_composer_context();
-        self.status = "Cancelled new session".to_string();
-        self.error = None;
-    }
-
-    fn current_session(&self) -> Option<&Session> {
-        self.bundle
-            .selected_session_id
-            .and_then(|id| self.bundle.sessions.iter().find(|session| session.id == id))
-    }
-
-    async fn queue_prompt(&mut self) {
+    pub(crate) async fn queue_prompt(&mut self) {
         let Some(session_id) = self.current_queue_session_id() else {
             self.status = "Queueing is only available for an existing session".to_string();
             return;
@@ -3548,7 +2384,7 @@ impl App {
         }
     }
 
-    async fn cancel_queued_prompt(&mut self) {
+    pub(crate) async fn cancel_queued_prompt(&mut self) {
         let Some(session_id) = self.current_queue_session_id() else {
             self.status = "No session queue to cancel".to_string();
             return;
@@ -3587,7 +2423,7 @@ impl App {
         }
     }
 
-    async fn discard_draft(&mut self) {
+    pub(crate) async fn discard_draft(&mut self) {
         self.composer.clear();
         self.composer_cursor = 0;
         self.composer_dirty = false;
@@ -3607,217 +2443,9 @@ impl App {
         }
     }
 
-    fn all_workspaces(&self) -> Vec<&WorkspaceWithStatus> {
-        let mut workspaces = self.active_workspaces.values().collect::<Vec<_>>();
-        workspaces.sort_by(|left, right| {
-            right
-                .pinned
-                .cmp(&left.pinned)
-                .then_with(|| right.created_at.cmp(&left.created_at))
-        });
-        workspaces
-    }
-
-    fn filtered_workspaces(&self) -> Vec<&WorkspaceWithStatus> {
-        self.all_workspaces()
-            .into_iter()
-            .filter(|workspace| {
-                if self.filter.is_empty() {
-                    return true;
-                }
-                let title = workspace_title(&workspace.workspace).to_lowercase();
-                let branch = workspace.branch.to_lowercase();
-                let filter = self.filter.to_lowercase();
-                title.contains(&filter) || branch.contains(&filter)
-            })
-            .collect()
-    }
-
-    fn filtered_archived_workspaces(&self) -> Vec<&WorkspaceWithStatus> {
-        let mut workspaces = self
-            .archived_workspaces
-            .values()
-            .filter(|workspace| {
-                if self.filter.is_empty() {
-                    return true;
-                }
-                let title = workspace_title(&workspace.workspace).to_lowercase();
-                let branch = workspace.branch.to_lowercase();
-                let filter = self.filter.to_lowercase();
-                title.contains(&filter) || branch.contains(&filter)
-            })
-            .collect::<Vec<_>>();
-        workspaces.sort_by(|left, right| {
-            right
-                .pinned
-                .cmp(&left.pinned)
-                .then_with(|| right.created_at.cmp(&left.created_at))
-        });
-        workspaces
-    }
-
-    fn workspace_rows(&self) -> Vec<WorkspaceRow<'_>> {
-        let active = self.filtered_workspaces();
-        let mut needs_attention = Vec::new();
-        let mut running = Vec::new();
-        let mut idle = Vec::new();
-
-        for workspace in active {
-            let summary = self.summaries.get(&workspace.id);
-            let needs_attention_bucket = summary
-                .is_some_and(|summary| summary.has_pending_approval || summary.has_unseen_turns);
-            if needs_attention_bucket {
-                needs_attention.push(workspace);
-            } else if workspace.is_running
-                || summary.is_some_and(|summary| summary.has_running_dev_server)
-            {
-                running.push(workspace);
-            } else {
-                idle.push(workspace);
-            }
-        }
-
-        let mut rows = Vec::new();
-        self.push_workspace_group(&mut rows, "Needs Attention", &needs_attention);
-        self.push_workspace_group(&mut rows, "Running", &running);
-        self.push_workspace_group(&mut rows, "Idle", &idle);
-
-        if self.show_archived {
-            let archived = self.filtered_archived_workspaces();
-            self.push_workspace_group(&mut rows, "Archived", &archived);
-        }
-
-        rows
-    }
-
-    fn push_workspace_group<'a>(
-        &self,
-        rows: &mut Vec<WorkspaceRow<'a>>,
-        title: &'static str,
-        workspaces: &[&'a WorkspaceWithStatus],
-    ) {
-        if workspaces.is_empty() {
-            return;
-        }
-        rows.push(WorkspaceRow::Header(title));
-        rows.extend(workspaces.iter().copied().map(WorkspaceRow::Workspace));
-    }
-
-    fn selected_workspace_row_index(&self, rows: &[WorkspaceRow<'_>]) -> Option<usize> {
-        let selected_id = self.selected_workspace_id?;
-        rows.iter().position(|row| match row {
-            WorkspaceRow::Header(_) => false,
-            WorkspaceRow::Workspace(workspace) => workspace.id == selected_id,
-        })
-    }
-
-    fn visible_workspace_ids(&self) -> Vec<Uuid> {
-        self.workspace_rows()
-            .into_iter()
-            .filter_map(|row| match row {
-                WorkspaceRow::Header(_) => None,
-                WorkspaceRow::Workspace(workspace) => Some(workspace.id),
-            })
-            .collect()
-    }
-
-    fn find_workspace(&self, workspace_id: Uuid) -> Option<&WorkspaceWithStatus> {
-        self.active_workspaces
-            .get(&workspace_id)
-            .or_else(|| self.archived_workspaces.get(&workspace_id))
-    }
-
-    async fn toggle_pinned(&mut self) {
-        let Some(workspace_id) = self.selected_workspace_id else {
-            return;
-        };
-        let Some(workspace) = self.find_workspace(workspace_id) else {
-            return;
-        };
-        match self
-            .api
-            .toggle_pinned(workspace_id, !workspace.pinned)
-            .await
-        {
-            Ok(()) => self.status = "Updated pin state".to_string(),
-            Err(error) => self.status = error.to_string(),
-        }
-    }
-
-    async fn toggle_archived(&mut self) {
-        let Some(workspace_id) = self.selected_workspace_id else {
-            return;
-        };
-        let Some(workspace) = self.find_workspace(workspace_id) else {
-            return;
-        };
-        match self
-            .api
-            .toggle_archived(workspace_id, !workspace.archived)
-            .await
-        {
-            Ok(()) => self.status = "Updated archive state".to_string(),
-            Err(error) => self.status = error.to_string(),
-        }
-    }
-
-    async fn stop_workspace(&mut self) {
-        if let Some(workspace_id) = self.selected_workspace_id {
-            match self.api.stop_workspace(workspace_id).await {
-                Ok(()) => {
-                    self.status = "Stopped workspace execution".to_string();
-                    self.refresh_queue_status();
-                }
-                Err(error) => self.status = error.to_string(),
-            }
-        }
-    }
-
-    async fn start_dev_server(&mut self) {
-        if let Some(workspace_id) = self.selected_workspace_id {
-            match self.api.start_dev_server(workspace_id).await {
-                Ok(()) => self.status = "Started dev server".to_string(),
-                Err(error) => self.status = error.to_string(),
-            }
-        }
-    }
-
-    async fn run_cleanup(&mut self) {
-        if let Some(workspace_id) = self.selected_workspace_id {
-            match self.api.run_cleanup(workspace_id).await {
-                Ok(()) => self.status = "Started cleanup script".to_string(),
-                Err(error) => self.status = error.to_string(),
-            }
-        }
-    }
-
-    async fn open_editor(&mut self) {
-        if let Some(workspace_id) = self.selected_workspace_id {
-            match self.api.open_editor(workspace_id).await {
-                Ok(()) => self.status = "Requested editor open".to_string(),
-                Err(error) => self.status = error.to_string(),
-            }
-        }
-    }
-
-    fn forward_terminal_key(&mut self, key: KeyEvent) {
+    fn send_terminal_input(&mut self, bytes: Vec<u8>) {
         let Some(tx) = &self.subscriptions.terminal_tx else {
             return;
-        };
-        let bytes = match key.code {
-            KeyCode::Enter => vec![b'\r'],
-            KeyCode::Backspace => vec![0x7f],
-            KeyCode::Tab => vec![b'\t'],
-            KeyCode::Esc => vec![0x1b],
-            KeyCode::Left => b"\x1b[D".to_vec(),
-            KeyCode::Right => b"\x1b[C".to_vec(),
-            KeyCode::Up => b"\x1b[A".to_vec(),
-            KeyCode::Down => b"\x1b[B".to_vec(),
-            KeyCode::Char(ch) if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                vec![(ch as u8) & 0x1f]
-            }
-            KeyCode::Char(ch) => ch.to_string().into_bytes(),
-            _ => return,
         };
         let _ = tx.send(TerminalCommand::Input(bytes));
     }
@@ -3843,25 +2471,6 @@ fn default_variant_to_none(variant: String) -> Option<String> {
         None
     } else {
         Some(variant)
-    }
-}
-
-fn is_terminal_exit_key(key: &KeyEvent) -> bool {
-    match key {
-        KeyEvent {
-            code: KeyCode::Esc, ..
-        } => true,
-        KeyEvent {
-            code: KeyCode::Char(']'),
-            modifiers,
-            ..
-        } if modifiers.contains(KeyModifiers::CONTROL) => true,
-        KeyEvent {
-            code: KeyCode::Char('g'),
-            modifiers,
-            ..
-        } if modifiers.contains(KeyModifiers::CONTROL) => true,
-        _ => false,
     }
 }
 
@@ -3912,11 +2521,4 @@ fn selected_list_offset(selected: usize, total: usize, viewport: usize) -> usize
             .saturating_sub(viewport.saturating_sub(1))
             .min(total.saturating_sub(viewport))
     }
-}
-
-fn session_target(row: &SessionRow<'_>) -> Option<SessionTarget> {
-    Some(match row {
-        SessionRow::NewSession => SessionTarget::NewSession,
-        SessionRow::Session(session) => SessionTarget::Existing(session.id),
-    })
 }

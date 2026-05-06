@@ -1,10 +1,14 @@
 mod api;
 mod app;
+mod app_editor;
+mod app_state;
+mod app_update;
 mod conversation;
 mod editor;
 mod input;
 mod model;
 mod ui;
+mod workspace;
 
 use anyhow::Result;
 use crossterm::{
