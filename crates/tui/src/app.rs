@@ -3450,9 +3450,19 @@ fn render_normalized_chat_entry(entry: &executors::logs::NormalizedEntry) -> Vec
             ]),
             Line::raw(""),
         ],
-        NormalizedEntryType::UserMessage => render_labeled_content("user", Color::Blue, content),
+        NormalizedEntryType::UserMessage => render_markdown_labeled_content(
+            "user",
+            Color::Blue,
+            Style::default().fg(Color::Rgb(170, 210, 255)),
+            content,
+        ),
         NormalizedEntryType::AssistantMessage => {
-            render_labeled_content("assistant", Color::Green, content)
+            render_markdown_labeled_content(
+                "assistant",
+                Color::Green,
+                Style::default().fg(Color::Rgb(180, 255, 190)),
+                content,
+            )
         }
         NormalizedEntryType::SystemMessage => {
             render_labeled_content("system", Color::Magenta, content)
@@ -3502,6 +3512,225 @@ fn render_labeled_content(label: &str, label_color: Color, content: &str) -> Vec
     }
     lines.push(Line::raw(""));
     lines
+}
+
+fn render_markdown_labeled_content(
+    label: &str,
+    label_color: Color,
+    body_style: Style,
+    content: &str,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::styled(
+        label.to_string(),
+        Style::default()
+            .fg(label_color)
+            .add_modifier(Modifier::BOLD),
+    )];
+    if content.is_empty() {
+        lines.push(Line::styled(
+            "  (empty)".to_string(),
+            Style::default().fg(Color::DarkGray),
+        ));
+    } else {
+        lines.extend(render_markdown_lines(content, body_style));
+    }
+    lines.push(Line::raw(""));
+    lines
+}
+
+fn render_markdown_lines(content: &str, base_style: Style) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let mut in_code_block = false;
+
+    for raw_line in content.lines() {
+        let trimmed = raw_line.trim_start();
+        if trimmed.starts_with("```") {
+            in_code_block = !in_code_block;
+            continue;
+        }
+
+        if in_code_block {
+            lines.push(Line::styled(
+                format!("  {raw_line}"),
+                base_style.fg(Color::Yellow),
+            ));
+            continue;
+        }
+
+        if raw_line.trim().is_empty() {
+            lines.push(Line::raw(""));
+            continue;
+        }
+
+        if let Some((level, text)) = markdown_heading(raw_line) {
+            let style = base_style
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(if level <= 2 {
+                    Modifier::UNDERLINED
+                } else {
+                    Modifier::empty()
+                });
+            lines.push(Line::from(parse_inline_markdown(
+                &format!("  {text}"),
+                style,
+            )));
+            continue;
+        }
+
+        if let Some(text) = raw_line.trim_start().strip_prefix("> ") {
+            let mut spans = vec![Span::styled("> ", Style::default().fg(Color::DarkGray))];
+            spans.extend(parse_inline_markdown(
+                text,
+                base_style
+                    .fg(Color::Gray)
+                    .add_modifier(Modifier::ITALIC),
+            ));
+            lines.push(Line::from(spans));
+            continue;
+        }
+
+        if let Some((prefix, text)) = markdown_list_prefix(raw_line) {
+            let mut spans = vec![Span::styled(
+                format!("  {prefix} "),
+                Style::default().fg(Color::DarkGray),
+            )];
+            spans.extend(parse_inline_markdown(text, base_style));
+            lines.push(Line::from(spans));
+            continue;
+        }
+
+        let mut spans = vec![Span::styled("  ", base_style)];
+        spans.extend(parse_inline_markdown(raw_line, base_style));
+        lines.push(Line::from(spans));
+    }
+
+    lines
+}
+
+fn markdown_heading(line: &str) -> Option<(usize, &str)> {
+    let trimmed = line.trim_start();
+    let hashes = trimmed.chars().take_while(|ch| *ch == '#').count();
+    if hashes == 0 || hashes > 6 {
+        return None;
+    }
+    let text = trimmed[hashes..].trim_start();
+    if text.is_empty() {
+        None
+    } else {
+        Some((hashes, text))
+    }
+}
+
+fn markdown_list_prefix(line: &str) -> Option<(String, &str)> {
+    let trimmed = line.trim_start();
+    for bullet in ["- ", "* ", "+ "] {
+        if let Some(text) = trimmed.strip_prefix(bullet) {
+            return Some(("•".to_string(), text));
+        }
+    }
+
+    let digits = trimmed.chars().take_while(|ch| ch.is_ascii_digit()).count();
+    if digits > 0
+        && trimmed[digits..].starts_with(". ")
+    {
+        let prefix = trimmed[..digits].to_string();
+        let text = &trimmed[(digits + 2)..];
+        return Some((format!("{prefix}."), text));
+    }
+
+    None
+}
+
+fn parse_inline_markdown(content: &str, base_style: Style) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut buffer = String::new();
+    let mut bold = false;
+    let mut italic = false;
+    let mut strike = false;
+    let mut code = false;
+    let chars: Vec<char> = content.chars().collect();
+    let mut index = 0usize;
+
+    let flush = |spans: &mut Vec<Span<'static>>,
+                 buffer: &mut String,
+                 bold: bool,
+                 italic: bool,
+                 strike: bool,
+                 code: bool| {
+        if buffer.is_empty() {
+            return;
+        }
+        let mut style = base_style;
+        if bold {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        if italic {
+            style = style.add_modifier(Modifier::ITALIC);
+        }
+        if strike {
+            style = style.add_modifier(Modifier::CROSSED_OUT);
+        }
+        if code {
+            style = style.fg(Color::Yellow);
+        }
+        spans.push(Span::styled(std::mem::take(buffer), style));
+    };
+
+    while index < chars.len() {
+        if chars[index] == '['
+            && let Some(close_bracket) = chars[index + 1..].iter().position(|ch| *ch == ']')
+        {
+            let close_bracket = index + 1 + close_bracket;
+            if chars.get(close_bracket + 1) == Some(&'(')
+                && let Some(close_paren) = chars[close_bracket + 2..]
+                    .iter()
+                    .position(|ch| *ch == ')')
+            {
+                flush(&mut spans, &mut buffer, bold, italic, strike, code);
+                let close_paren = close_bracket + 2 + close_paren;
+                let text = chars[index + 1..close_bracket].iter().collect::<String>();
+                spans.push(Span::styled(
+                    text,
+                    base_style
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::UNDERLINED),
+                ));
+                index = close_paren + 1;
+                continue;
+            }
+        }
+
+        if index + 1 < chars.len() && chars[index] == '*' && chars[index + 1] == '*' {
+            flush(&mut spans, &mut buffer, bold, italic, strike, code);
+            bold = !bold;
+            index += 2;
+            continue;
+        }
+        if index + 1 < chars.len() && chars[index] == '~' && chars[index + 1] == '~' {
+            flush(&mut spans, &mut buffer, bold, italic, strike, code);
+            strike = !strike;
+            index += 2;
+            continue;
+        }
+        if chars[index] == '`' {
+            flush(&mut spans, &mut buffer, bold, italic, strike, code);
+            code = !code;
+            index += 1;
+            continue;
+        }
+        if chars[index] == '*' || chars[index] == '_' {
+            flush(&mut spans, &mut buffer, bold, italic, strike, code);
+            italic = !italic;
+            index += 1;
+            continue;
+        }
+
+        buffer.push(chars[index]);
+        index += 1;
+    }
+
+    flush(&mut spans, &mut buffer, bold, italic, strike, code);
+    spans
 }
 
 fn render_log_entry(index: usize, entry: &PatchType) -> Vec<Line<'static>> {
