@@ -20,7 +20,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect, Size},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap},
+    widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Tabs, Wrap},
 };
 use tokio::{
     select,
@@ -1453,13 +1453,67 @@ impl App {
         } else {
             "Conversation"
         };
-        let inner_height = area.height.saturating_sub(2) as usize;
-        let inner_width = area.width.saturating_sub(2) as usize;
-        let lines = self.chat_window_lines(inner_height.max(1), inner_width.max(1));
+        let block = panel_block(title, self.focus == Focus::Main);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        if inner.height == 0 || inner.width == 0 {
+            return;
+        }
+
+        let (messages_area, status_area) = if inner.height > 1 {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(1)])
+                .split(inner);
+            (chunks[0], Some(chunks[1]))
+        } else {
+            (inner, None)
+        };
+
+        let lines = self.chat_window_lines(
+            messages_area.height.max(1) as usize,
+            messages_area.width.max(1) as usize,
+        );
         frame.render_widget(
-            Paragraph::new(Text::from(lines))
-                .block(panel_block(title, self.focus == Focus::Main))
-                .wrap(Wrap { trim: false }),
+            Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+            messages_area,
+        );
+
+        if let Some(status_area) = status_area {
+            self.render_chat_status(frame, status_area);
+        }
+    }
+
+    fn render_chat_status(&self, frame: &mut Frame, area: Rect) {
+        let Some((total_tokens, context_window)) = self.latest_chat_token_usage() else {
+            frame.render_widget(
+                Paragraph::new(Line::styled(
+                    "latest token usage unavailable",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                area,
+            );
+            return;
+        };
+
+        let ratio = if context_window == 0 {
+            0.0
+        } else {
+            (total_tokens as f64 / context_window as f64).clamp(0.0, 1.0)
+        };
+        let gauge_color = if ratio >= 0.85 {
+            Color::Red
+        } else if ratio >= 0.65 {
+            Color::Yellow
+        } else {
+            Color::Green
+        };
+
+        frame.render_widget(
+            Gauge::default()
+                .ratio(ratio)
+                .label(format!("tokens {total_tokens}/{context_window}"))
+                .gauge_style(Style::default().fg(gauge_color)),
             area,
         );
     }
@@ -2141,6 +2195,18 @@ impl App {
 
     fn chat_line_count(&self) -> usize {
         self.chat_lines().len()
+    }
+
+    fn latest_chat_token_usage(&self) -> Option<(u32, u32)> {
+        self.canonical_chat_entries().iter().rev().find_map(|entry| match entry {
+            PatchType::NormalizedEntry(entry) => match &entry.entry_type {
+                executors::logs::NormalizedEntryType::TokenUsageInfo(info) => {
+                    Some((info.total_tokens, info.model_context_window))
+                }
+                _ => None,
+            },
+            _ => None,
+        })
     }
 
     fn chat_window_lines(&self, viewport_height: usize, viewport_width: usize) -> Vec<Line<'static>> {
@@ -3434,22 +3500,7 @@ fn render_normalized_chat_entry(entry: &executors::logs::NormalizedEntry) -> Vec
             lines.push(Line::raw(""));
             lines
         }
-        NormalizedEntryType::TokenUsageInfo(info) => vec![
-            Line::from(vec![
-                Span::styled(
-                    "tokens",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(
-                    format!("{}/{}", info.total_tokens, info.model_context_window),
-                    Style::default().fg(Color::LightYellow),
-                ),
-            ]),
-            Line::raw(""),
-        ],
+        NormalizedEntryType::TokenUsageInfo(_) => Vec::new(),
         NormalizedEntryType::UserMessage => render_markdown_labeled_content(
             "user",
             Color::Blue,
