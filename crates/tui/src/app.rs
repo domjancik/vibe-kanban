@@ -3452,8 +3452,8 @@ fn render_normalized_chat_entry(entry: &executors::logs::NormalizedEntry) -> Vec
         ],
         NormalizedEntryType::UserMessage => render_markdown_labeled_content(
             "user",
-            Color::Blue,
-            Style::default().fg(Color::Rgb(170, 210, 255)),
+            Color::Red,
+            Style::default().fg(Color::Rgb(255, 205, 205)),
             content,
         ),
         NormalizedEntryType::AssistantMessage => {
@@ -3778,6 +3778,63 @@ fn render_log_entry(index: usize, entry: &PatchType) -> Vec<Line<'static>> {
         .collect()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{render_normalized_chat_entry, wrap_line};
+    use executors::logs::{NormalizedEntry, NormalizedEntryType};
+    use ratatui::{
+        style::{Color, Modifier, Style},
+        text::Line,
+    };
+
+    fn entry(entry_type: NormalizedEntryType, content: &str) -> NormalizedEntry {
+        NormalizedEntry {
+            timestamp: None,
+            entry_type,
+            content: content.to_string(),
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn user_label_is_rendered_in_red() {
+        let lines = render_normalized_chat_entry(&entry(
+            NormalizedEntryType::UserMessage,
+            "Hello **world**",
+        ));
+        let label = &lines[0];
+        assert_eq!(label.spans[0].content.as_ref(), "user");
+        assert_eq!(label.style.fg, Some(Color::Red));
+        assert!(label.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn assistant_label_is_rendered_in_green() {
+        let lines = render_normalized_chat_entry(&entry(
+            NormalizedEntryType::AssistantMessage,
+            "Hi there",
+        ));
+        let label = &lines[0];
+        assert_eq!(label.spans[0].content.as_ref(), "assistant");
+        assert_eq!(label.style.fg, Some(Color::Green));
+        assert!(label.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn wrapped_label_preserves_line_color() {
+        let lines = wrap_line(
+            Line::styled(
+                "assistant",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            4,
+        );
+        assert!(lines.iter().all(|line| line.style.fg == Some(Color::Green)));
+    }
+}
+
 fn summarize_action(action_type: &executors::logs::ActionType) -> String {
     use executors::logs::ActionType;
 
@@ -3841,12 +3898,14 @@ fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
         return Vec::new();
     }
 
+    let line_style = line.style;
+    let line_alignment = line.alignment;
     let mut wrapped = Vec::new();
     let mut current = Vec::new();
     let mut current_width = 0usize;
 
     for span in line.spans {
-        let style = span.style;
+        let style = line_style.patch(span.style);
         let content = span.content.into_owned();
         if content.is_empty() {
             if current.is_empty() {
@@ -3857,7 +3916,10 @@ fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
 
         for ch in content.chars() {
             if current_width >= width {
-                wrapped.push(Line::from(std::mem::take(&mut current)));
+                let mut wrapped_line = Line::from(std::mem::take(&mut current));
+                wrapped_line.style = line_style;
+                wrapped_line.alignment = line_alignment;
+                wrapped.push(wrapped_line);
                 current_width = 0;
             }
             current.push(Span::styled(ch.to_string(), style));
@@ -3866,9 +3928,15 @@ fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
     }
 
     if current.is_empty() {
-        wrapped.push(Line::raw(String::new()));
+        let mut wrapped_line = Line::raw(String::new());
+        wrapped_line.style = line_style;
+        wrapped_line.alignment = line_alignment;
+        wrapped.push(wrapped_line);
     } else {
-        wrapped.push(Line::from(current));
+        let mut wrapped_line = Line::from(current);
+        wrapped_line.style = line_style;
+        wrapped_line.alignment = line_alignment;
+        wrapped.push(wrapped_line);
     }
 
     wrapped
