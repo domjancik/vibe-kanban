@@ -137,6 +137,11 @@ pub struct CreateSessionRequest {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct UpdateSessionRequest {
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct OpenEditorRequest {
     pub editor_type: Option<String>,
     pub file_path: Option<String>,

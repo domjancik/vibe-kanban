@@ -23,8 +23,8 @@ use crate::model::{
     ApiEnvelope, CreateSessionRequest, DiffStreamState, ExecutionProcessesState,
     ExecutorDiscoveryStreamState, FollowUpRequest, LogEntriesState, NetEvent, OpenEditorRequest,
     PatchType, QueueStatus, ScratchPayload, ScratchRecord, ScratchStreamState,
-    UpdateScratchPayload, UpdateScratchRequest, UpdateWorkspaceRequest, UserSystemInfo,
-    WorkspaceStreamState, WorkspaceSummaryRequest, WorkspaceSummaryResponse,
+    UpdateScratchPayload, UpdateScratchRequest, UpdateSessionRequest, UpdateWorkspaceRequest,
+    UserSystemInfo, WorkspaceStreamState, WorkspaceSummaryRequest, WorkspaceSummaryResponse,
 };
 
 const SCRATCH_TYPE_DRAFT_FOLLOW_UP: &str = "DRAFT_FOLLOW_UP";
@@ -366,6 +366,14 @@ impl Api {
             )
             .await?;
         Ok(())
+    }
+
+    pub async fn rename_session(&self, session_id: Uuid, name: String) -> Result<Session> {
+        self.put(
+            &format!("/api/sessions/{session_id}"),
+            &UpdateSessionRequest { name: Some(name) },
+        )
+        .await
     }
 
     pub fn load_queue_status(&self, session_id: Uuid, tx: UnboundedSender<NetEvent>) {

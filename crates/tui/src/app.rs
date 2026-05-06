@@ -59,6 +59,12 @@ struct AgentPickerState {
     selected: usize,
 }
 
+struct SessionRenameState {
+    session_id: Uuid,
+    name: String,
+    cursor: usize,
+}
+
 struct ChatRenderCache {
     width: usize,
     lines: Vec<Line<'static>>,
@@ -153,6 +159,7 @@ pub struct App {
     notes_edit_revision: u64,
     notes_save_in_flight: bool,
     agent_picker: Option<AgentPickerState>,
+    session_rename: Option<SessionRenameState>,
     creating_new_session: bool,
     should_quit: bool,
 }
@@ -215,6 +222,7 @@ impl App {
             notes_edit_revision: 0,
             notes_save_in_flight: false,
             agent_picker: None,
+            session_rename: None,
             creating_new_session: false,
             should_quit: false,
         }
@@ -563,6 +571,10 @@ impl App {
             self.handle_agent_picker_key(key);
             return;
         }
+        if self.session_rename.is_some() {
+            self.handle_session_rename_key(key).await;
+            return;
+        }
 
         if self.bundle.terminal.input_mode && self.selected_pane == Pane::Terminal {
             if is_terminal_exit_key(&key) {
@@ -618,7 +630,7 @@ impl App {
                 code: KeyCode::Char('?'),
                 ..
             } => {
-                self.status = "Keys: Tab focus, j/k nav, 1-6 panes, i edit, Enter open/send, E executor, V variant, M model, R reasoning, A agent menu, P permission, p pin, x archive, n new session, s start dev, c cleanup, e editor, Esc/C-]/C-g leave terminal".to_string();
+                self.status = "Keys: Tab focus, j/k nav, 1-6 panes, i edit, Enter open/send, r rename session, E executor, V variant, M model, R reasoning, A agent menu, P permission, p pin, x archive, n new session, s start dev, c cleanup, e editor, Esc/C-]/C-g leave terminal".to_string();
             }
             KeyEvent {
                 code: KeyCode::Char('1'),
@@ -691,6 +703,10 @@ impl App {
                 code: KeyCode::Char('e'),
                 ..
             } => self.open_editor().await,
+            KeyEvent {
+                code: KeyCode::Char('r'),
+                ..
+            } => self.open_session_rename(),
             KeyEvent {
                 code: KeyCode::Char('E'),
                 ..
@@ -1566,6 +1582,9 @@ impl App {
         if self.agent_picker.is_some() {
             self.render_agent_picker(frame, frame.area());
         }
+        if self.session_rename.is_some() {
+            self.render_session_rename(frame, frame.area());
+        }
     }
 
     fn render_workspace_list(&self, frame: &mut Frame, area: Rect) {
@@ -1781,7 +1800,8 @@ impl App {
                     Style::default().fg(Color::DarkGray),
                 ),
                 Line::styled(
-                    "v stop execution  s dev server  c cleanup  e editor".to_string(),
+                    "v stop execution  s dev server  c cleanup  e editor  r rename session"
+                        .to_string(),
                     Style::default().fg(Color::DarkGray),
                 ),
                 Line::raw(format!(
@@ -2270,6 +2290,41 @@ impl App {
                 .highlight_symbol(">> "),
             chunks[1],
             &mut state,
+        );
+    }
+
+    fn render_session_rename(&self, frame: &mut Frame, area: Rect) {
+        let Some(rename) = self.session_rename.as_ref() else {
+            return;
+        };
+        let popup = centered_rect(64, 24, area);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Length(1)])
+            .split(popup);
+
+        frame.render_widget(Clear, popup);
+        frame.render_widget(panel_block("Rename Session", true), popup);
+        frame.render_widget(
+            Paragraph::new(render_editor_buffer(
+                &rename.name,
+                rename.cursor,
+                true,
+                ComposerEditorMode::Standard,
+            ))
+            .block(panel_block("Name", false))
+            .wrap(Wrap { trim: false }),
+            chunks[0],
+        );
+        frame.render_widget(
+            Paragraph::new("Enter save  Esc cancel")
+                .block(panel_block("Hints", false))
+                .wrap(Wrap { trim: false }),
+            chunks[1],
+        );
+        frame.render_widget(
+            Paragraph::new("Rename the selected session in this workspace."),
+            chunks[2],
         );
     }
 
@@ -3190,6 +3245,134 @@ impl App {
         self.agent_picker = None;
     }
 
+    fn open_session_rename(&mut self) {
+        if self.focus != Focus::Detail || !matches!(self.selected_pane, Pane::Chat | Pane::Logs) {
+            return;
+        }
+        let Some(session) = self.selected_session_for_rename() else {
+            self.status = "Select a real session to rename".to_string();
+            return;
+        };
+        let name = session
+            .name
+            .clone()
+            .unwrap_or_else(|| session.id.to_string());
+        self.session_rename = Some(SessionRenameState {
+            session_id: session.id,
+            cursor: name.len(),
+            name,
+        });
+        self.status = "Rename session".to_string();
+        self.error = None;
+    }
+
+    async fn handle_session_rename_key(&mut self, key: KeyEvent) {
+        let Some(rename) = self.session_rename.as_mut() else {
+            return;
+        };
+
+        match key {
+            KeyEvent {
+                code: KeyCode::Esc, ..
+            } => {
+                self.session_rename = None;
+                self.status = "Cancelled session rename".to_string();
+            }
+            KeyEvent {
+                code: KeyCode::Enter,
+                ..
+            } => self.submit_session_rename().await,
+            KeyEvent {
+                code: KeyCode::Backspace,
+                ..
+            } => {
+                if rename.cursor > 0 {
+                    rename.name.remove(rename.cursor - 1);
+                    rename.cursor -= 1;
+                }
+            }
+            KeyEvent {
+                code: KeyCode::Delete,
+                ..
+            } => {
+                if rename.cursor < rename.name.len() {
+                    rename.name.remove(rename.cursor);
+                }
+            }
+            KeyEvent {
+                code: KeyCode::Left,
+                ..
+            } => rename.cursor = rename.cursor.saturating_sub(1),
+            KeyEvent {
+                code: KeyCode::Right,
+                ..
+            } => rename.cursor = (rename.cursor + 1).min(rename.name.len()),
+            KeyEvent {
+                code: KeyCode::Home,
+                ..
+            } => rename.cursor = 0,
+            KeyEvent {
+                code: KeyCode::End, ..
+            } => rename.cursor = rename.name.len(),
+            KeyEvent {
+                code: KeyCode::Char('a'),
+                modifiers,
+                ..
+            } if modifiers == KeyModifiers::CONTROL => rename.cursor = 0,
+            KeyEvent {
+                code: KeyCode::Char('e'),
+                modifiers,
+                ..
+            } if modifiers == KeyModifiers::CONTROL => rename.cursor = rename.name.len(),
+            KeyEvent {
+                code: KeyCode::Char(ch),
+                modifiers,
+                ..
+            } if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => {
+                rename.name.insert(rename.cursor, ch);
+                rename.cursor += 1;
+            }
+            _ => {}
+        }
+    }
+
+    async fn submit_session_rename(&mut self) {
+        let Some(rename) = self.session_rename.take() else {
+            return;
+        };
+        let trimmed = rename.name.trim().to_string();
+        if trimmed.is_empty() {
+            self.error = Some("Session name cannot be empty".to_string());
+            self.status = "Session name cannot be empty".to_string();
+            self.session_rename = Some(rename);
+            return;
+        }
+
+        match self.api.rename_session(rename.session_id, trimmed.clone()).await {
+            Ok(updated) => {
+                if let Some(session) = self
+                    .bundle
+                    .sessions
+                    .iter_mut()
+                    .find(|session| session.id == updated.id)
+                {
+                    *session = updated;
+                }
+                self.status = format!("Renamed session to {trimmed}");
+                self.error = None;
+            }
+            Err(error) => {
+                self.session_rename = Some(SessionRenameState {
+                    session_id: rename.session_id,
+                    cursor: rename.cursor.min(rename.name.len()),
+                    name: rename.name,
+                });
+                self.error = Some(error.to_string());
+                self.status = error.to_string();
+            }
+        }
+    }
+
     fn selected_agent_mode_label(&self) -> String {
         let Some(selected_id) = self
             .composer_config
@@ -3396,6 +3579,7 @@ impl App {
         self.queue_status = QueueStatus::Empty;
         self.queue_session_id = None;
         self.queue_pending = false;
+        self.session_rename = None;
         self.reset_conversation_state();
         self.api.load_workspace(workspace_id, self.tx.clone());
         self.api.replace_workspace_subscriptions(
@@ -3455,9 +3639,19 @@ impl App {
         })
     }
 
+    fn selected_session_for_rename(&self) -> Option<&Session> {
+        let rows = self.session_rows();
+        let index = self.selected_session_row_index(&rows)?;
+        match rows.get(index)? {
+            SessionRow::Session(session) => Some(session),
+            SessionRow::NewSession => None,
+        }
+    }
+
     fn select_session_target(&mut self, target: SessionTarget) {
         match target {
             SessionTarget::NewSession => {
+                self.session_rename = None;
                 self.creating_new_session = true;
                 self.selected_pane = Pane::Chat;
                 self.rebind_discovery_stream();
@@ -3467,6 +3661,7 @@ impl App {
             SessionTarget::Existing(session_id) => {
                 if self.bundle.selected_session_id != Some(session_id) || self.creating_new_session
                 {
+                    self.session_rename = None;
                     self.bundle.selected_session_id = Some(session_id);
                     self.creating_new_session = false;
                     self.rebind_session_streams();
