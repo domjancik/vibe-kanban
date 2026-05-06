@@ -1,6 +1,9 @@
 mod api;
 mod app;
+mod conversation;
+mod editor;
 mod model;
+mod ui;
 
 use anyhow::Result;
 use crossterm::{
