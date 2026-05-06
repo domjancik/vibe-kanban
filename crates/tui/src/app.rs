@@ -390,11 +390,15 @@ impl App {
                         .insert(process_id, entries);
                     self.reconcile_optimistic_entries();
                     let next_lines = self.chat_line_count();
-                    if previous_lines > 0 && next_lines > previous_lines {
-                        self.bundle.log_scroll = self
-                            .bundle
-                            .log_scroll
-                            .saturating_add((next_lines - previous_lines) as u16);
+                    if self.selected_pane == Pane::Chat {
+                        if previous_lines == 0 {
+                            self.bundle.log_scroll = self.max_scroll_for_selected_pane();
+                        } else if next_lines > previous_lines {
+                            self.bundle.log_scroll = self
+                                .bundle
+                                .log_scroll
+                                .saturating_add((next_lines - previous_lines) as u16);
+                        }
                     }
                 }
             }
@@ -403,9 +407,6 @@ impl App {
                     self.conversation_bootstrapping = false;
                     self.conversation_backfilling = self.conversation_process_entries.len()
                         < self.conversation_process_order.len();
-                    if self.selected_pane == Pane::Chat && self.bundle.log_scroll == 0 {
-                        self.bundle.log_scroll = self.max_scroll_for_selected_pane();
-                    }
                 }
             }
             NetEvent::ConversationBackfillComplete { session_id } => {
@@ -1996,7 +1997,7 @@ impl App {
         let api = self.api.clone();
         let tx = self.tx.clone();
         self.conversation_loader = Some(tokio::spawn(async move {
-            for process_id in &recent_ids {
+            for process_id in recent_ids.iter().rev() {
                 match api.fetch_process_log_snapshot(*process_id).await {
                     Ok(entries) => {
                         let _ = tx.send(NetEvent::ConversationHistoryLoaded {
@@ -2011,7 +2012,7 @@ impl App {
                 }
             }
             let _ = tx.send(NetEvent::ConversationBootstrapComplete { session_id });
-            for process_id in remaining_ids {
+            for process_id in remaining_ids.into_iter().rev() {
                 match api.fetch_process_log_snapshot(process_id).await {
                     Ok(entries) => {
                         let _ = tx.send(NetEvent::ConversationHistoryLoaded {
