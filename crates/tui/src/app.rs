@@ -1536,6 +1536,17 @@ impl App {
                 .add_modifier(Modifier::BOLD),
         );
         frame.render_stateful_widget(list, area, &mut state);
+        render_vertical_scrollbar(
+            frame,
+            area,
+            rows.len(),
+            viewport_capacity(area, 3),
+            selected_list_offset(
+                self.selected_workspace_row_index(&rows).unwrap_or(0),
+                rows.len(),
+                viewport_capacity(area, 3),
+            ),
+        );
     }
 
     fn render_main(&mut self, frame: &mut Frame, area: Rect) {
@@ -1639,9 +1650,9 @@ impl App {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
+                Constraint::Length(10),
                 Constraint::Length(12),
-                Constraint::Length(9),
-                Constraint::Min(8),
+                Constraint::Min(7),
             ])
             .split(area);
 
@@ -1724,6 +1735,17 @@ impl App {
             chunks[1],
             &mut state,
         );
+        render_vertical_scrollbar(
+            frame,
+            chunks[1],
+            session_rows.len(),
+            viewport_capacity(chunks[1], 2),
+            selected_list_offset(
+                self.selected_session_row_index(&session_rows).unwrap_or(0),
+                session_rows.len(),
+                viewport_capacity(chunks[1], 2),
+            ),
+        );
 
         let mut processes = self
             .bundle
@@ -1786,6 +1808,11 @@ impl App {
             Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
             messages_area,
         );
+        let total_lines = wrap_lines(self.chat_lines(), messages_area.width.max(1) as usize).len();
+        let visible_lines = messages_area.height.max(1) as usize;
+        let top_offset = total_lines
+            .saturating_sub(visible_lines.saturating_add(self.chat_end_offset as usize));
+        render_vertical_scrollbar(frame, area, total_lines, visible_lines, top_offset);
 
         if let Some(status_area) = status_area {
             self.render_chat_status(frame, status_area);
@@ -1859,6 +1886,17 @@ impl App {
             chunks[0],
             &mut state,
         );
+        render_vertical_scrollbar(
+            frame,
+            chunks[0],
+            self.bundle.diffs.len(),
+            viewport_capacity(chunks[0], 2),
+            selected_list_offset(
+                self.bundle.selected_diff_index,
+                self.bundle.diffs.len(),
+                viewport_capacity(chunks[0], 2),
+            ),
+        );
 
         let diff_text = self
             .bundle
@@ -1882,12 +1920,20 @@ impl App {
             .enumerate()
             .flat_map(|(index, entry)| render_log_entry(index, entry))
             .collect::<Vec<_>>();
+        let total_lines = lines.len();
         frame.render_widget(
             Paragraph::new(Text::from(lines))
                 .block(panel_block("Logs", self.focus == Focus::Main))
                 .scroll((self.bundle.log_scroll, 0))
                 .wrap(Wrap { trim: false }),
             area,
+        );
+        render_vertical_scrollbar(
+            frame,
+            area,
+            total_lines,
+            area.height.saturating_sub(2) as usize,
+            self.bundle.log_scroll as usize,
         );
     }
 
@@ -1941,11 +1987,19 @@ impl App {
                 })
                 .collect()
         };
+        let total_lines = lines.len();
         frame.render_widget(
             Paragraph::new(Text::from(lines))
                 .block(panel_block("Git", self.focus == Focus::Main))
                 .wrap(Wrap { trim: false }),
             area,
+        );
+        render_vertical_scrollbar(
+            frame,
+            area,
+            total_lines,
+            area.height.saturating_sub(2) as usize,
+            self.bundle.log_scroll as usize,
         );
     }
 
@@ -4398,6 +4452,69 @@ fn move_cursor_vertical(buffer: &str, cursor: usize, direction: i32) -> usize {
     let next_line_end = line_end_index(buffer, next_line_start);
     let next_line = &buffer[next_line_start..next_line_end];
     next_line_start + byte_index_for_column(next_line, current_column)
+}
+
+fn viewport_capacity(area: Rect, rows_per_item: u16) -> usize {
+    area.height
+        .saturating_sub(2)
+        .max(1)
+        .div_ceil(rows_per_item)
+        .max(1) as usize
+}
+
+fn selected_list_offset(selected: usize, total: usize, viewport: usize) -> usize {
+    if total <= viewport {
+        0
+    } else {
+        selected
+            .saturating_sub(viewport.saturating_sub(1))
+            .min(total.saturating_sub(viewport))
+    }
+}
+
+fn render_vertical_scrollbar(
+    frame: &mut Frame,
+    area: Rect,
+    total_items: usize,
+    viewport_items: usize,
+    offset: usize,
+) {
+    let inner = area.inner(ratatui::layout::Margin {
+        vertical: 1,
+        horizontal: 0,
+    });
+    if inner.height == 0
+        || inner.width == 0
+        || total_items <= viewport_items
+        || viewport_items == 0
+    {
+        return;
+    }
+
+    let track_height = inner.height as usize;
+    let thumb_height =
+        ((viewport_items * track_height).div_ceil(total_items)).clamp(1, track_height);
+    let max_offset = total_items.saturating_sub(viewport_items).max(1);
+    let max_thumb_top = track_height.saturating_sub(thumb_height);
+    let thumb_top = (offset.min(max_offset) * max_thumb_top) / max_offset;
+
+    let lines = (0..track_height)
+        .map(|index| {
+            if index >= thumb_top && index < thumb_top + thumb_height {
+                Line::styled("┃", Style::default().fg(Color::Cyan))
+            } else {
+                Line::styled("│", Style::default().fg(Color::DarkGray))
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let scrollbar_area = Rect {
+        x: inner.right().saturating_sub(1),
+        y: inner.y,
+        width: 1,
+        height: inner.height,
+    };
+    frame.render_widget(Paragraph::new(lines), scrollbar_area);
 }
 
 fn is_word_char(c: char) -> bool {
