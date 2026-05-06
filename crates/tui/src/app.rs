@@ -1488,7 +1488,7 @@ impl App {
         let Some((total_tokens, context_window)) = self.latest_chat_token_usage() else {
             frame.render_widget(
                 Paragraph::new(Line::styled(
-                    "latest token usage unavailable",
+                    "latest context usage unavailable",
                     Style::default().fg(Color::DarkGray),
                 )),
                 area,
@@ -1512,7 +1512,7 @@ impl App {
         frame.render_widget(
             Gauge::default()
                 .ratio(ratio)
-                .label(format!("tokens {total_tokens}/{context_window}"))
+                .label(format!("context {total_tokens}/{context_window}"))
                 .gauge_style(Style::default().fg(gauge_color)),
             area,
         );

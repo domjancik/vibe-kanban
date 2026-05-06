@@ -480,7 +480,7 @@ pub fn format_normalized_entry(entry: &NormalizedEntry) -> String {
         } => return format_tool_use(tool_name, action_type, status, &entry.content),
         NormalizedEntryType::TokenUsageInfo(info) => {
             return format!(
-                "tokens: {} / {}",
+                "context: {} / {}",
                 info.total_tokens, info.model_context_window
             );
         }
