@@ -136,7 +136,7 @@ export function XTermInstance({
   }, [theme]);
 
   return (
-    <div ref={resizeRef} className="terminal-shell w-full h-full">
+    <div ref={resizeRef} className="w-full h-full px-2 py-1">
       <div ref={containerRef} className="w-full h-full" />
     </div>
   );
