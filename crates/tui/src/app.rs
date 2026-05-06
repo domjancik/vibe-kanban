@@ -1454,7 +1454,8 @@ impl App {
             "Conversation"
         };
         let inner_height = area.height.saturating_sub(2) as usize;
-        let lines = self.chat_window_lines(inner_height.max(1));
+        let inner_width = area.width.saturating_sub(2) as usize;
+        let lines = self.chat_window_lines(inner_height.max(1), inner_width.max(1));
         frame.render_widget(
             Paragraph::new(Text::from(lines))
                 .block(panel_block(title, self.focus == Focus::Main))
@@ -2142,7 +2143,7 @@ impl App {
         self.chat_lines().len()
     }
 
-    fn chat_window_lines(&self, viewport_height: usize) -> Vec<Line<'static>> {
+    fn chat_window_lines(&self, viewport_height: usize, viewport_width: usize) -> Vec<Line<'static>> {
         if viewport_height == 0 {
             return Vec::new();
         }
@@ -2158,8 +2159,9 @@ impl App {
             .rev()
         {
             let lines = render_optimistic_chat_entry(entry);
-            collected_tail_lines = collected_tail_lines.saturating_add(lines.len());
-            tail_groups.push(lines);
+            let wrapped = wrap_lines(lines, viewport_width);
+            collected_tail_lines = collected_tail_lines.saturating_add(wrapped.len());
+            tail_groups.push(wrapped);
             if collected_tail_lines >= target_tail_lines {
                 break;
             }
@@ -2168,8 +2170,9 @@ impl App {
         if collected_tail_lines < target_tail_lines {
             for entry in self.canonical_chat_entries().iter().rev() {
                 let lines = render_chat_entry(entry);
-                collected_tail_lines = collected_tail_lines.saturating_add(lines.len());
-                tail_groups.push(lines);
+                let wrapped = wrap_lines(lines, viewport_width);
+                collected_tail_lines = collected_tail_lines.saturating_add(wrapped.len());
+                tail_groups.push(wrapped);
                 if collected_tail_lines >= target_tail_lines {
                     break;
                 }
@@ -2195,8 +2198,9 @@ impl App {
                     Style::default().fg(Color::DarkGray),
                 ));
                 lines.push(Line::raw(""));
-                collected_tail_lines = collected_tail_lines.saturating_add(lines.len());
-                tail_groups.push(lines);
+                let wrapped = wrap_lines(lines, viewport_width);
+                collected_tail_lines = collected_tail_lines.saturating_add(wrapped.len());
+                tail_groups.push(wrapped);
             }
         }
 
@@ -2221,7 +2225,7 @@ impl App {
                 Vec::new()
             };
             if !leading_lines.is_empty() {
-                tail_groups.push(leading_lines);
+                tail_groups.push(wrap_lines(leading_lines, viewport_width));
             }
         }
 
@@ -3591,6 +3595,50 @@ fn process_prompt(process: &ExecutionProcess) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+fn wrap_lines(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
+    lines.into_iter()
+        .flat_map(|line| wrap_line(line, width))
+        .collect()
+}
+
+fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+
+    let mut wrapped = Vec::new();
+    let mut current = Vec::new();
+    let mut current_width = 0usize;
+
+    for span in line.spans {
+        let style = span.style;
+        let content = span.content.into_owned();
+        if content.is_empty() {
+            if current.is_empty() {
+                current.push(Span::styled(String::new(), style));
+            }
+            continue;
+        }
+
+        for ch in content.chars() {
+            if current_width >= width {
+                wrapped.push(Line::from(std::mem::take(&mut current)));
+                current_width = 0;
+            }
+            current.push(Span::styled(ch.to_string(), style));
+            current_width += 1;
+        }
+    }
+
+    if current.is_empty() {
+        wrapped.push(Line::raw(String::new()));
+    } else {
+        wrapped.push(Line::from(current));
+    }
+
+    wrapped
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
