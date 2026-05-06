@@ -3412,7 +3412,7 @@ fn render_optimistic_chat_entry(entry: &OptimisticConversationEntry) -> Vec<Line
 fn render_chat_entry(entry: &PatchType) -> Vec<Line<'static>> {
     match entry {
         PatchType::NormalizedEntry(entry) => render_normalized_chat_entry(entry),
-        PatchType::Stdout(output) => vec![
+        PatchType::Stdout(output) => indent_chat_lines(vec![
             Line::styled(
                 "stdout",
                 Style::default()
@@ -3424,8 +3424,8 @@ fn render_chat_entry(entry: &PatchType) -> Vec<Line<'static>> {
                 Style::default().fg(Color::Gray),
             ),
             Line::raw(""),
-        ],
-        PatchType::Stderr(output) => vec![
+        ]),
+        PatchType::Stderr(output) => indent_chat_lines(vec![
             Line::styled(
                 "stderr",
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
@@ -3435,8 +3435,8 @@ fn render_chat_entry(entry: &PatchType) -> Vec<Line<'static>> {
                 Style::default().fg(Color::LightRed),
             ),
             Line::raw(""),
-        ],
-        PatchType::Diff(diff) => vec![
+        ]),
+        PatchType::Diff(diff) => indent_chat_lines(vec![
             Line::styled(
                 format!("diff {}", diff_title(diff)),
                 Style::default()
@@ -3445,7 +3445,7 @@ fn render_chat_entry(entry: &PatchType) -> Vec<Line<'static>> {
             ),
             Line::styled(format_patch_entry(entry), Style::default().fg(Color::Gray)),
             Line::raw(""),
-        ],
+        ]),
     }
 }
 
@@ -3498,7 +3498,7 @@ fn render_normalized_chat_entry(entry: &executors::logs::NormalizedEntry) -> Vec
                 );
             }
             lines.push(Line::raw(""));
-            lines
+            indent_chat_lines(lines)
         }
         NormalizedEntryType::TokenUsageInfo(_) => Vec::new(),
         NormalizedEntryType::UserMessage => render_markdown_labeled_content(
@@ -3518,17 +3518,21 @@ fn render_normalized_chat_entry(entry: &executors::logs::NormalizedEntry) -> Vec
         NormalizedEntryType::SystemMessage => {
             render_labeled_content("system", Color::Magenta, content)
         }
-        NormalizedEntryType::Thinking => render_labeled_content("thinking", Color::Gray, content),
-        NormalizedEntryType::Loading => render_labeled_content("loading", Color::DarkGray, content),
+        NormalizedEntryType::Thinking => {
+            indent_chat_lines(render_labeled_content("thinking", Color::Gray, content))
+        }
+        NormalizedEntryType::Loading => {
+            indent_chat_lines(render_labeled_content("loading", Color::DarkGray, content))
+        }
         NormalizedEntryType::UserFeedback { .. } => {
-            render_labeled_content("feedback", Color::LightBlue, content)
+            indent_chat_lines(render_labeled_content("feedback", Color::LightBlue, content))
         }
         NormalizedEntryType::ErrorMessage { .. } => {
-            render_labeled_content("error", Color::Red, content)
+            indent_chat_lines(render_labeled_content("error", Color::Red, content))
         }
         NormalizedEntryType::NextAction { failed, .. } => {
             let color = if *failed { Color::Red } else { Color::Cyan };
-            render_labeled_content("next", color, content)
+            indent_chat_lines(render_labeled_content("next", color, content))
         }
         NormalizedEntryType::UserAnsweredQuestions { answers } => {
             let text = answers
@@ -3536,9 +3540,28 @@ fn render_normalized_chat_entry(entry: &executors::logs::NormalizedEntry) -> Vec
                 .map(|item| format!("{}: {}", item.question, item.answer.join(", ")))
                 .collect::<Vec<_>>()
                 .join("\n");
-            render_labeled_content("answers", Color::LightBlue, &text)
+            indent_chat_lines(render_labeled_content("answers", Color::LightBlue, &text))
         }
     }
+}
+
+fn indent_chat_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    lines
+        .into_iter()
+        .map(|line| {
+            if line.spans.is_empty() {
+                return line;
+            }
+
+            let mut spans = Vec::with_capacity(line.spans.len() + 1);
+            spans.push(Span::raw("\t"));
+            spans.extend(line.spans);
+            let mut indented = Line::from(spans);
+            indented.style = line.style;
+            indented.alignment = line.alignment;
+            indented
+        })
+        .collect()
 }
 
 fn render_labeled_content(label: &str, label_color: Color, content: &str) -> Vec<Line<'static>> {
@@ -3846,7 +3869,7 @@ fn render_log_entry(index: usize, entry: &PatchType) -> Vec<Line<'static>> {
 #[cfg(test)]
 mod tests {
     use super::{parse_inline_markdown, render_normalized_chat_entry, wrap_line};
-    use executors::logs::{NormalizedEntry, NormalizedEntryType};
+    use executors::logs::{ActionType, NormalizedEntry, NormalizedEntryType, ToolStatus};
     use ratatui::{
         style::{Color, Modifier, Style},
         text::Line,
@@ -3911,6 +3934,22 @@ mod tests {
             spans.iter()
                 .all(|span| !span.style.add_modifier.contains(Modifier::ITALIC))
         );
+    }
+
+    #[test]
+    fn tool_entries_are_indented_in_chat() {
+        let lines = render_normalized_chat_entry(&entry(
+            NormalizedEntryType::ToolUse {
+                tool_name: "shell".to_string(),
+                action_type: ActionType::Other {
+                    description: "run".to_string(),
+                },
+                status: ToolStatus::Success,
+            },
+            "done",
+        ));
+        assert_eq!(lines[0].spans[0].content.as_ref(), "\t");
+        assert_eq!(lines[0].spans[1].content.as_ref(), "tool");
     }
 }
 
