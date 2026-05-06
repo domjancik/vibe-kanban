@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use db::models::{
@@ -30,6 +30,7 @@ pub struct WorkspaceStreamState {
     pub workspaces: HashMap<String, WorkspaceWithStatus>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct WorkspaceSummary {
     pub workspace_id: Uuid,
@@ -103,6 +104,7 @@ pub enum UpdateScratchPayload {
     WorkspaceNotes(WorkspaceNotesData),
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct QueuedMessage {
     pub session_id: Uuid,
@@ -166,6 +168,7 @@ pub struct ExecutorDiscoveryStreamState {
     pub options: ExecutorDiscoveredOptions,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct RepoBranchStatus {
     pub repo_id: Uuid,
@@ -174,6 +177,7 @@ pub struct RepoBranchStatus {
     pub status: BranchStatus,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct BranchStatus {
     pub commits_behind: Option<usize>,
@@ -204,6 +208,7 @@ pub struct PrMerge {
     pub pr_info: PullRequestInfo,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct PullRequestInfo {
     pub status: MergeStatus,
@@ -229,6 +234,7 @@ pub enum PatchType {
     Diff(LocalDiff),
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalDiff {
@@ -301,7 +307,6 @@ pub struct WorkspaceBundle {
     pub workspace: Option<Workspace>,
     pub repos: Vec<RepoWithTargetBranch>,
     pub sessions: Vec<Session>,
-    pub summaries: HashMap<Uuid, WorkspaceSummary>,
     pub git_status: Vec<RepoBranchStatus>,
     pub process_map: HashMap<Uuid, ExecutionProcess>,
     pub log_entries: Vec<PatchType>,
@@ -348,24 +353,11 @@ impl Default for TerminalState {
 }
 
 #[derive(Debug, Clone)]
-pub enum StreamKind {
-    ActiveWorkspaces,
-    ArchivedWorkspaces,
-    Diffs(Uuid),
-    Notes(Uuid),
-    Processes(Uuid),
-    Logs(Uuid),
-}
-
-#[derive(Debug, Clone)]
 pub enum NetEvent {
     UserSystemLoaded(UserSystemInfo),
     ActiveWorkspaces(WorkspaceStreamState),
     ArchivedWorkspaces(WorkspaceStreamState),
-    Summaries {
-        archived: bool,
-        data: Vec<WorkspaceSummary>,
-    },
+    Summaries(Vec<WorkspaceSummary>),
     WorkspaceLoaded(Workspace),
     SessionsLoaded {
         workspace_id: Uuid,
@@ -418,13 +410,10 @@ pub enum NetEvent {
         session_id: Uuid,
         status: QueueStatus,
     },
-    NotesSaved(Uuid),
     TerminalConnected(Uuid),
     TerminalOutput(Uuid, Vec<u8>),
     TerminalError(Uuid, String),
-    ActionOk(String),
     Error(String),
-    StreamClosed(StreamKind),
 }
 
 pub fn diff_title(diff: &LocalDiff) -> String {
@@ -565,14 +554,6 @@ pub fn workspace_title(workspace: &Workspace) -> String {
         .name
         .clone()
         .unwrap_or_else(|| workspace.branch.clone())
-}
-
-pub fn workspace_editor_path(bundle: &WorkspaceBundle) -> Option<PathBuf> {
-    bundle
-        .workspace
-        .as_ref()
-        .and_then(|workspace| workspace.container_ref.as_ref())
-        .map(PathBuf::from)
 }
 
 pub fn active_process(processes: &HashMap<Uuid, ExecutionProcess>) -> Option<ExecutionProcess> {

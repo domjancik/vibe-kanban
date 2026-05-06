@@ -232,7 +232,7 @@ impl App {
                     .collect();
                 self.ensure_workspace_selected(size);
             }
-            NetEvent::Summaries { data, .. } => {
+            NetEvent::Summaries(data) => {
                 for summary in data {
                     self.summaries.insert(summary.workspace_id, summary);
                 }
@@ -417,13 +417,6 @@ impl App {
                     }
                 }
             }
-            NetEvent::NotesSaved(workspace_id) => {
-                if Some(workspace_id) == self.selected_workspace_id {
-                    self.bundle.notes_dirty = false;
-                    self.bundle.last_notes_edit = None;
-                    self.status = "Notes saved".to_string();
-                }
-            }
             NetEvent::TerminalConnected(workspace_id) => {
                 if Some(workspace_id) == self.selected_workspace_id {
                     self.bundle.terminal.connected = true;
@@ -441,15 +434,10 @@ impl App {
                     self.bundle.terminal.connected = false;
                 }
             }
-            NetEvent::ActionOk(message) => {
-                self.status = message;
-                self.error = None;
-            }
             NetEvent::Error(message) => {
                 self.error = Some(message.clone());
                 self.status = message;
             }
-            NetEvent::StreamClosed(_) => {}
         }
     }
 
@@ -2181,12 +2169,14 @@ impl App {
             && let Some(process) = self.bundle.process_map.get(&process_id)
             && let Some(prompt) = process_prompt(process)
         {
-            entries.push(PatchType::NormalizedEntry(executors::logs::NormalizedEntry {
-                timestamp: Some(process.created_at.to_rfc3339()),
-                entry_type: executors::logs::NormalizedEntryType::UserMessage,
-                content: prompt,
-                metadata: None,
-            }));
+            entries.push(PatchType::NormalizedEntry(
+                executors::logs::NormalizedEntry {
+                    timestamp: Some(process.created_at.to_rfc3339()),
+                    entry_type: executors::logs::NormalizedEntryType::UserMessage,
+                    content: prompt,
+                    metadata: None,
+                },
+            ));
         }
 
         entries.extend(process_entries);
@@ -2198,18 +2188,25 @@ impl App {
     }
 
     fn latest_chat_token_usage(&self) -> Option<(u32, u32)> {
-        self.canonical_chat_entries().iter().rev().find_map(|entry| match entry {
-            PatchType::NormalizedEntry(entry) => match &entry.entry_type {
-                executors::logs::NormalizedEntryType::TokenUsageInfo(info) => {
-                    Some((info.total_tokens, info.model_context_window))
-                }
+        self.canonical_chat_entries()
+            .iter()
+            .rev()
+            .find_map(|entry| match entry {
+                PatchType::NormalizedEntry(entry) => match &entry.entry_type {
+                    executors::logs::NormalizedEntryType::TokenUsageInfo(info) => {
+                        Some((info.total_tokens, info.model_context_window))
+                    }
+                    _ => None,
+                },
                 _ => None,
-            },
-            _ => None,
-        })
+            })
     }
 
-    fn chat_window_lines(&self, viewport_height: usize, viewport_width: usize) -> Vec<Line<'static>> {
+    fn chat_window_lines(
+        &self,
+        viewport_height: usize,
+        viewport_width: usize,
+    ) -> Vec<Line<'static>> {
         if viewport_height == 0 {
             return Vec::new();
         }
@@ -2271,7 +2268,9 @@ impl App {
         }
 
         if collected_tail_lines < target_tail_lines {
-            let leading_lines = if self.conversation_bootstrapping && self.conversation_process_entries.is_empty() {
+            let leading_lines = if self.conversation_bootstrapping
+                && self.conversation_process_entries.is_empty()
+            {
                 vec![
                     Line::styled(
                         "Loading recent conversation...",
@@ -2300,7 +2299,9 @@ impl App {
             tail_lines.extend(group);
         }
 
-        let end = tail_lines.len().saturating_sub(self.chat_end_offset as usize);
+        let end = tail_lines
+            .len()
+            .saturating_sub(self.chat_end_offset as usize);
         let start = end.saturating_sub(viewport_height);
         tail_lines[start..end].to_vec()
     }
@@ -2869,7 +2870,8 @@ impl App {
         self.bundle = WorkspaceBundle::default();
         self.bundle.terminal = TerminalState::default();
         self.bundle.terminal.size = terminal_size;
-        self.bundle.terminal
+        self.bundle
+            .terminal
             .parser
             .set_size(terminal_size.1, terminal_size.0);
         self.composer.clear();
@@ -3126,13 +3128,6 @@ impl App {
             WorkspaceRow::Header(_) => false,
             WorkspaceRow::Workspace(workspace) => workspace.id == selected_id,
         })
-    }
-
-    fn filtered_workspace_ids(&self) -> Vec<Uuid> {
-        self.filtered_workspaces()
-            .into_iter()
-            .map(|workspace| workspace.id)
-            .collect()
     }
 
     fn visible_workspace_ids(&self) -> Vec<Uuid> {
@@ -3507,14 +3502,12 @@ fn render_normalized_chat_entry(entry: &executors::logs::NormalizedEntry) -> Vec
             Style::default().fg(Color::Rgb(170, 210, 255)),
             content,
         ),
-        NormalizedEntryType::AssistantMessage => {
-            render_markdown_labeled_content(
-                "assistant",
-                Color::Green,
-                Style::default().fg(Color::Rgb(180, 255, 190)),
-                content,
-            )
-        }
+        NormalizedEntryType::AssistantMessage => render_markdown_labeled_content(
+            "assistant",
+            Color::Green,
+            Style::default().fg(Color::Rgb(180, 255, 190)),
+            content,
+        ),
         NormalizedEntryType::SystemMessage => {
             render_labeled_content("system", Color::Magenta, content)
         }
@@ -3524,9 +3517,11 @@ fn render_normalized_chat_entry(entry: &executors::logs::NormalizedEntry) -> Vec
         NormalizedEntryType::Loading => {
             indent_chat_lines(render_labeled_content("loading", Color::DarkGray, content))
         }
-        NormalizedEntryType::UserFeedback { .. } => {
-            indent_chat_lines(render_labeled_content("feedback", Color::LightBlue, content))
-        }
+        NormalizedEntryType::UserFeedback { .. } => indent_chat_lines(render_labeled_content(
+            "feedback",
+            Color::LightBlue,
+            content,
+        )),
         NormalizedEntryType::ErrorMessage { .. } => {
             indent_chat_lines(render_labeled_content("error", Color::Red, content))
         }
@@ -3661,7 +3656,9 @@ fn render_markdown_lines(content: &str, base_style: Style) -> Vec<Line<'static>>
             )];
             spans.extend(parse_inline_markdown(
                 text,
-                base_style.add_modifier(Modifier::ITALIC).add_modifier(Modifier::DIM),
+                base_style
+                    .add_modifier(Modifier::ITALIC)
+                    .add_modifier(Modifier::DIM),
             ));
             lines.push(Line::from(spans));
             continue;
@@ -3708,9 +3705,7 @@ fn markdown_list_prefix(line: &str) -> Option<(String, &str)> {
     }
 
     let digits = trimmed.chars().take_while(|ch| ch.is_ascii_digit()).count();
-    if digits > 0
-        && trimmed[digits..].starts_with(". ")
-    {
+    if digits > 0 && trimmed[digits..].starts_with(". ") {
         let prefix = trimmed[..digits].to_string();
         let text = &trimmed[(digits + 2)..];
         return Some((format!("{prefix}."), text));
@@ -3762,9 +3757,8 @@ fn parse_inline_markdown(content: &str, base_style: Style) -> Vec<Span<'static>>
         {
             let close_bracket = index + 1 + close_bracket;
             if chars.get(close_bracket + 1) == Some(&'(')
-                && let Some(close_paren) = chars[close_bracket + 2..]
-                    .iter()
-                    .position(|ch| *ch == ')')
+                && let Some(close_paren) =
+                    chars[close_bracket + 2..].iter().position(|ch| *ch == ')')
             {
                 flush(&mut spans, &mut buffer, bold, italic, strike, code);
                 let close_paren = close_bracket + 2 + close_paren;
@@ -3796,9 +3790,7 @@ fn parse_inline_markdown(content: &str, base_style: Style) -> Vec<Span<'static>>
             index += 1;
             continue;
         }
-        if (chars[index] == '*' || chars[index] == '_')
-            && is_italic_delimiter(&chars, index)
-        {
+        if (chars[index] == '*' || chars[index] == '_') && is_italic_delimiter(&chars, index) {
             flush(&mut spans, &mut buffer, bold, italic, strike, code);
             italic = !italic;
             index += 1;
@@ -3868,12 +3860,13 @@ fn render_log_entry(index: usize, entry: &PatchType) -> Vec<Line<'static>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_inline_markdown, render_normalized_chat_entry, wrap_line};
     use executors::logs::{ActionType, NormalizedEntry, NormalizedEntryType, ToolStatus};
     use ratatui::{
         style::{Color, Modifier, Style},
         text::Line,
     };
+
+    use super::{parse_inline_markdown, render_normalized_chat_entry, wrap_line};
 
     fn entry(entry_type: NormalizedEntryType, content: &str) -> NormalizedEntry {
         NormalizedEntry {
@@ -3898,10 +3891,8 @@ mod tests {
 
     #[test]
     fn assistant_label_is_rendered_in_green() {
-        let lines = render_normalized_chat_entry(&entry(
-            NormalizedEntryType::AssistantMessage,
-            "Hi there",
-        ));
+        let lines =
+            render_normalized_chat_entry(&entry(NormalizedEntryType::AssistantMessage, "Hi there"));
         let label = &lines[0];
         assert_eq!(label.spans[0].content.as_ref(), "assistant");
         assert_eq!(label.style.fg, Some(Color::Green));
@@ -3931,7 +3922,8 @@ mod tests {
             .collect::<String>();
         assert_eq!(rendered, "render_chat after");
         assert!(
-            spans.iter()
+            spans
+                .iter()
                 .all(|span| !span.style.add_modifier.contains(Modifier::ITALIC))
         );
     }
@@ -4006,7 +3998,8 @@ fn process_prompt(process: &ExecutionProcess) -> Option<String> {
 }
 
 fn wrap_lines(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
-    lines.into_iter()
+    lines
+        .into_iter()
         .flat_map(|line| wrap_line(line, width))
         .collect()
 }

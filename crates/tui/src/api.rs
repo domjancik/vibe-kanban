@@ -22,7 +22,7 @@ use uuid::Uuid;
 use crate::model::{
     ApiEnvelope, CreateSessionRequest, DiffStreamState, ExecutionProcessesState,
     ExecutorDiscoveryStreamState, FollowUpRequest, LogEntriesState, NetEvent, OpenEditorRequest,
-    PatchType, QueueStatus, ScratchPayload, ScratchRecord, ScratchStreamState, StreamKind,
+    PatchType, QueueStatus, ScratchPayload, ScratchRecord, ScratchStreamState,
     UpdateScratchPayload, UpdateScratchRequest, UpdateWorkspaceRequest, UserSystemInfo,
     WorkspaceStreamState, WorkspaceSummaryRequest, WorkspaceSummaryResponse,
 };
@@ -97,11 +97,6 @@ impl Api {
         parse_api_response("PUT", path, response).await
     }
 
-    pub async fn post_no_content<B: Serialize>(&self, path: &str, body: &B) -> Result<()> {
-        let _: Value = self.post(path, body).await?;
-        Ok(())
-    }
-
     pub async fn post_empty(&self, path: &str) -> Result<()> {
         log_api(format!("HTTP POST {path}"));
         let response = self
@@ -128,13 +123,8 @@ impl Api {
 
     pub fn spawn_workspace_streams(&self, tx: UnboundedSender<NetEvent>) -> Vec<JoinHandle<()>> {
         vec![
-            spawn_workspace_stream(
-                self.clone(),
-                false,
-                tx.clone(),
-                StreamKind::ActiveWorkspaces,
-            ),
-            spawn_workspace_stream(self.clone(), true, tx, StreamKind::ArchivedWorkspaces),
+            spawn_workspace_stream(self.clone(), false, tx.clone()),
+            spawn_workspace_stream(self.clone(), true, tx),
         ]
     }
 
@@ -416,7 +406,7 @@ impl Api {
         self.delete_empty(&format!(
             "/api/scratch/{SCRATCH_TYPE_DRAFT_FOLLOW_UP}/{scratch_id}"
         ))
-            .await
+        .await
     }
 
     pub async fn queue_follow_up(
@@ -445,7 +435,12 @@ impl Api {
             .send()
             .await
             .with_context(|| format!("DELETE /api/sessions/{session_id}/queue failed"))?;
-        parse_api_response("DELETE", &format!("/api/sessions/{session_id}/queue"), response).await
+        parse_api_response(
+            "DELETE",
+            &format!("/api/sessions/{session_id}/queue"),
+            response,
+        )
+        .await
     }
 
     pub async fn fetch_process_log_snapshot(&self, process_id: Uuid) -> Result<Vec<PatchType>> {
@@ -627,14 +622,13 @@ async fn parse_api_response<T: DeserializeOwned>(
     let status = response.status();
     let body = response.text().await?;
     log_api(format!("HTTP {method} {path} -> {status}"));
-    let envelope: ApiEnvelope<T> =
-        serde_json::from_str(&body).with_context(|| {
-            log_api(format!(
-                "HTTP {method} {path} parse error body={}",
-                truncate_for_log(&body)
-            ));
-            format!("invalid API response: {body}")
-        })?;
+    let envelope: ApiEnvelope<T> = serde_json::from_str(&body).with_context(|| {
+        log_api(format!(
+            "HTTP {method} {path} parse error body={}",
+            truncate_for_log(&body)
+        ));
+        format!("invalid API response: {body}")
+    })?;
     if !status.is_success() || !envelope.success {
         log_api(format!(
             "HTTP {method} {path} api error body={}",
@@ -673,7 +667,6 @@ fn spawn_workspace_stream(
     api: Api,
     archived: bool,
     tx: UnboundedSender<NetEvent>,
-    kind: StreamKind,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let endpoint = format!(
@@ -696,7 +689,6 @@ fn spawn_workspace_stream(
         if let Err(error) = result {
             let _ = tx.send(NetEvent::Error(error.to_string()));
         }
-        let _ = tx.send(NetEvent::StreamClosed(kind));
     })
 }
 
@@ -711,10 +703,7 @@ fn spawn_summary_poller(api: Api, archived: bool, tx: UnboundedSender<NetEvent>)
                 .await
             {
                 Ok(response) => {
-                    let _ = tx.send(NetEvent::Summaries {
-                        archived,
-                        data: response.summaries,
-                    });
+                    let _ = tx.send(NetEvent::Summaries(response.summaries));
                 }
                 Err(error) => {
                     let _ = tx.send(NetEvent::Error(error.to_string()));
@@ -759,7 +748,6 @@ fn spawn_diff_stream(
         if let Err(error) = result {
             let _ = tx.send(NetEvent::Error(error.to_string()));
         }
-        let _ = tx.send(NetEvent::StreamClosed(StreamKind::Diffs(workspace_id)));
     })
 }
 
@@ -796,7 +784,6 @@ fn spawn_notes_stream(
         if let Err(error) = result {
             let _ = tx.send(NetEvent::Error(error.to_string()));
         }
-        let _ = tx.send(NetEvent::StreamClosed(StreamKind::Notes(workspace_id)));
     })
 }
 
@@ -855,7 +842,6 @@ fn spawn_process_stream(
         if let Err(error) = result {
             let _ = tx.send(NetEvent::Error(error.to_string()));
         }
-        let _ = tx.send(NetEvent::StreamClosed(StreamKind::Processes(session_id)));
     })
 }
 
@@ -878,7 +864,6 @@ fn spawn_logs_stream(api: Api, process_id: Uuid, tx: UnboundedSender<NetEvent>) 
         if let Err(error) = result {
             let _ = tx.send(NetEvent::Error(error.to_string()));
         }
-        let _ = tx.send(NetEvent::StreamClosed(StreamKind::Logs(process_id)));
     })
 }
 
