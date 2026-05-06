@@ -3554,7 +3554,7 @@ fn indent_chat_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
             }
 
             let mut spans = Vec::with_capacity(line.spans.len() + 1);
-            spans.push(Span::raw("\t"));
+            spans.push(Span::raw("    "));
             spans.extend(line.spans);
             let mut indented = Line::from(spans);
             indented.style = line.style;
@@ -3948,7 +3948,7 @@ mod tests {
             },
             "done",
         ));
-        assert_eq!(lines[0].spans[0].content.as_ref(), "\t");
+        assert_eq!(lines[0].spans[0].content.as_ref(), "    ");
         assert_eq!(lines[0].spans[1].content.as_ref(), "tool");
     }
 }
