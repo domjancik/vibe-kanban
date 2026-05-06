@@ -4311,6 +4311,10 @@ fn render_editor_buffer(
             .fg(Color::Black)
             .add_modifier(Modifier::BOLD),
     };
+    let cursor_glyph = match mode {
+        ComposerEditorMode::Standard | ComposerEditorMode::Vim(VimMode::Insert) => "▏",
+        ComposerEditorMode::Vim(VimMode::Normal) => "█",
+    };
 
     let mut lines = Vec::new();
     let mut current_spans = Vec::new();
@@ -4320,7 +4324,7 @@ fn render_editor_buffer(
         if show_cursor && index == cursor {
             let ch = buffer[index..].chars().next().unwrap_or(' ');
             if ch == '\n' {
-                current_spans.push(Span::styled(" ", cursor_style));
+                current_spans.push(Span::styled(cursor_glyph, cursor_style));
                 lines.push(Line::from(std::mem::take(&mut current_spans)));
                 index += ch.len_utf8();
                 continue;
@@ -4340,7 +4344,7 @@ fn render_editor_buffer(
     }
 
     if show_cursor && cursor == buffer.len() {
-        current_spans.push(Span::styled(" ", cursor_style));
+        current_spans.push(Span::styled(cursor_glyph, cursor_style));
     }
 
     lines.push(Line::from(current_spans));
@@ -4583,7 +4587,7 @@ mod tests {
         let text = render_editor_buffer("", 0, true, ComposerEditorMode::Standard);
         assert_eq!(text.lines.len(), 1);
         assert_eq!(text.lines[0].spans.len(), 1);
-        assert_eq!(text.lines[0].spans[0].content.as_ref(), " ");
+        assert_eq!(text.lines[0].spans[0].content.as_ref(), "▏");
         assert_eq!(text.lines[0].spans[0].style.bg, Some(Color::Cyan));
     }
 
