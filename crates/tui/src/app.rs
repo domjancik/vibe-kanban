@@ -462,6 +462,34 @@ impl App {
                 ..
             } => self.handle_enter(size).await,
             KeyEvent {
+                code: KeyCode::Home,
+                ..
+            } => self.jump_to_boundary(false, size),
+            KeyEvent {
+                code: KeyCode::End,
+                ..
+            } => self.jump_to_boundary(true, size),
+            KeyEvent {
+                code: KeyCode::Left,
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::SUPER) => self.jump_to_boundary(false, size),
+            KeyEvent {
+                code: KeyCode::Right,
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::SUPER) => self.jump_to_boundary(true, size),
+            KeyEvent {
+                code: KeyCode::Up,
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::SUPER) => self.jump_to_boundary(false, size),
+            KeyEvent {
+                code: KeyCode::Down,
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::SUPER) => self.jump_to_boundary(true, size),
+            KeyEvent {
                 code: KeyCode::Char('j') | KeyCode::Down,
                 ..
             } => self.move_selection(1, size),
@@ -477,33 +505,6 @@ impl App {
                 code: KeyCode::PageUp,
                 ..
             } => self.move_selection(-self.page_step(size), size),
-            KeyEvent {
-                code: KeyCode::Home,
-                ..
-            }
-            | KeyEvent {
-                code: KeyCode::Left,
-                modifiers,
-                ..
-            } if modifiers.contains(KeyModifiers::SUPER) => self.jump_to_boundary(false, size),
-            KeyEvent {
-                code: KeyCode::End, ..
-            }
-            | KeyEvent {
-                code: KeyCode::Right,
-                modifiers,
-                ..
-            } if modifiers.contains(KeyModifiers::SUPER) => self.jump_to_boundary(true, size),
-            KeyEvent {
-                code: KeyCode::Up,
-                modifiers,
-                ..
-            } if modifiers.contains(KeyModifiers::SUPER) => self.jump_to_boundary(false, size),
-            KeyEvent {
-                code: KeyCode::Down,
-                modifiers,
-                ..
-            } if modifiers.contains(KeyModifiers::SUPER) => self.jump_to_boundary(true, size),
             KeyEvent {
                 code: KeyCode::Char('t'),
                 ..
