@@ -23,8 +23,8 @@ use uuid::Uuid;
 use crate::{
     api::{Api, TerminalCommand, WorkspaceSubscriptions},
     model::{
-        Focus, NetEvent, Pane, TerminalState, WorkspaceBundle, WorkspaceSummary, active_process,
-        diff_title, format_patch_entry, format_relative_time, workspace_title,
+        Focus, NetEvent, Pane, PatchType, TerminalState, WorkspaceBundle, WorkspaceSummary,
+        active_process, diff_title, format_patch_entry, format_relative_time, workspace_title,
     },
 };
 
@@ -157,7 +157,12 @@ impl App {
                     let previous = self.bundle.selected_session_id;
                     self.bundle.sessions = sessions;
                     let next_selected = previous
-                        .filter(|selected| self.bundle.sessions.iter().any(|session| session.id == *selected))
+                        .filter(|selected| {
+                            self.bundle
+                                .sessions
+                                .iter()
+                                .any(|session| session.id == *selected)
+                        })
                         .or_else(|| self.bundle.sessions.first().map(|session| session.id));
                     let changed = next_selected != self.bundle.selected_session_id;
                     self.bundle.selected_session_id = next_selected;
@@ -214,7 +219,9 @@ impl App {
                     let previous_process_id = self.bundle.selected_process_id;
                     let next_process_id = previous_process_id
                         .filter(|selected| self.bundle.process_map.contains_key(selected))
-                        .or_else(|| active_process(&self.bundle.process_map).map(|process| process.id));
+                        .or_else(|| {
+                            active_process(&self.bundle.process_map).map(|process| process.id)
+                        });
                     let changed = next_process_id != previous_process_id;
                     self.bundle.selected_process_id = next_process_id;
                     if changed {
@@ -701,9 +708,21 @@ impl App {
                     } else {
                         workspace.workspace.branch.clone()
                     };
+                    let status_color = if summary.is_some_and(|summary| {
+                        summary.has_pending_approval || summary.has_unseen_turns
+                    }) {
+                        Color::Yellow
+                    } else if workspace.is_running
+                        || summary.is_some_and(|summary| summary.has_running_dev_server)
+                    {
+                        Color::Green
+                    } else {
+                        Color::White
+                    };
                     ListItem::new(Text::from(vec![
-                        Line::raw(line),
-                        Line::styled(meta, Style::default().fg(Color::DarkGray)),
+                        Line::styled(format!(" {line}"), Style::default().fg(status_color)),
+                        Line::styled(format!(" {meta}"), Style::default().fg(Color::DarkGray)),
+                        Line::raw(""),
                     ]))
                 }
             })
@@ -905,7 +924,7 @@ impl App {
             .bundle
             .log_entries
             .iter()
-            .map(|entry| Line::raw(format_patch_entry(entry)))
+            .flat_map(render_chat_entry)
             .collect::<Vec<_>>();
         let title = if self.creating_new_session {
             "Conversation (new session)"
@@ -975,7 +994,7 @@ impl App {
             .log_entries
             .iter()
             .enumerate()
-            .map(|(index, entry)| Line::raw(format!("{index:04} {}", format_patch_entry(entry))))
+            .flat_map(|(index, entry)| render_log_entry(index, entry))
             .collect::<Vec<_>>();
         frame.render_widget(
             Paragraph::new(Text::from(lines))
@@ -1222,9 +1241,8 @@ impl App {
 
         for workspace in active {
             let summary = self.summaries.get(&workspace.id);
-            let needs_attention_bucket = summary.is_some_and(|summary| {
-                summary.has_pending_approval || summary.has_unseen_turns
-            });
+            let needs_attention_bucket = summary
+                .is_some_and(|summary| summary.has_pending_approval || summary.has_unseen_turns);
             if needs_attention_bucket {
                 needs_attention.push(workspace);
             } else if workspace.is_running
@@ -1259,12 +1277,7 @@ impl App {
             return;
         }
         rows.push(WorkspaceRow::Header(title));
-        rows.extend(
-            workspaces
-                .iter()
-                .copied()
-                .map(WorkspaceRow::Workspace),
-        );
+        rows.extend(workspaces.iter().copied().map(WorkspaceRow::Workspace));
     }
 
     fn selected_workspace_row_index(&self, rows: &[WorkspaceRow<'_>]) -> Option<usize> {
@@ -1302,9 +1315,7 @@ impl App {
         let Some(workspace_id) = self.selected_workspace_id else {
             return;
         };
-        let Some(workspace) = self
-            .find_workspace(workspace_id)
-        else {
+        let Some(workspace) = self.find_workspace(workspace_id) else {
             return;
         };
         match self
@@ -1321,9 +1332,7 @@ impl App {
         let Some(workspace_id) = self.selected_workspace_id else {
             return;
         };
-        let Some(workspace) = self
-            .find_workspace(workspace_id)
-        else {
+        let Some(workspace) = self.find_workspace(workspace_id) else {
             return;
         };
         match self
@@ -1426,6 +1435,236 @@ fn render_diff_text(diff: &crate::model::LocalDiff) -> String {
     }
     let file = diff_title(diff);
     utils::diff::create_unified_diff(&file, old, new)
+}
+
+fn render_chat_entry(entry: &PatchType) -> Vec<Line<'static>> {
+    match entry {
+        PatchType::NormalizedEntry(entry) => render_normalized_chat_entry(entry),
+        PatchType::Stdout(output) => vec![
+            Line::styled(
+                "stdout",
+                Style::default()
+                    .fg(Color::Blue)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Line::styled(
+                output.trim_end().to_string(),
+                Style::default().fg(Color::Gray),
+            ),
+            Line::raw(""),
+        ],
+        PatchType::Stderr(output) => vec![
+            Line::styled(
+                "stderr",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Line::styled(
+                output.trim_end().to_string(),
+                Style::default().fg(Color::LightRed),
+            ),
+            Line::raw(""),
+        ],
+        PatchType::Diff(diff) => vec![
+            Line::styled(
+                format!("diff {}", diff_title(diff)),
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Line::styled(format_patch_entry(entry), Style::default().fg(Color::Gray)),
+            Line::raw(""),
+        ],
+    }
+}
+
+fn render_normalized_chat_entry(entry: &executors::logs::NormalizedEntry) -> Vec<Line<'static>> {
+    use executors::logs::NormalizedEntryType;
+
+    let content = entry.content.trim();
+    match &entry.entry_type {
+        NormalizedEntryType::ToolUse {
+            tool_name,
+            action_type,
+            status,
+        } => {
+            let status_color = match status {
+                executors::logs::ToolStatus::Success => Color::Green,
+                executors::logs::ToolStatus::Failed
+                | executors::logs::ToolStatus::Denied { .. } => Color::Red,
+                executors::logs::ToolStatus::PendingApproval { .. } => Color::Yellow,
+                executors::logs::ToolStatus::TimedOut => Color::LightRed,
+                executors::logs::ToolStatus::Created => Color::Cyan,
+            };
+            let mut lines = vec![Line::from(vec![
+                Span::styled(
+                    "tool",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(tool_name.clone(), Style::default().fg(Color::LightCyan)),
+                Span::raw(" "),
+                Span::styled(
+                    format!("[{status:?}]").to_lowercase(),
+                    Style::default().fg(status_color),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    summarize_action(action_type),
+                    Style::default().fg(Color::Gray),
+                ),
+            ])];
+            if !content.is_empty() {
+                lines.extend(
+                    content
+                        .lines()
+                        .map(|line| {
+                            Line::styled(format!("  {line}"), Style::default().fg(Color::DarkGray))
+                        })
+                        .collect::<Vec<_>>(),
+                );
+            }
+            lines.push(Line::raw(""));
+            lines
+        }
+        NormalizedEntryType::TokenUsageInfo(info) => vec![
+            Line::from(vec![
+                Span::styled(
+                    "tokens",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    format!("{}/{}", info.total_tokens, info.model_context_window),
+                    Style::default().fg(Color::LightYellow),
+                ),
+            ]),
+            Line::raw(""),
+        ],
+        NormalizedEntryType::UserMessage => render_labeled_content("user", Color::Blue, content),
+        NormalizedEntryType::AssistantMessage => {
+            render_labeled_content("assistant", Color::Green, content)
+        }
+        NormalizedEntryType::SystemMessage => {
+            render_labeled_content("system", Color::Magenta, content)
+        }
+        NormalizedEntryType::Thinking => render_labeled_content("thinking", Color::Gray, content),
+        NormalizedEntryType::Loading => render_labeled_content("loading", Color::DarkGray, content),
+        NormalizedEntryType::UserFeedback { .. } => {
+            render_labeled_content("feedback", Color::LightBlue, content)
+        }
+        NormalizedEntryType::ErrorMessage { .. } => {
+            render_labeled_content("error", Color::Red, content)
+        }
+        NormalizedEntryType::NextAction { failed, .. } => {
+            let color = if *failed { Color::Red } else { Color::Cyan };
+            render_labeled_content("next", color, content)
+        }
+        NormalizedEntryType::UserAnsweredQuestions { answers } => {
+            let text = answers
+                .iter()
+                .map(|item| format!("{}: {}", item.question, item.answer.join(", ")))
+                .collect::<Vec<_>>()
+                .join("\n");
+            render_labeled_content("answers", Color::LightBlue, &text)
+        }
+    }
+}
+
+fn render_labeled_content(label: &str, label_color: Color, content: &str) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::styled(
+        label.to_string(),
+        Style::default()
+            .fg(label_color)
+            .add_modifier(Modifier::BOLD),
+    )];
+    if content.is_empty() {
+        lines.push(Line::styled(
+            "  (empty)".to_string(),
+            Style::default().fg(Color::DarkGray),
+        ));
+    } else {
+        lines.extend(
+            content
+                .lines()
+                .map(|line| Line::styled(format!("  {line}"), Style::default().fg(Color::White)))
+                .collect::<Vec<_>>(),
+        );
+    }
+    lines.push(Line::raw(""));
+    lines
+}
+
+fn render_log_entry(index: usize, entry: &PatchType) -> Vec<Line<'static>> {
+    let style = match entry {
+        PatchType::NormalizedEntry(normalized) => match normalized.entry_type {
+            executors::logs::NormalizedEntryType::ToolUse { .. } => {
+                Style::default().fg(Color::Cyan)
+            }
+            executors::logs::NormalizedEntryType::TokenUsageInfo(_) => {
+                Style::default().fg(Color::Yellow)
+            }
+            executors::logs::NormalizedEntryType::AssistantMessage => {
+                Style::default().fg(Color::Green)
+            }
+            executors::logs::NormalizedEntryType::UserMessage => Style::default().fg(Color::Blue),
+            executors::logs::NormalizedEntryType::ErrorMessage { .. } => {
+                Style::default().fg(Color::Red)
+            }
+            _ => Style::default().fg(Color::Gray),
+        },
+        PatchType::Stdout(_) => Style::default().fg(Color::Gray),
+        PatchType::Stderr(_) => Style::default().fg(Color::Red),
+        PatchType::Diff(_) => Style::default().fg(Color::Magenta),
+    };
+
+    format_patch_entry(entry)
+        .lines()
+        .enumerate()
+        .map(|(line_index, line)| {
+            let prefix = if line_index == 0 {
+                format!("{index:04} ")
+            } else {
+                "     ".to_string()
+            };
+            Line::from(vec![
+                Span::styled(prefix, Style::default().fg(Color::DarkGray)),
+                Span::styled(line.to_string(), style),
+            ])
+        })
+        .chain(std::iter::once(Line::raw("")))
+        .collect()
+}
+
+fn summarize_action(action_type: &executors::logs::ActionType) -> String {
+    use executors::logs::ActionType;
+
+    match action_type {
+        ActionType::CommandRun { command, .. } => format!("cmd `{command}`"),
+        ActionType::FileRead { path } => format!("read {path}"),
+        ActionType::FileEdit { path, .. } => format!("edit {path}"),
+        ActionType::Search { query } => format!("search {query}"),
+        ActionType::WebFetch { url } => format!("fetch {url}"),
+        ActionType::Tool { tool_name, .. } => tool_name.clone(),
+        ActionType::TaskCreate {
+            description,
+            subagent_type,
+            ..
+        } => {
+            if let Some(subagent_type) = subagent_type {
+                format!("spawn {subagent_type}: {description}")
+            } else {
+                description.clone()
+            }
+        }
+        ActionType::PlanPresentation { .. } => "present plan".to_string(),
+        ActionType::TodoManagement { operation, .. } => format!("todo {operation}"),
+        ActionType::AskUserQuestion { .. } => "ask user".to_string(),
+        ActionType::Other { description } => description.clone(),
+    }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
