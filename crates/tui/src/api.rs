@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::HashMap, fs, io::Write, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -647,7 +647,12 @@ async fn parse_api_response<T: DeserializeOwned>(
 }
 
 fn log_api(message: String) {
-    eprintln!("[tui-api] {message}");
+    let path = std::env::var("VK_TUI_API_LOG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir().join("vibe-kanban-tui-api.log"));
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "[tui-api] {message}");
+    }
 }
 
 fn truncate_for_log(body: &str) -> String {
