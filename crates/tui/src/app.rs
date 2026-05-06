@@ -689,6 +689,7 @@ impl App {
         } else {
             (&mut self.composer, &mut self.composer_cursor)
         };
+        let mut changed = false;
         match key {
             KeyEvent {
                 code: KeyCode::Enter,
@@ -703,6 +704,7 @@ impl App {
             } => {
                 buffer.insert(*cursor, '\n');
                 *cursor += 1;
+                changed = true;
             }
             KeyEvent {
                 code: KeyCode::Backspace,
@@ -711,6 +713,7 @@ impl App {
                 if *cursor > 0 {
                     buffer.remove(*cursor - 1);
                     *cursor -= 1;
+                    changed = true;
                 }
             }
             KeyEvent {
@@ -719,6 +722,7 @@ impl App {
             } => {
                 if *cursor < buffer.len() {
                     buffer.remove(*cursor);
+                    changed = true;
                 }
             }
             KeyEvent {
@@ -736,13 +740,14 @@ impl App {
             } if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => {
                 buffer.insert(*cursor, ch);
                 *cursor += 1;
+                changed = true;
             }
             _ => {}
         }
-        if notes {
+        if notes && changed {
             self.bundle.notes_dirty = true;
             self.bundle.last_notes_edit = Some(std::time::Instant::now());
-        } else {
+        } else if changed {
             self.composer_dirty = true;
             self.last_composer_edit = Some(std::time::Instant::now());
         }
@@ -846,6 +851,9 @@ impl App {
 
     async fn flush_draft_if_needed(&mut self) {
         let Some(scratch_id) = self.current_composer_scratch_id() else {
+            self.composer_dirty = false;
+            self.last_composer_edit = None;
+            self.composer_scratch_loaded = true;
             return;
         };
         if !self.composer_dirty {
