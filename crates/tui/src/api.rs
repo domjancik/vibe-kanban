@@ -22,9 +22,9 @@ use uuid::Uuid;
 use crate::model::{
     ApiEnvelope, CreateSessionRequest, DiffStreamState, ExecutionProcessesState,
     ExecutorDiscoveryStreamState, FollowUpRequest, LogEntriesState, NetEvent, OpenEditorRequest,
-    PatchType, ScratchPayload, ScratchRecord, ScratchStreamState, StreamKind,
-    UpdateScratchPayload, UpdateScratchRequest, UpdateWorkspaceRequest, UserSystemInfo,
-    WorkspaceStreamState, WorkspaceSummaryRequest, WorkspaceSummaryResponse,
+    PatchType, ScratchPayload, ScratchRecord, ScratchStreamState, StreamKind, UpdateScratchPayload,
+    UpdateScratchRequest, UpdateWorkspaceRequest, UserSystemInfo, WorkspaceStreamState,
+    WorkspaceSummaryRequest, WorkspaceSummaryResponse,
 };
 
 #[derive(Clone)]

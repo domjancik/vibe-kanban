@@ -466,8 +466,7 @@ impl App {
                 ..
             } => self.jump_to_boundary(false, size),
             KeyEvent {
-                code: KeyCode::End,
-                ..
+                code: KeyCode::End, ..
             } => self.jump_to_boundary(true, size),
             KeyEvent {
                 code: KeyCode::Left,
@@ -775,12 +774,14 @@ impl App {
                     if self.bundle.sessions.is_empty() {
                         return;
                     }
-                    self.bundle.selected_session_id = Some(if to_end {
-                        self.bundle.sessions.last().map(|session| session.id)
-                    } else {
-                        self.bundle.sessions.first().map(|session| session.id)
-                    }
-                    .unwrap());
+                    self.bundle.selected_session_id = Some(
+                        if to_end {
+                            self.bundle.sessions.last().map(|session| session.id)
+                        } else {
+                            self.bundle.sessions.first().map(|session| session.id)
+                        }
+                        .unwrap(),
+                    );
                     self.rebind_session_streams();
                 }
                 Pane::Git => {
@@ -1365,38 +1366,50 @@ impl App {
             Line::from(vec![
                 Span::styled(
                     "Exec ",
-                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(executor, Style::default().fg(Color::Cyan)),
                 Span::raw("  "),
                 Span::styled(
                     "Variant ",
-                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(variant, Style::default().fg(Color::Yellow)),
                 Span::raw("  "),
                 Span::styled(
                     "Model ",
-                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(model, Style::default().fg(Color::Green)),
             ]),
             Line::from(vec![
                 Span::styled(
                     "Reason ",
-                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(reasoning, Style::default().fg(Color::Magenta)),
                 Span::raw("  "),
                 Span::styled(
                     "Mode ",
-                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(agent_mode, Style::default().fg(Color::LightBlue)),
                 Span::raw("  "),
                 Span::styled(
                     "Perm ",
-                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(permission, Style::default().fg(Color::LightRed)),
             ]),
@@ -1406,7 +1419,11 @@ impl App {
             ),
             Line::raw(""),
         ];
-        lines.extend(composer_text.lines().map(|line| Line::raw(line.to_string())));
+        lines.extend(
+            composer_text
+                .lines()
+                .map(|line| Line::raw(line.to_string())),
+        );
         if composer_text.is_empty() {
             lines.push(Line::raw(String::new()));
         }
@@ -1595,9 +1612,16 @@ impl App {
             .composer_config
             .as_ref()
             .map(|config| config.executor)
-            .or_else(|| self.default_executor_profile.as_ref().map(|profile| profile.executor))
+            .or_else(|| {
+                self.default_executor_profile
+                    .as_ref()
+                    .map(|profile| profile.executor)
+            })
             .unwrap_or(options[0]);
-        let index = options.iter().position(|executor| *executor == current).unwrap_or(0);
+        let index = options
+            .iter()
+            .position(|executor| *executor == current)
+            .unwrap_or(0);
         let next = options[(index + 1) % options.len()];
         let variant = self
             .variant_options(next)
@@ -1619,7 +1643,10 @@ impl App {
             return;
         }
         let current = display_variant(config.variant.as_deref());
-        let index = options.iter().position(|variant| variant == current).unwrap_or(0);
+        let index = options
+            .iter()
+            .position(|variant| variant == current)
+            .unwrap_or(0);
         let next = options[(index + 1) % options.len()].clone();
         self.refresh_preset_config(
             config.executor,
@@ -1655,8 +1682,13 @@ impl App {
             self.status = "No reasoning options available".to_string();
             return;
         }
-        let current = self.selected_reasoning_label().unwrap_or_else(|| options[0].clone());
-        let index = options.iter().position(|option| option == &current).unwrap_or(0);
+        let current = self
+            .selected_reasoning_label()
+            .unwrap_or_else(|| options[0].clone());
+        let index = options
+            .iter()
+            .position(|option| option == &current)
+            .unwrap_or(0);
         let next = options[(index + 1) % options.len()].clone();
         if let Some(config) = self.composer_config.as_mut() {
             config.reasoning_id = Some(next.clone());
@@ -1676,7 +1708,10 @@ impl App {
             .as_ref()
             .and_then(|config| config.agent_id.clone())
             .unwrap_or_else(|| options[0].clone());
-        let index = options.iter().position(|option| option == &current).unwrap_or(0);
+        let index = options
+            .iter()
+            .position(|option| option == &current)
+            .unwrap_or(0);
         let next = options[(index + 1) % options.len()].clone();
         if let Some(config) = self.composer_config.as_mut() {
             config.agent_id = Some(next.clone());
@@ -1696,11 +1731,17 @@ impl App {
             .as_ref()
             .and_then(|config| config.permission_policy.clone())
             .unwrap_or(options[0].clone());
-        let index = options.iter().position(|option| option == &current).unwrap_or(0);
+        let index = options
+            .iter()
+            .position(|option| option == &current)
+            .unwrap_or(0);
         let next = options[(index + 1) % options.len()].clone();
         if let Some(config) = self.composer_config.as_mut() {
             config.permission_policy = Some(next.clone());
-            self.status = format!("Updated permission mode to {}", display_permission(Some(&next)));
+            self.status = format!(
+                "Updated permission mode to {}",
+                display_permission(Some(&next))
+            );
             self.error = None;
         }
     }

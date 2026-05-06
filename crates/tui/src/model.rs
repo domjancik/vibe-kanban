@@ -11,11 +11,9 @@ use db::models::{
 use executors::{
     executor_discovery::ExecutorDiscoveredOptions,
     executors::BaseCodingAgent,
+    logs::{ActionType, NormalizedEntry, NormalizedEntryError, NormalizedEntryType, ToolStatus},
     model_selector::PermissionPolicy,
     profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},
-};
-use executors::logs::{
-    ActionType, NormalizedEntry, NormalizedEntryError, NormalizedEntryType, ToolStatus,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
