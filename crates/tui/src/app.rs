@@ -8,7 +8,7 @@ use db::models::{
 use executors::{
     executor_discovery::ExecutorDiscoveredOptions,
     executors::BaseCodingAgent,
-    model_selector::{ModelInfo, PermissionPolicy},
+    model_selector::{AgentInfo, ModelInfo, PermissionPolicy},
     profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},
 };
 use futures_util::StreamExt;
@@ -40,6 +40,11 @@ enum WorkspaceRow<'a> {
     Workspace(&'a WorkspaceWithStatus),
 }
 
+struct AgentPickerState {
+    query: String,
+    selected: usize,
+}
+
 pub struct App {
     api: Api,
     rx: UnboundedReceiver<NetEvent>,
@@ -65,6 +70,7 @@ pub struct App {
     composer: String,
     composer_cursor: usize,
     notes_cursor: usize,
+    agent_picker: Option<AgentPickerState>,
     creating_new_session: bool,
     should_quit: bool,
 }
@@ -102,6 +108,7 @@ impl App {
             composer: String::new(),
             composer_cursor: 0,
             notes_cursor: 0,
+            agent_picker: None,
             creating_new_session: false,
             should_quit: false,
         }
@@ -312,6 +319,11 @@ impl App {
     }
 
     async fn handle_key(&mut self, key: KeyEvent, size: Rect) {
+        if self.agent_picker.is_some() {
+            self.handle_agent_picker_key(key);
+            return;
+        }
+
         if self.bundle.terminal.input_mode && self.selected_pane == Pane::Terminal {
             if is_terminal_exit_key(&key) {
                 self.bundle.terminal.input_mode = false;
@@ -361,7 +373,7 @@ impl App {
                 code: KeyCode::Char('?'),
                 ..
             } => {
-                self.status = "Keys: Tab focus, j/k nav, 1-6 panes, i edit, Enter open/send, E executor, V variant, M model, R reasoning, A agent mode, P permission, p pin, x archive, n new session, s start dev, c cleanup, e editor, C-] leave terminal".to_string();
+                self.status = "Keys: Tab focus, j/k nav, 1-6 panes, i edit, Enter open/send, E executor, V variant, M model, R reasoning, A agent menu, P permission, p pin, x archive, n new session, s start dev, c cleanup, e editor, Esc/C-]/C-g leave terminal".to_string();
             }
             KeyEvent {
                 code: KeyCode::Char('1'),
@@ -452,7 +464,7 @@ impl App {
             KeyEvent {
                 code: KeyCode::Char('A'),
                 ..
-            } => self.cycle_agent_mode(),
+            } => self.open_agent_picker(),
             KeyEvent {
                 code: KeyCode::Char('P'),
                 ..
@@ -869,6 +881,10 @@ impl App {
         }
 
         frame.render_widget(self.footer(), outer[2]);
+
+        if self.agent_picker.is_some() {
+            self.render_agent_picker(frame, frame.area());
+        }
     }
 
     fn render_workspace_list(&self, frame: &mut Frame, area: Rect) {
@@ -1054,8 +1070,7 @@ impl App {
             vec![Line::raw("No workspace selected")]
         };
         frame.render_widget(
-            Paragraph::new(Text::from(workspace_info))
-                .block(panel_block("Workspace", false)),
+            Paragraph::new(Text::from(workspace_info)).block(panel_block("Workspace", false)),
             chunks[0],
         );
 
@@ -1121,8 +1136,7 @@ impl App {
             })
             .collect::<Vec<_>>();
         frame.render_widget(
-            List::new(process_lines)
-                .block(panel_block("Processes", false)),
+            List::new(process_lines).block(panel_block("Processes", false)),
             chunks[2],
         );
     }
@@ -1340,6 +1354,82 @@ impl App {
         Paragraph::new(status.to_string()).block(Block::default().borders(Borders::TOP))
     }
 
+    fn render_agent_picker(&self, frame: &mut Frame, area: Rect) {
+        let Some(picker) = self.agent_picker.as_ref() else {
+            return;
+        };
+        let popup = centered_rect(72, 55, area);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(6)])
+            .split(popup);
+        let options = self.filtered_agent_mode_options();
+        let selected = picker.selected.min(options.len().saturating_sub(1));
+        let items = options
+            .iter()
+            .map(|option| match option {
+                None => ListItem::new(vec![
+                    Line::styled(
+                        "Default",
+                        Style::default()
+                            .fg(Color::LightBlue)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Line::styled(
+                        "Use the executor default agent mode",
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]),
+                Some(agent) => {
+                    let mut lines = vec![Line::from(vec![
+                        Span::styled(
+                            agent.label.clone(),
+                            Style::default()
+                                .fg(Color::LightBlue)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw("  "),
+                        Span::styled(agent.id.clone(), Style::default().fg(Color::Gray)),
+                        if agent.is_default {
+                            Span::styled("  default", Style::default().fg(Color::Yellow))
+                        } else {
+                            Span::raw("")
+                        },
+                    ])];
+                    if let Some(description) = &agent.description {
+                        lines.push(Line::styled(
+                            description.clone(),
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    }
+                    ListItem::new(lines)
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut state = ListState::default().with_selected(Some(selected));
+
+        frame.render_widget(Clear, popup);
+        frame.render_widget(panel_block("Agent Mode", true), popup);
+        frame.render_widget(
+            Paragraph::new(format!("Search: {}", picker.query))
+                .block(panel_block("Filter", false))
+                .wrap(Wrap { trim: false }),
+            chunks[0],
+        );
+        frame.render_stateful_widget(
+            List::new(items)
+                .block(panel_block("Options", false))
+                .highlight_style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .highlight_symbol(">> "),
+            chunks[1],
+            &mut state,
+        );
+    }
+
     fn composer_selection_line(&self) -> Line<'static> {
         let config = self.composer_config.as_ref();
         let executor = config
@@ -1354,9 +1444,7 @@ impl App {
         let reasoning = self
             .selected_reasoning_label()
             .unwrap_or_else(|| "default".to_string());
-        let agent_mode = config
-            .and_then(|config| config.agent_id.clone())
-            .unwrap_or_else(|| "default".to_string());
+        let agent_mode = self.selected_agent_mode_label();
         let permission = config
             .map(|config| display_permission(config.permission_policy.as_ref()).to_string())
             .unwrap_or_else(|| "default".to_string());
@@ -1544,18 +1632,198 @@ impl App {
             })
     }
 
-    fn agent_mode_options(&self) -> Vec<String> {
+    fn agent_mode_options(&self) -> Vec<AgentInfo> {
         self.composer_options
             .as_ref()
-            .map(|options| {
-                options
-                    .model_selector
-                    .agents
-                    .iter()
-                    .map(|agent| agent.id.clone())
-                    .collect::<Vec<_>>()
-            })
+            .map(|options| options.model_selector.agents.clone())
             .unwrap_or_default()
+    }
+
+    fn filtered_agent_mode_options(&self) -> Vec<Option<AgentInfo>> {
+        let query = self
+            .agent_picker
+            .as_ref()
+            .map(|state| state.query.trim().to_lowercase())
+            .unwrap_or_default();
+        let mut options = vec![None];
+        let mut agents = self
+            .agent_mode_options()
+            .into_iter()
+            .filter(|agent| {
+                query.is_empty()
+                    || fuzzy_contains(&query, &agent.label)
+                    || fuzzy_contains(&query, &agent.id)
+                    || agent
+                        .description
+                        .as_ref()
+                        .is_some_and(|description| fuzzy_contains(&query, description))
+            })
+            .collect::<Vec<_>>();
+        agents.sort_by(|left, right| {
+            right
+                .is_default
+                .cmp(&left.is_default)
+                .then_with(|| left.label.cmp(&right.label))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        options.extend(agents.into_iter().map(Some));
+        options
+    }
+
+    fn selected_agent_mode_index(&self, options: &[Option<AgentInfo>]) -> usize {
+        let current = self
+            .composer_config
+            .as_ref()
+            .and_then(|config| config.agent_id.clone());
+        options
+            .iter()
+            .position(|option| match (option, current.as_ref()) {
+                (None, None) => true,
+                (Some(agent), Some(current)) => &agent.id == current,
+                _ => false,
+            })
+            .unwrap_or(0)
+    }
+
+    fn open_agent_picker(&mut self) {
+        let options = self.agent_mode_options();
+        if options.is_empty() {
+            self.status = "No agent modes available".to_string();
+            return;
+        }
+        let mut picker = AgentPickerState {
+            query: String::new(),
+            selected: 0,
+        };
+        picker.selected = self.selected_agent_mode_index(&self.filtered_agent_mode_options());
+        self.agent_picker = Some(picker);
+        self.status = "Select agent mode".to_string();
+        self.error = None;
+    }
+
+    fn handle_agent_picker_key(&mut self, key: KeyEvent) {
+        let options_len = self.filtered_agent_mode_options().len();
+        let Some(picker) = self.agent_picker.as_mut() else {
+            return;
+        };
+
+        match key {
+            KeyEvent {
+                code: KeyCode::Esc, ..
+            } => {
+                self.agent_picker = None;
+                self.status = "Closed agent mode picker".to_string();
+            }
+            KeyEvent {
+                code: KeyCode::Enter,
+                ..
+            } => self.apply_agent_picker_selection(),
+            KeyEvent {
+                code: KeyCode::Backspace,
+                ..
+            } => {
+                if !picker.query.is_empty() {
+                    picker.query.pop();
+                    picker.selected = 0;
+                }
+            }
+            KeyEvent {
+                code: KeyCode::Char('j') | KeyCode::Down,
+                ..
+            } => {
+                if options_len > 0 {
+                    picker.selected = (picker.selected + 1).min(options_len.saturating_sub(1));
+                }
+            }
+            KeyEvent {
+                code: KeyCode::Char('k') | KeyCode::Up,
+                ..
+            } => {
+                picker.selected = picker.selected.saturating_sub(1);
+            }
+            KeyEvent {
+                code: KeyCode::PageDown,
+                ..
+            } => {
+                if options_len > 0 {
+                    picker.selected = (picker.selected + 8).min(options_len.saturating_sub(1));
+                }
+            }
+            KeyEvent {
+                code: KeyCode::PageUp,
+                ..
+            } => {
+                picker.selected = picker.selected.saturating_sub(8);
+            }
+            KeyEvent {
+                code: KeyCode::Home,
+                ..
+            } => picker.selected = 0,
+            KeyEvent {
+                code: KeyCode::End, ..
+            } => {
+                if options_len > 0 {
+                    picker.selected = options_len.saturating_sub(1);
+                }
+            }
+            KeyEvent {
+                code: KeyCode::Char(ch),
+                modifiers,
+                ..
+            } if !modifiers.contains(KeyModifiers::CONTROL)
+                && !modifiers.contains(KeyModifiers::ALT)
+                && !modifiers.contains(KeyModifiers::SUPER) =>
+            {
+                picker.query.push(ch);
+                picker.selected = 0;
+            }
+            _ => {}
+        }
+    }
+
+    fn apply_agent_picker_selection(&mut self) {
+        let options = self.filtered_agent_mode_options();
+        let selected = self
+            .agent_picker
+            .as_ref()
+            .map(|picker| picker.selected)
+            .unwrap_or(0)
+            .min(options.len().saturating_sub(1));
+        let Some(config) = self.composer_config.as_mut() else {
+            self.agent_picker = None;
+            self.status = "Composer config is still loading".to_string();
+            return;
+        };
+
+        match options.get(selected).cloned().flatten() {
+            Some(agent) => {
+                config.agent_id = Some(agent.id.clone());
+                self.status = format!("Updated agent mode to {}", agent.label);
+            }
+            None => {
+                config.agent_id = None;
+                self.status = "Updated agent mode to default".to_string();
+            }
+        }
+
+        self.error = None;
+        self.agent_picker = None;
+    }
+
+    fn selected_agent_mode_label(&self) -> String {
+        let Some(selected_id) = self
+            .composer_config
+            .as_ref()
+            .and_then(|config| config.agent_id.clone())
+        else {
+            return "default".to_string();
+        };
+
+        self.agent_mode_options()
+            .into_iter()
+            .find(|agent| agent.id == selected_id)
+            .map(|agent| agent.label)
+            .unwrap_or(selected_id)
     }
 
     fn permission_options(&self) -> Vec<PermissionPolicy> {
@@ -1656,29 +1924,6 @@ impl App {
         if let Some(config) = self.composer_config.as_mut() {
             config.reasoning_id = Some(next.clone());
             self.status = format!("Updated reasoning to {next}");
-            self.error = None;
-        }
-    }
-
-    fn cycle_agent_mode(&mut self) {
-        let options = self.agent_mode_options();
-        if options.is_empty() {
-            self.status = "No agent modes available".to_string();
-            return;
-        }
-        let current = self
-            .composer_config
-            .as_ref()
-            .and_then(|config| config.agent_id.clone())
-            .unwrap_or_else(|| options[0].clone());
-        let index = options
-            .iter()
-            .position(|option| option == &current)
-            .unwrap_or(0);
-        let next = options[(index + 1) % options.len()].clone();
-        if let Some(config) = self.composer_config.as_mut() {
-            config.agent_id = Some(next.clone());
-            self.status = format!("Updated agent mode to {next}");
             self.error = None;
         }
     }
@@ -2067,8 +2312,7 @@ fn default_variant_to_none(variant: String) -> Option<String> {
 fn is_terminal_exit_key(key: &KeyEvent) -> bool {
     match key {
         KeyEvent {
-            code: KeyCode::Esc,
-            ..
+            code: KeyCode::Esc, ..
         } => true,
         KeyEvent {
             code: KeyCode::Char(']'),
@@ -2090,6 +2334,29 @@ fn model_key(model: &ModelInfo) -> String {
     } else {
         model.id.clone()
     }
+}
+
+fn fuzzy_contains(query: &str, candidate: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+    let candidate = candidate.to_lowercase();
+    if candidate.contains(&query) {
+        return true;
+    }
+
+    let mut query_chars = query.chars();
+    let mut current = query_chars.next();
+    for ch in candidate.chars() {
+        if current.is_some_and(|needle| needle == ch) {
+            current = query_chars.next();
+            if current.is_none() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn render_chat_entry(entry: &PatchType) -> Vec<Line<'static>> {

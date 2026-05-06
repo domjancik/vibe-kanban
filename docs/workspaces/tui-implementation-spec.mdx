@@ -179,7 +179,7 @@ On macOS terminals, the TUI should also support the common equivalents when the 
 - `V`: cycle executor variant or preset
 - `M`: cycle model
 - `R`: cycle reasoning effort
-- `A`: cycle agent mode
+- `A`: open agent mode picker with fuzzy search
 - `P`: cycle permission mode
 - `Ctrl+n` `Ctrl+p`: switch session
 - `[` `]`: previous or next unread or user turn
@@ -296,6 +296,8 @@ The composer must not be limited to plain text entry. It should expose the same 
 These controls should be visible adjacent to the composer rather than hidden in a separate settings route, because they directly affect the next turn.
 
 The TUI may present them as a compact metadata strip or inline control row instead of a full popover-heavy UI, but it must preserve the underlying data model of `ExecutorConfig`.
+
+Agent mode selection should not be limited to cycling when multiple discovered agents are available. The TUI should provide a searchable menu with fuzzy matching over agent label, id, and description, and it should always include an explicit `Default` option so users can clear a previously selected agent override.
 
 ### Composer configuration data sources
 
