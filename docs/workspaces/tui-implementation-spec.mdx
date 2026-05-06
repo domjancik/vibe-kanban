@@ -263,6 +263,84 @@ The conversation pane should behave like the web Workspaces main panel:
 - keep the composer visible
 - stream agent output incrementally
 
+### Draft persistence
+
+Message-draft persistence is not purely a UI concern in the current local app.
+
+For local runtime, the web app persists follow-up drafts through the scratch system:
+
+- UI hook: `useSessionMessageEditor`
+- client abstraction: `useScratch(ScratchType.DRAFT_FOLLOW_UP, scratchId)`
+- backend routes:
+  - `GET /api/scratch/draft_follow_up/{id}`
+  - `PUT /api/scratch/draft_follow_up/{id}`
+  - `DELETE /api/scratch/draft_follow_up/{id}`
+  - `GET /api/scratch/draft_follow_up/{id}/stream/ws`
+- backend storage: server-side scratch table in SQLite
+
+So, in local runtime, draft persistence is:
+
+- initiated by the UI
+- stored and validated by the backend
+- rehydrated to the UI through websocket-backed scratch streaming
+
+For remote runtime, the current web app falls back to localStorage-based scratch storage. That means the same logical feature exists, but the persistence layer is browser-local instead of server-backed.
+
+### Current scratch identity model
+
+The current app uses different scratch ids depending on composer mode:
+
+- existing session: use `sessionId`
+- new session: use `workspaceId`
+
+The TUI should preserve that identity model so draft restoration behaves the same way when switching between existing-session and new-session states.
+
+### Save semantics
+
+The current implementation uses:
+
+- immediate local state updates
+- debounced persistence, currently `500ms`
+- initial one-time hydration from persisted scratch
+
+The TUI should do the same:
+
+1. update the visible composer buffer immediately
+2. debounce writes to persisted draft storage
+3. restore draft content only once on initial load for the active scratch id
+4. avoid overwriting active typing with late-arriving scratch updates
+
+### Clear semantics
+
+The TUI should clear the draft when:
+
+- a message send succeeds
+- a new-session draft is explicitly abandoned
+- the user invokes a `discard draft` action
+
+The backend already clears `DRAFT_FOLLOW_UP` after successful execution spawn in the session follow-up route. The TUI should still clear its local editor state immediately after a successful send so the UI does not wait on stream round-trips.
+
+### Queue and approval constraints
+
+The current backend rejects edits to `DRAFT_FOLLOW_UP` while a queued message exists for that scratch id. The TUI should surface this as a non-fatal composer state:
+
+- preserve local text
+- show a banner or inline error
+- allow retry once the queue clears
+
+### TUI implementation requirement
+
+The Ratatui client should not treat composer drafts as a transient in-memory-only feature.
+
+For local TUI runtime, implement a scratch client that reuses the existing backend scratch routes and websocket stream.
+
+For any future remote TUI or detached cloud shell, either:
+
+- reuse the existing localStorage-style client model, or
+- add a true server-backed scratch transport for remote runtime
+
+but do not silently drop persistence.
+
 ### Session model
 
 Use the existing session ordering contract:
@@ -571,6 +649,9 @@ Use a single in-memory app store with explicit reducers and background tasks.
 - repos
 - sessions
 - selected session id
+- composer draft identity
+- composer local buffer
+- composer persisted scratch state
 - conversation entries
 - process list
 - active process id
