@@ -436,6 +436,37 @@ impl Api {
         parse_api_response(response).await
     }
 
+    pub async fn fetch_process_log_snapshot(&self, process_id: Uuid) -> Result<Vec<PatchType>> {
+        let endpoint = format!(
+            "{}/api/execution-processes/{process_id}/normalized-logs/ws",
+            ws_base(&self.base_url)
+        );
+        let (stream, _) = connect_async(endpoint.as_str()).await?;
+        let (_, mut read) = stream.split();
+        let mut state = json!({ "entries": [] });
+
+        while let Some(message) =
+            tokio::time::timeout(Duration::from_millis(1500), read.next()).await?
+        {
+            let message = message?;
+            let Message::Text(text) = message else {
+                continue;
+            };
+            if text.contains(r#""Ready":true"#) || text.contains(r#""finished":true"#) {
+                continue;
+            }
+            let payload: Value = serde_json::from_str(&text)?;
+            if let Some(patch_value) = payload.get("JsonPatch") {
+                let patch: Patch = serde_json::from_value(patch_value.clone())?;
+                json_patch::patch(&mut state, &patch)?;
+                let typed: LogEntriesState = serde_json::from_value(state)?;
+                return Ok(typed.entries);
+            }
+        }
+
+        Ok(Vec::new())
+    }
+
     pub async fn toggle_pinned(&self, workspace_id: Uuid, pinned: bool) -> Result<()> {
         let request = UpdateWorkspaceRequest {
             archived: None,

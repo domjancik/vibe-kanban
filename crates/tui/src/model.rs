@@ -398,6 +398,17 @@ pub enum NetEvent {
         executor: BaseCodingAgent,
         options: ExecutorDiscoveredOptions,
     },
+    ConversationHistoryLoaded {
+        session_id: Uuid,
+        process_id: Uuid,
+        entries: Vec<PatchType>,
+    },
+    ConversationBootstrapComplete {
+        session_id: Uuid,
+    },
+    ConversationBackfillComplete {
+        session_id: Uuid,
+    },
     DraftLoaded {
         scratch_id: Uuid,
         draft: Option<DraftFollowUpData>,

@@ -3,7 +3,7 @@ use std::{collections::HashMap, str::FromStr, time::Duration};
 use anyhow::Result;
 use crossterm::event::{Event as CrosstermEvent, EventStream, KeyCode, KeyEvent, KeyModifiers};
 use db::models::{
-    execution_process::{ExecutionProcess, ExecutionProcessStatus},
+    execution_process::{ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus},
     scratch::DraftFollowUpData,
     session::Session,
     workspace::WorkspaceWithStatus,
@@ -48,6 +48,27 @@ struct AgentPickerState {
     selected: usize,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+enum ConversationScope {
+    Session(Uuid),
+    NewSession(Uuid),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum OptimisticState {
+    Pending,
+    Failed,
+}
+
+#[derive(Clone)]
+struct OptimisticConversationEntry {
+    local_id: Uuid,
+    scope: ConversationScope,
+    message: String,
+    executor_config: ExecutorConfig,
+    state: OptimisticState,
+}
+
 pub struct App {
     api: Api,
     rx: UnboundedReceiver<NetEvent>,
@@ -80,6 +101,12 @@ pub struct App {
     queue_status: QueueStatus,
     queue_pending: bool,
     last_composer_edit: Option<std::time::Instant>,
+    conversation_loader: Option<tokio::task::JoinHandle<()>>,
+    conversation_process_entries: HashMap<Uuid, Vec<PatchType>>,
+    conversation_process_order: Vec<Uuid>,
+    conversation_bootstrapping: bool,
+    conversation_backfilling: bool,
+    optimistic_entries: Vec<OptimisticConversationEntry>,
     notes_cursor: usize,
     agent_picker: Option<AgentPickerState>,
     creating_new_session: bool,
@@ -126,6 +153,12 @@ impl App {
             queue_status: QueueStatus::Empty,
             queue_pending: false,
             last_composer_edit: None,
+            conversation_loader: None,
+            conversation_process_entries: HashMap::new(),
+            conversation_process_order: Vec::new(),
+            conversation_bootstrapping: false,
+            conversation_backfilling: false,
+            optimistic_entries: Vec::new(),
             notes_cursor: 0,
             agent_picker: None,
             creating_new_session: false,
@@ -159,6 +192,9 @@ impl App {
         }
 
         self.subscriptions.abort();
+        if let Some(handle) = self.conversation_loader.take() {
+            handle.abort();
+        }
         for handle in self.workspace_streams.drain(..) {
             handle.abort();
         }
@@ -291,6 +327,7 @@ impl App {
                     {
                         self.refresh_queue_status();
                     }
+                    self.refresh_conversation_history();
                 }
             }
             NetEvent::LogsUpdated {
@@ -298,7 +335,12 @@ impl App {
                 entries,
             } => {
                 if Some(process_id) == self.bundle.selected_process_id {
-                    self.bundle.log_entries = entries;
+                    self.bundle.log_entries = entries.clone();
+                }
+                if self.conversation_process_order.contains(&process_id) {
+                    self.conversation_process_entries
+                        .insert(process_id, entries);
+                    self.reconcile_optimistic_entries();
                 }
             }
             NetEvent::ExecutorOptionsUpdated { executor, options } => {
@@ -334,6 +376,41 @@ impl App {
                             self.rebind_discovery_stream();
                         }
                     }
+                }
+            }
+            NetEvent::ConversationHistoryLoaded {
+                session_id,
+                process_id,
+                entries,
+            } => {
+                if Some(session_id) == self.bundle.selected_session_id {
+                    let previous_lines = self.chat_line_count();
+                    self.conversation_process_entries
+                        .insert(process_id, entries);
+                    self.reconcile_optimistic_entries();
+                    let next_lines = self.chat_line_count();
+                    if previous_lines > 0 && next_lines > previous_lines {
+                        self.bundle.log_scroll = self
+                            .bundle
+                            .log_scroll
+                            .saturating_add((next_lines - previous_lines) as u16);
+                    }
+                }
+            }
+            NetEvent::ConversationBootstrapComplete { session_id } => {
+                if Some(session_id) == self.bundle.selected_session_id {
+                    self.conversation_bootstrapping = false;
+                    self.conversation_backfilling = self.conversation_process_entries.len()
+                        < self.conversation_process_order.len();
+                    if self.selected_pane == Pane::Chat && self.bundle.log_scroll == 0 {
+                        self.bundle.log_scroll = self.max_scroll_for_selected_pane();
+                    }
+                }
+            }
+            NetEvent::ConversationBackfillComplete { session_id } => {
+                if Some(session_id) == self.bundle.selected_session_id {
+                    self.conversation_bootstrapping = false;
+                    self.conversation_backfilling = false;
                 }
             }
             NetEvent::QueueLoaded { session_id, status } => {
@@ -687,24 +764,32 @@ impl App {
             self.status = "Composer config is still loading".to_string();
             return;
         };
+        let restored_message = self.composer.clone();
         let scratch_id = self.current_composer_scratch_id();
+        let optimistic_scope = self.current_conversation_scope();
         let session = if self.creating_new_session {
             None
         } else {
             self.current_session().cloned()
         };
+        self.composer.clear();
+        self.composer_cursor = 0;
+        self.composer_dirty = false;
+        self.last_composer_edit = None;
+        self.composer_queue_conflict = false;
+        self.focus = Focus::Main;
+        let optimistic_id = optimistic_scope.clone().map(|scope| {
+            self.push_optimistic_entry(scope, prompt.clone(), executor_config.clone())
+        });
         match self
             .api
             .send_prompt(workspace_id, session, prompt, executor_config)
             .await
         {
             Ok(session_id) => {
-                self.composer.clear();
-                self.composer_cursor = 0;
-                self.composer_dirty = false;
-                self.last_composer_edit = None;
-                self.composer_queue_conflict = false;
-                self.focus = Focus::Main;
+                if let Some(workspace_scope) = self.selected_workspace_id {
+                    self.rekey_new_session_optimistic_entries(workspace_scope, session_id);
+                }
                 self.creating_new_session = false;
                 self.bundle.selected_session_id = Some(session_id);
                 if let Some(scratch_id) = scratch_id {
@@ -714,6 +799,14 @@ impl App {
                 self.status = "Prompt sent".to_string();
             }
             Err(error) => {
+                if let Some(local_id) = optimistic_id {
+                    self.mark_optimistic_failed(local_id);
+                }
+                self.composer = restored_message;
+                self.composer_cursor = self.composer.len();
+                self.composer_dirty = true;
+                self.last_composer_edit = Some(std::time::Instant::now());
+                self.focus = Focus::Composer;
                 self.error = Some(error.to_string());
                 self.status = error.to_string();
             }
@@ -957,13 +1050,7 @@ impl App {
 
     fn max_scroll_for_selected_pane(&self) -> u16 {
         let lines = match self.selected_pane {
-            Pane::Chat => self
-                .bundle
-                .log_entries
-                .iter()
-                .map(render_chat_entry)
-                .map(|lines| lines.len())
-                .sum::<usize>(),
+            Pane::Chat => self.chat_line_count(),
             Pane::Logs => self
                 .bundle
                 .log_entries
@@ -1314,40 +1401,13 @@ impl App {
     }
 
     fn render_chat(&self, frame: &mut Frame, area: Rect) {
-        let mut lines = Vec::new();
-        if let QueueStatus::Queued { message } = &self.queue_status {
-            lines.push(Line::styled(
-                "queued follow-up",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            for line in message.data.message.lines() {
-                lines.push(Line::styled(
-                    format!("  {line}"),
-                    Style::default().fg(Color::LightYellow),
-                ));
-            }
-            lines.push(Line::styled(
-                format!("  executor {}", message.data.executor_config.executor),
-                Style::default().fg(Color::DarkGray),
-            ));
-            lines.push(Line::raw(""));
-        }
-        lines.extend(
-            self.bundle
-                .log_entries
-                .iter()
-                .flat_map(render_chat_entry)
-                .collect::<Vec<_>>(),
-        );
         let title = if self.creating_new_session {
             "Conversation (new session)"
         } else {
             "Conversation"
         };
         frame.render_widget(
-            Paragraph::new(Text::from(lines))
+            Paragraph::new(Text::from(self.chat_lines()))
                 .block(panel_block(title, self.focus == Focus::Main))
                 .scroll((self.bundle.log_scroll, 0))
                 .wrap(Wrap { trim: false }),
@@ -1771,6 +1831,10 @@ impl App {
     }
 
     fn sync_composer_context(&mut self) {
+        let current_scope = self.current_conversation_scope();
+        self.optimistic_entries
+            .retain(|entry| Some(entry.scope.clone()) == current_scope);
+
         let scratch_id = self.current_composer_scratch_id();
         if scratch_id != self.composer_scratch_id {
             self.composer_scratch_id = scratch_id;
@@ -1812,6 +1876,242 @@ impl App {
 
     fn is_queue_present(&self) -> bool {
         matches!(self.queue_status, QueueStatus::Queued { .. })
+    }
+
+    fn current_conversation_scope(&self) -> Option<ConversationScope> {
+        if self.creating_new_session {
+            self.selected_workspace_id
+                .map(ConversationScope::NewSession)
+        } else {
+            self.bundle
+                .selected_session_id
+                .map(ConversationScope::Session)
+        }
+    }
+
+    fn push_optimistic_entry(
+        &mut self,
+        scope: ConversationScope,
+        message: String,
+        executor_config: ExecutorConfig,
+    ) -> Uuid {
+        let local_id = Uuid::new_v4();
+        self.optimistic_entries.push(OptimisticConversationEntry {
+            local_id,
+            scope,
+            message,
+            executor_config,
+            state: OptimisticState::Pending,
+        });
+        local_id
+    }
+
+    fn mark_optimistic_failed(&mut self, local_id: Uuid) {
+        if let Some(entry) = self
+            .optimistic_entries
+            .iter_mut()
+            .find(|entry| entry.local_id == local_id)
+        {
+            entry.state = OptimisticState::Failed;
+        }
+    }
+
+    fn rekey_new_session_optimistic_entries(&mut self, workspace_id: Uuid, session_id: Uuid) {
+        for entry in &mut self.optimistic_entries {
+            if entry.scope == ConversationScope::NewSession(workspace_id) {
+                entry.scope = ConversationScope::Session(session_id);
+            }
+        }
+    }
+
+    fn reset_conversation_state(&mut self) {
+        if let Some(handle) = self.conversation_loader.take() {
+            handle.abort();
+        }
+        self.conversation_process_entries.clear();
+        self.conversation_process_order.clear();
+        self.conversation_bootstrapping = false;
+        self.conversation_backfilling = false;
+        self.optimistic_entries.clear();
+    }
+
+    fn refresh_conversation_history(&mut self) {
+        let Some(session_id) = self.bundle.selected_session_id else {
+            self.conversation_process_entries.clear();
+            self.conversation_process_order.clear();
+            self.conversation_bootstrapping = false;
+            self.conversation_backfilling = false;
+            return;
+        };
+        let mut process_order = self
+            .bundle
+            .process_map
+            .values()
+            .filter(|process| {
+                !process.dropped && process.run_reason != ExecutionProcessRunReason::DevServer
+            })
+            .map(|process| process.id)
+            .collect::<Vec<_>>();
+        process_order.sort_by_key(|process_id| {
+            self.bundle
+                .process_map
+                .get(process_id)
+                .map(|process| process.created_at)
+        });
+        if process_order == self.conversation_process_order
+            && process_order
+                .iter()
+                .all(|process_id| self.conversation_process_entries.contains_key(process_id))
+        {
+            return;
+        }
+
+        if let Some(handle) = self.conversation_loader.take() {
+            handle.abort();
+        }
+        self.conversation_process_order = process_order.clone();
+        self.conversation_process_entries
+            .retain(|process_id, _| process_order.contains(process_id));
+        self.conversation_bootstrapping = !process_order.is_empty();
+        self.conversation_backfilling = false;
+
+        if process_order.is_empty() {
+            return;
+        }
+
+        let recent_ids = initial_conversation_process_ids(&process_order, &self.bundle.process_map);
+        let remaining_ids = process_order
+            .iter()
+            .copied()
+            .filter(|process_id| !recent_ids.contains(process_id))
+            .collect::<Vec<_>>();
+        let api = self.api.clone();
+        let tx = self.tx.clone();
+        self.conversation_loader = Some(tokio::spawn(async move {
+            for process_id in &recent_ids {
+                match api.fetch_process_log_snapshot(*process_id).await {
+                    Ok(entries) => {
+                        let _ = tx.send(NetEvent::ConversationHistoryLoaded {
+                            session_id,
+                            process_id: *process_id,
+                            entries,
+                        });
+                    }
+                    Err(error) => {
+                        let _ = tx.send(NetEvent::Error(error.to_string()));
+                    }
+                }
+            }
+            let _ = tx.send(NetEvent::ConversationBootstrapComplete { session_id });
+            for process_id in remaining_ids {
+                match api.fetch_process_log_snapshot(process_id).await {
+                    Ok(entries) => {
+                        let _ = tx.send(NetEvent::ConversationHistoryLoaded {
+                            session_id,
+                            process_id,
+                            entries,
+                        });
+                    }
+                    Err(error) => {
+                        let _ = tx.send(NetEvent::Error(error.to_string()));
+                    }
+                }
+            }
+            let _ = tx.send(NetEvent::ConversationBackfillComplete { session_id });
+        }));
+    }
+
+    fn reconcile_optimistic_entries(&mut self) {
+        let Some(scope) = self.current_conversation_scope() else {
+            self.optimistic_entries.clear();
+            return;
+        };
+        let canonical_messages = self
+            .canonical_chat_entries()
+            .into_iter()
+            .filter_map(|entry| match entry {
+                PatchType::NormalizedEntry(entry)
+                    if matches!(
+                        entry.entry_type,
+                        executors::logs::NormalizedEntryType::UserMessage
+                    ) =>
+                {
+                    Some(entry.content.trim().to_string())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        self.optimistic_entries.retain(|entry| {
+            entry.scope != scope
+                || entry.state == OptimisticState::Failed
+                || !canonical_messages
+                    .iter()
+                    .any(|message| message == entry.message.trim())
+        });
+    }
+
+    fn canonical_chat_entries(&self) -> Vec<PatchType> {
+        self.conversation_process_order
+            .iter()
+            .filter_map(|process_id| self.conversation_process_entries.get(process_id))
+            .flat_map(|entries| entries.iter().cloned())
+            .collect()
+    }
+
+    fn chat_line_count(&self) -> usize {
+        self.chat_lines().len()
+    }
+
+    fn chat_lines(&self) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        if self.conversation_bootstrapping && self.conversation_process_entries.is_empty() {
+            lines.push(Line::styled(
+                "Loading recent conversation...",
+                Style::default().fg(Color::DarkGray),
+            ));
+            lines.push(Line::raw(""));
+        } else if self.conversation_backfilling {
+            lines.push(Line::styled(
+                "Loading older messages...",
+                Style::default().fg(Color::DarkGray),
+            ));
+            lines.push(Line::raw(""));
+        }
+        if let QueueStatus::Queued { message } = &self.queue_status {
+            lines.push(Line::styled(
+                "queued follow-up",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            for line in message.data.message.lines() {
+                lines.push(Line::styled(
+                    format!("  {line}"),
+                    Style::default().fg(Color::LightYellow),
+                ));
+            }
+            lines.push(Line::styled(
+                format!("  executor {}", message.data.executor_config.executor),
+                Style::default().fg(Color::DarkGray),
+            ));
+            lines.push(Line::raw(""));
+        }
+        lines.extend(
+            self.canonical_chat_entries()
+                .iter()
+                .flat_map(render_chat_entry)
+                .collect::<Vec<_>>(),
+        );
+        if let Some(scope) = self.current_conversation_scope() {
+            for entry in self
+                .optimistic_entries
+                .iter()
+                .filter(|entry| entry.scope == scope)
+            {
+                lines.extend(render_optimistic_chat_entry(entry));
+            }
+        }
+        lines
     }
 
     fn rebind_discovery_stream(&mut self) {
@@ -2332,6 +2632,7 @@ impl App {
         self.queue_status = QueueStatus::Empty;
         self.queue_session_id = None;
         self.queue_pending = false;
+        self.reset_conversation_state();
         self.api.load_workspace(workspace_id, self.tx.clone());
         self.api.replace_workspace_subscriptions(
             workspace_id,
@@ -2779,6 +3080,31 @@ fn model_key(model: &ModelInfo) -> String {
     }
 }
 
+fn initial_conversation_process_ids(
+    process_order: &[Uuid],
+    process_map: &HashMap<Uuid, ExecutionProcess>,
+) -> Vec<Uuid> {
+    const MIN_INITIAL_ENTRIES: usize = 10;
+
+    let mut selected = Vec::new();
+    let mut estimated_entries = 0usize;
+    for process_id in process_order.iter().rev() {
+        let Some(process) = process_map.get(process_id) else {
+            continue;
+        };
+        selected.push(*process_id);
+        estimated_entries += 4;
+        if process.status == ExecutionProcessStatus::Running && selected.len() == 1 {
+            continue;
+        }
+        if estimated_entries >= MIN_INITIAL_ENTRIES {
+            break;
+        }
+    }
+    selected.reverse();
+    selected
+}
+
 fn fuzzy_contains(query: &str, candidate: &str) -> bool {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
@@ -2800,6 +3126,37 @@ fn fuzzy_contains(query: &str, candidate: &str) -> bool {
         }
     }
     false
+}
+
+fn render_optimistic_chat_entry(entry: &OptimisticConversationEntry) -> Vec<Line<'static>> {
+    let status = match entry.state {
+        OptimisticState::Pending => ("sending...", Color::Yellow),
+        OptimisticState::Failed => ("failed", Color::Red),
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            "user",
+            Style::default()
+                .fg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(status.0, Style::default().fg(status.1)),
+        Span::raw(" "),
+        Span::styled(
+            format!("({})", entry.executor_config.executor),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ])];
+    lines.extend(
+        entry
+            .message
+            .lines()
+            .map(|line| Line::styled(format!("  {line}"), Style::default().fg(Color::White)))
+            .collect::<Vec<_>>(),
+    );
+    lines.push(Line::raw(""));
+    lines
 }
 
 fn render_chat_entry(entry: &PatchType) -> Vec<Line<'static>> {
