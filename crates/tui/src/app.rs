@@ -71,6 +71,11 @@ enum VimMode {
     Insert,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VimOperator {
+    Delete,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 enum ConversationScope {
     Session(Uuid),
@@ -117,6 +122,7 @@ pub struct App {
     composer: String,
     composer_cursor: usize,
     composer_editor_mode: ComposerEditorMode,
+    vim_pending_operator: Option<VimOperator>,
     composer_dirty: bool,
     composer_queue_conflict: bool,
     composer_scratch_id: Option<Uuid>,
@@ -171,6 +177,7 @@ impl App {
             composer: String::new(),
             composer_cursor: 0,
             composer_editor_mode: ComposerEditorMode::Standard,
+            vim_pending_operator: None,
             composer_dirty: false,
             composer_queue_conflict: false,
             composer_scratch_id: None,
@@ -387,7 +394,7 @@ impl App {
                 {
                     self.composer = draft
                         .as_ref()
-                        .map(|draft| draft.message.clone())
+                        .map(|draft| draft.message.trim_end_matches('\n').to_string())
                         .unwrap_or_default();
                     self.composer_cursor = self.composer.len();
                     self.composer_scratch_loaded = true;
@@ -825,6 +832,10 @@ impl App {
     }
 
     async fn handle_vim_normal_key(&mut self, key: KeyEvent) -> bool {
+        if let Some(operator) = self.vim_pending_operator.take() {
+            return self.execute_vim_operator(operator, key);
+        }
+
         match key {
             KeyEvent {
                 code: KeyCode::Enter,
@@ -899,6 +910,28 @@ impl App {
                 true
             }
             KeyEvent {
+                code: KeyCode::Char('w'),
+                ..
+            } => {
+                self.composer_cursor = next_word_start(&self.composer, self.composer_cursor);
+                true
+            }
+            KeyEvent {
+                code: KeyCode::Char('b'),
+                ..
+            } => {
+                self.composer_cursor = prev_word_start(&self.composer, self.composer_cursor);
+                true
+            }
+            KeyEvent {
+                code: KeyCode::Char('d'),
+                ..
+            } => {
+                self.vim_pending_operator = Some(VimOperator::Delete);
+                self.status = "d...".to_string();
+                true
+            }
+            KeyEvent {
                 code: KeyCode::Char('0') | KeyCode::Home,
                 ..
             } => {
@@ -950,6 +983,65 @@ impl App {
             }
             _ => false,
         }
+    }
+
+    fn execute_vim_operator(&mut self, operator: VimOperator, key: KeyEvent) -> bool {
+        match operator {
+            VimOperator::Delete => self.execute_vim_delete(key),
+        }
+    }
+
+    fn execute_vim_delete(&mut self, key: KeyEvent) -> bool {
+        let cursor = self.composer_cursor;
+        let buffer = &self.composer;
+        let range = match key {
+            KeyEvent {
+                code: KeyCode::Char('d'),
+                ..
+            } => {
+                let line_start = line_start_index(buffer, cursor);
+                let line_end = line_end_index(buffer, cursor);
+                if line_end < buffer.len() {
+                    Some((line_start, line_end + 1))
+                } else if line_start > 0 {
+                    Some((line_start - 1, line_end))
+                } else {
+                    Some((0, line_end))
+                }
+            }
+            KeyEvent {
+                code: KeyCode::Char('w'),
+                ..
+            } => Some((cursor, next_word_start(buffer, cursor))),
+            KeyEvent {
+                code: KeyCode::Char('b'),
+                ..
+            } => {
+                let target = prev_word_start(buffer, cursor);
+                Some((target, cursor))
+            }
+            KeyEvent {
+                code: KeyCode::Char('$') | KeyCode::End,
+                ..
+            } => Some((cursor, line_end_index(buffer, cursor))),
+            KeyEvent {
+                code: KeyCode::Char('0') | KeyCode::Home,
+                ..
+            } => Some((line_start_index(buffer, cursor), cursor)),
+            _ => None,
+        };
+
+        if let Some((start, end)) = range
+            && start < end
+            && end <= self.composer.len()
+        {
+            self.composer.drain(start..end);
+            self.composer_cursor = start.min(self.composer.len());
+            self.composer_dirty = true;
+            self.last_composer_edit = Some(std::time::Instant::now());
+        }
+        self.status = "Composer mode: Vim Normal".to_string();
+        true
     }
 
     async fn submit_prompt(&mut self) {
@@ -1157,8 +1249,8 @@ impl App {
                         return;
                     }
                     let current = self.selected_session_row_index(&rows).unwrap_or(0) as i32;
-                    let next = (current + delta).clamp(0, rows.len().saturating_sub(1) as i32)
-                        as usize;
+                    let next =
+                        (current + delta).clamp(0, rows.len().saturating_sub(1) as i32) as usize;
                     if let Some(target) = session_target(&rows[next]) {
                         self.select_session_target(target);
                     }
@@ -4163,12 +4255,10 @@ fn render_editor_buffer(
         ComposerEditorMode::Standard | ComposerEditorMode::Vim(VimMode::Insert) => {
             Style::default().bg(Color::Cyan).fg(Color::Black)
         }
-        ComposerEditorMode::Vim(VimMode::Normal) => {
-            Style::default()
-                .bg(Color::Yellow)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD)
-        }
+        ComposerEditorMode::Vim(VimMode::Normal) => Style::default()
+            .bg(Color::Yellow)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD),
     };
 
     let mut lines = Vec::new();
@@ -4255,6 +4345,75 @@ fn move_cursor_vertical(buffer: &str, cursor: usize, direction: i32) -> usize {
     next_line_start + byte_index_for_column(next_line, current_column)
 }
 
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+fn next_word_start(buffer: &str, cursor: usize) -> usize {
+    let cursor = cursor.min(buffer.len());
+    let chars: Vec<(usize, char)> = buffer[cursor..].char_indices().collect();
+    if chars.is_empty() {
+        return cursor;
+    }
+
+    let mut i = 0;
+    let first = chars[0].1;
+
+    if is_word_char(first) {
+        while i < chars.len() && is_word_char(chars[i].1) {
+            i += 1;
+        }
+    } else if !first.is_whitespace() {
+        while i < chars.len() && !is_word_char(chars[i].1) && !chars[i].1.is_whitespace() {
+            i += 1;
+        }
+    }
+
+    while i < chars.len() && chars[i].1.is_whitespace() {
+        i += 1;
+    }
+
+    if i >= chars.len() {
+        buffer.len()
+    } else {
+        cursor + chars[i].0
+    }
+}
+
+fn prev_word_start(buffer: &str, cursor: usize) -> usize {
+    let cursor = cursor.min(buffer.len());
+    if cursor == 0 {
+        return 0;
+    }
+
+    let before: Vec<(usize, char)> = buffer[..cursor].char_indices().collect();
+    if before.is_empty() {
+        return 0;
+    }
+
+    let mut i = before.len();
+
+    while i > 0 && before[i - 1].1.is_whitespace() {
+        i -= 1;
+    }
+    if i == 0 {
+        return 0;
+    }
+
+    let class_char = before[i - 1].1;
+    if is_word_char(class_char) {
+        while i > 0 && is_word_char(before[i - 1].1) {
+            i -= 1;
+        }
+    } else {
+        while i > 0 && !is_word_char(before[i - 1].1) && !before[i - 1].1.is_whitespace() {
+            i -= 1;
+        }
+    }
+
+    before[i].0
+}
+
 fn session_target(row: &SessionRow<'_>) -> Option<SessionTarget> {
     Some(match row {
         SessionRow::NewSession => SessionTarget::NewSession,
@@ -4271,8 +4430,8 @@ mod tests {
     };
 
     use super::{
-        ComposerEditorMode, VimMode, move_cursor_vertical, parse_inline_markdown,
-        render_editor_buffer, render_normalized_chat_entry, wrap_line,
+        ComposerEditorMode, VimMode, move_cursor_vertical, next_word_start, parse_inline_markdown,
+        prev_word_start, render_editor_buffer, render_normalized_chat_entry, wrap_line,
     };
 
     fn entry(entry_type: NormalizedEntryType, content: &str) -> NormalizedEntry {
@@ -4366,6 +4525,46 @@ mod tests {
         assert_eq!(down, 7);
         let up = move_cursor_vertical(buffer, 7, -1);
         assert_eq!(up, 2);
+    }
+
+    #[test]
+    fn empty_buffer_renders_cursor_on_first_line() {
+        let text = render_editor_buffer("", 0, true, ComposerEditorMode::Standard);
+        assert_eq!(text.lines.len(), 1);
+        assert_eq!(text.lines[0].spans.len(), 1);
+        assert_eq!(text.lines[0].spans[0].content.as_ref(), " ");
+        assert_eq!(text.lines[0].spans[0].style.bg, Some(Color::Cyan));
+    }
+
+    #[test]
+    fn next_word_skips_to_next_word_boundary() {
+        assert_eq!(next_word_start("hello world", 0), 6);
+        assert_eq!(next_word_start("hello world", 5), 6);
+        assert_eq!(next_word_start("hello  world", 0), 7);
+        assert_eq!(next_word_start("foo.bar", 0), 3);
+        assert_eq!(next_word_start("foo.bar", 3), 4);
+        assert_eq!(next_word_start("hello", 0), 5);
+        assert_eq!(next_word_start("", 0), 0);
+    }
+
+    #[test]
+    fn next_word_crosses_newlines() {
+        assert_eq!(next_word_start("hello\nworld", 0), 6);
+    }
+
+    #[test]
+    fn prev_word_moves_to_previous_word_start() {
+        assert_eq!(prev_word_start("hello world", 11), 6);
+        assert_eq!(prev_word_start("hello world", 6), 0);
+        assert_eq!(prev_word_start("foo.bar", 4), 3);
+        assert_eq!(prev_word_start("foo.bar", 3), 0);
+        assert_eq!(prev_word_start("hello", 5), 0);
+        assert_eq!(prev_word_start("", 0), 0);
+    }
+
+    #[test]
+    fn prev_word_skips_whitespace_before_word() {
+        assert_eq!(prev_word_start("hello   world", 8), 0);
     }
 }
 
