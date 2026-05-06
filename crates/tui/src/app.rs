@@ -2156,7 +2156,7 @@ impl App {
             "Terminal"
         };
         let block = panel_block(title, self.focus == Focus::Main);
-        let content_area = terminal_content_area(block.inner(area));
+        let content_area = terminal_content_area(area);
         self.handle_terminal_resize(content_area);
         let screen = self.bundle.terminal.parser.screen();
         let mut lines = Vec::new();
