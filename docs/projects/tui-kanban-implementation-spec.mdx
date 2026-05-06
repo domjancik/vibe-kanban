@@ -1,0 +1,764 @@
+---
+title: "Projects TUI Spec"
+description: "Detailed implementation specification for a Ratatui-based Projects and Kanban interface"
+---
+
+# Ratatui Projects And Kanban TUI
+
+This document defines a terminal-native Projects and Kanban interface for Vibe Kanban.
+
+It is a companion to the Workspaces TUI specification:
+
+- [Workspaces TUI Spec](/workspaces/tui-implementation-spec)
+
+The Workspaces TUI covers execution and workspace operations. This document covers project navigation, kanban and list views, issue creation and editing, and the handoff from issues into workspaces.
+
+<Info>
+This is a separate specification because the project and issue-management surface is large enough to deserve its own navigation model, state model, and phased rollout.
+</Info>
+
+## Goals
+
+The Projects TUI should let you do the core planning and triage work of the web kanban interface without leaving the terminal:
+
+- browse projects
+- open a project board
+- switch between kanban and list views
+- filter and sort issues
+- create, edit, and delete issues
+- manage assignees, tags, priority, and relationships
+- inspect linked workspaces
+- create a workspace from an issue
+
+## Non-goals
+
+The first version should not attempt full parity with every rich interaction in the web UI:
+
+- drag-and-drop with mouse as the primary reordering affordance
+- full rich-text editing parity for issue descriptions
+- full notification centre behaviour
+- comment reactions and deep collaboration history
+- graphical board animations
+
+## Product scope
+
+### In scope for v1
+
+- project picker
+- project board header and filters
+- kanban view
+- list view
+- issue detail panel
+- create issue flow
+- edit issue title, description, status, priority
+- assign and unassign members
+- add and remove tags
+- create and remove issue relationships
+- show sub-issues and parent link
+- show linked workspaces
+- open existing linked workspace
+- create workspace from issue
+
+### Deferred to v2+
+
+- bulk editing across many selected issues
+- inline comments and reactions
+- advanced issue search UX beyond the base filter model
+- project settings editing
+- custom saved views
+- follower management
+
+## Existing backend and data model
+
+The current local app already exposes a useful remote-backed issue-management surface through local routes.
+
+### Core routes
+
+- `GET /api/remote/projects`
+- `GET /api/remote/projects/{project_id}`
+- `GET /api/remote/project-statuses?project_id={project_id}`
+- `GET /api/remote/issues?project_id={project_id}`
+- `POST /api/remote/issues`
+- `PATCH /api/remote/issues/{issue_id}`
+- `DELETE /api/remote/issues/{issue_id}`
+- `POST /api/remote/issues/search`
+- `GET /api/remote/tags?project_id={project_id}`
+- `GET /api/remote/issue-assignees?issue_id={issue_id}`
+- `POST /api/remote/issue-assignees`
+- `DELETE /api/remote/issue-assignees/{issue_assignee_id}`
+- `GET /api/remote/issue-tags?issue_id={issue_id}`
+- `POST /api/remote/issue-tags`
+- `DELETE /api/remote/issue-tags/{issue_tag_id}`
+- `GET /api/remote/issue-relationships?issue_id={issue_id}`
+- `POST /api/remote/issue-relationships`
+- `DELETE /api/remote/issue-relationships/{relationship_id}`
+
+### Relevant shared types
+
+- `Project`
+- `ProjectStatus`
+- `Issue`
+- `IssuePriority`
+- `IssueAssignee`
+- `IssueTag`
+- `IssueRelationship`
+- `DraftIssueData`
+
+The TUI should reuse these contracts instead of introducing a parallel issue model.
+
+## UX model
+
+## Top-level routes
+
+The TUI should treat Projects as a first-class top-level route alongside Workspaces:
+
+- `ProjectsHome`
+- `ProjectBoard`
+- `IssueDetail`
+- `IssueComposer`
+
+The Workspaces route remains separate but linked.
+
+## Layout modes
+
+### Wide layout
+
+For terminals `>= 140` columns:
+
+- left rail: project list or project navigation
+- centre: kanban board or issue list
+- right sidebar: issue detail panel
+
+Suggested split:
+
+- left rail: 24-30 columns
+- centre board: flexible main area
+- right panel: 42-52 columns
+
+### Medium layout
+
+For terminals `< 140` columns:
+
+- left rail collapses to a project picker modal
+- board and issue panel become tabbed
+
+Tabs:
+
+- `Board`
+- `List`
+- `Issue`
+- `Workspaces`
+
+### Narrow layout
+
+For terminals `< 110` columns:
+
+- one major surface at a time
+- issue detail opens full screen
+- create issue uses full-screen composer
+
+## Navigation model
+
+### Global keys
+
+- `q`: back or close modal
+- `?`: show keymap help
+- `:` or `Ctrl+p`: open command palette
+- `Tab` and `Shift+Tab`: cycle focus
+- `g p`: open project picker
+- `g w`: jump to Workspaces route
+
+### Project navigation keys
+
+- `j` `k` or arrows: move between items
+- `Enter`: open selected project or issue
+- `b`: switch to board view
+- `l`: switch to list view
+- `/`: search current project issues
+- `f`: open filter editor
+- `s`: open sort editor
+- `c`: create issue
+
+### Issue detail keys
+
+- `e`: edit title or description
+- `m`: move status
+- `p`: set priority
+- `a`: assign members
+- `t`: manage tags
+- `r`: manage relationships
+- `w`: create or open workspace
+- `x`: delete issue
+
+## Project picker specification
+
+The project picker should provide:
+
+- fuzzy search by project name
+- recent projects
+- organisation label when relevant
+
+The first version can load all visible projects once and keep them in memory for fuzzy matching.
+
+## Project board specification
+
+The board should mirror the web mental model:
+
+- statuses become columns
+- issues are cards within columns
+- hidden statuses are excluded from the default board but still reachable through filters or alternate views
+
+### Status data source
+
+- `GET /api/remote/project-statuses?project_id={project_id}`
+
+### Issue data source
+
+- `GET /api/remote/issues?project_id={project_id}`
+- `POST /api/remote/issues/search`
+
+### Board rendering rules
+
+- visible statuses sorted by `sort_order`
+- hidden statuses excluded from default board columns
+- issue cards show:
+  - simple id
+  - title
+  - priority
+  - assignee count or initials
+  - tag summary
+  - sub-issue marker
+  - linked workspace count
+
+### Kanban movement
+
+The terminal cannot rely on drag-and-drop. Use keyboard movement instead:
+
+- `>`: move selected issue to next visible status
+- `<`: move selected issue to previous visible status
+- `M`: open status move picker
+
+For status change:
+
+- `PATCH /api/remote/issues/{issue_id}`
+
+For manual ordering:
+
+- update `sort_order`
+- batch updates can be client-sequenced if no server bulk endpoint exists
+
+<Warning>
+If the current remote API only supports per-issue updates, avoid pretending reordering is cheap. The TUI should support manual ordering only when it can compute and persist stable `sort_order` values predictably.
+</Warning>
+
+## List view specification
+
+The list view should be a first-class alternative to board view, not a fallback.
+
+### Columns
+
+- simple id
+- title
+- status
+- priority
+- assignees
+- tags
+- updated at
+- workspace count
+
+### Sorting
+
+Support at minimum:
+
+- manual `sort_order`
+- priority
+- created at
+- updated at
+- title
+
+The TUI should reuse the server query model:
+
+- `SearchIssuesRequest.sort_field`
+- `SearchIssuesRequest.sort_direction`
+
+## Filtering specification
+
+The web kanban has substantial filtering. The first TUI pass should support the most valuable subset:
+
+- search text
+- status
+- assignee
+- tag
+- priority
+- parent issue
+- show or hide sub-issues
+- hide blocked
+
+### Filter transport
+
+Prefer server-side filtering via:
+
+- `POST /api/remote/issues/search`
+
+This avoids loading and re-filtering large projects on every keypress once the project size grows.
+
+## Issue detail panel specification
+
+The issue detail panel is the centre of most write operations.
+
+### Required sections
+
+- header
+- metadata
+- description
+- sub-issues
+- relationships
+- linked workspaces
+
+### Header content
+
+- issue title
+- simple id
+- status
+- priority
+- created and updated timestamps
+
+### Metadata content
+
+- assignees
+- tags
+- parent issue
+- target and start dates if present
+
+### Workspaces content
+
+- linked workspaces list
+- running state
+- branch or workspace name
+- create workspace action
+
+The workspace list should reuse the local workspace summary model where possible rather than re-fetching a completely separate representation.
+
+## Create issue specification
+
+The TUI must include issue creation capability in the initial Projects scope.
+
+### Create entry points
+
+- `c` from the board or list header
+- `+` equivalent in the command palette
+- `c` on a column to preselect that status
+- `S` on an issue to create a sub-issue
+
+### Create form fields
+
+- title
+- description
+- status
+- priority
+- assignees
+- tags
+- parent issue
+- create draft workspace toggle
+
+### Request mapping
+
+Create the issue with:
+
+- `POST /api/remote/issues`
+
+The initial request must include:
+
+- `project_id`
+- `status_id`
+- `title`
+- `description`
+- `priority`
+- `sort_order`
+- `parent_issue_id`
+- `parent_issue_sort_order`
+- `extension_metadata`
+
+Then apply follow-up relations:
+
+- assignees through `POST /api/remote/issue-assignees`
+- tags through `POST /api/remote/issue-tags`
+
+### Draft persistence
+
+The existing app has `DraftIssueData` and `ScratchType.DRAFT_ISSUE`. The TUI should use the same draft concept for resilience:
+
+- persist an in-progress issue draft per project
+- restore it after restart if still relevant
+
+If there is no existing local route for `DRAFT_ISSUE` persistence tailored to this flow, add one rather than inventing a separate local file format for drafts.
+
+### Create and workspace handoff
+
+If `create draft workspace` is enabled:
+
+1. create the issue
+2. open the workspace-create flow seeded with the new issue
+
+This mirrors the web intent where issue creation can lead directly into execution.
+
+## Edit issue specification
+
+### Editable fields
+
+- title
+- description
+- status
+- priority
+- parent issue
+- dates
+
+### Transport
+
+- `PATCH /api/remote/issues/{issue_id}`
+
+### Editing model
+
+- quick inline edit for title, status, and priority
+- full-screen or sidebar editor for description
+- save on explicit confirm, not every keystroke
+
+## Assignee and tag management
+
+### Assignees
+
+The TUI should provide:
+
+- add assignee picker
+- remove assignee action
+
+Transport:
+
+- `POST /api/remote/issue-assignees`
+- `DELETE /api/remote/issue-assignees/{issue_assignee_id}`
+
+### Tags
+
+The TUI should provide:
+
+- add existing tag
+- remove existing tag
+
+Transport:
+
+- `GET /api/remote/tags?project_id={project_id}`
+- `POST /api/remote/issue-tags`
+- `DELETE /api/remote/issue-tags/{issue_tag_id}`
+
+Tag creation itself can be deferred if the current primary workflow only needs assignment of existing project tags.
+
+## Relationships and sub-issues
+
+### Relationship types
+
+Support the existing remote model:
+
+- `blocking`
+- `related`
+- `has_duplicate`
+
+### Transport
+
+- `GET /api/remote/issue-relationships?issue_id={issue_id}`
+- `POST /api/remote/issue-relationships`
+- `DELETE /api/remote/issue-relationships/{relationship_id}`
+
+### UX
+
+The issue detail panel should show:
+
+- parent issue
+- sub-issues
+- blocking issues
+- related issues
+- duplicates
+
+Support a fuzzy issue search modal for linking existing issues.
+
+## Workspaces handoff
+
+Projects and Workspaces are tightly connected. The TUI should preserve that flow.
+
+### From issue to workspace
+
+From any issue:
+
+- open linked workspaces
+- create new workspace for the issue
+
+### From workspace back to issue
+
+From the Workspaces route:
+
+- if a workspace is linked to an issue, open that issue in the Projects route
+
+### Shared shell requirement
+
+Projects and Workspaces should run inside one TUI application with shared:
+
+- command palette
+- connection status
+- theme
+- toast system
+- navigation history
+
+## Rust architecture
+
+This specification assumes the same top-level `crates/tui` crate proposed by the Workspaces spec.
+
+### Suggested module expansion
+
+```text
+crates/tui/src/
+  projects/
+    mod.rs
+    state.rs
+    actions.rs
+    filters.rs
+    composer.rs
+    board.rs
+    list.rs
+    detail.rs
+    queries.rs
+```
+
+### Project domain state
+
+- projects list
+- selected project id
+- statuses by project id
+- issues by project id
+- issue assignees by issue id
+- issue tags by issue id
+- issue relationships by issue id
+- selected issue id
+- active board or list mode
+- active filters
+- composer draft
+
+### Domain events
+
+- `ProjectsLoaded`
+- `ProjectSelected`
+- `StatusesLoaded`
+- `IssuesLoaded`
+- `IssuesSearchLoaded`
+- `IssueCreated`
+- `IssueUpdated`
+- `IssueDeleted`
+- `IssueAssigneeAdded`
+- `IssueAssigneeRemoved`
+- `IssueTagAdded`
+- `IssueTagRemoved`
+- `IssueRelationshipAdded`
+- `IssueRelationshipRemoved`
+- `IssueDraftRestored`
+
+## API client layer
+
+Add typed client wrappers for the remote routes inside the TUI crate:
+
+- `list_projects`
+- `get_project_statuses`
+- `list_issues`
+- `search_issues`
+- `create_issue`
+- `update_issue`
+- `delete_issue`
+- `list_issue_assignees`
+- `create_issue_assignee`
+- `delete_issue_assignee`
+- `list_issue_tags`
+- `create_issue_tag`
+- `delete_issue_tag`
+- `list_issue_relationships`
+- `create_issue_relationship`
+- `delete_issue_relationship`
+
+## Rendering specification
+
+## Board view
+
+Each column should render:
+
+- status name
+- issue count
+- selected-state accent
+
+Each card should render:
+
+- simple id
+- title
+- priority badge
+- assignee chips or count
+- tag chips truncated to fit
+- workspace marker
+
+## Detail view
+
+Use stacked sections with compact headers:
+
+- `Meta`
+- `Description`
+- `Relationships`
+- `Sub-issues`
+- `Workspaces`
+
+## Create issue modal
+
+Prefer a modal or full-screen form over inline editing in the board. The create flow includes too many fields to squeeze into a single-line prompt.
+
+### Minimum controls
+
+- single-line title input
+- multi-line description editor
+- status select
+- priority select
+- assignee multiselect
+- tag multiselect
+- create workspace checkbox
+- submit and cancel buttons
+
+## Persistence
+
+Persist lightweight per-project preferences:
+
+- board vs list mode
+- last selected status column
+- filters
+- sort field and direction
+- show sub-issues
+- hide blocked
+
+Persist draft issue content separately from view preferences.
+
+## Error handling
+
+The Projects TUI should degrade gracefully when remote resources are unavailable.
+
+### Failure cases
+
+- remote client unavailable
+- project deleted or inaccessible
+- issue mutation succeeds but assignee or tag follow-up mutation fails
+- workspace creation handoff fails after issue creation
+
+### Required UX
+
+- preserve the created issue id when partial follow-up steps fail
+- show a toast and keep the detail panel open for repair actions
+- offer retry for assignee, tag, and relationship mutations
+
+## Backend gaps and recommended additions
+
+The current routes are serviceable, but a few improvements would simplify the TUI.
+
+### Recommended additions
+
+1. Add a single project bootstrap endpoint returning:
+   - project
+   - statuses
+   - tags
+   - members
+   - first issue page
+
+2. Add a batch issue update endpoint for:
+   - status moves
+   - sort-order reindexing
+   - multi-select actions
+
+3. Add explicit local routes for `DraftIssueData` persistence if the existing scratch flow is not already exposed cleanly for this use case.
+
+4. Add a direct issue-to-linked-workspaces aggregation endpoint if joining remote issues to local workspaces remains expensive on the client.
+
+## Phased delivery plan
+
+## Phase 0: exploration
+
+Deliver:
+
+- project picker
+- issue list view
+- issue detail read-only view
+
+Exit criteria:
+
+- a user can browse projects and inspect issues in the terminal
+
+## Phase 1: planning MVP
+
+Deliver:
+
+- kanban view
+- list view
+- issue create flow
+- issue edit flow
+- status move flow
+- assignee and tag management
+
+Exit criteria:
+
+- a user can manage project work from the TUI without opening the web board
+
+## Phase 2: execution handoff
+
+Deliver:
+
+- linked workspaces section
+- create workspace from issue
+- jump between issue and workspace routes
+
+Exit criteria:
+
+- issue planning and workspace execution feel like one workflow
+
+## Phase 3: power features
+
+Deliver:
+
+- multi-select bulk actions
+- saved views
+- richer relationship management
+- sub-issue creation shortcuts
+
+## Testing strategy
+
+## Unit tests
+
+- filter state transitions
+- board column grouping
+- sort-order calculations
+- create issue request assembly
+- follow-up assignee and tag mutation planning
+
+## Integration tests
+
+- create issue end-to-end through remote routes
+- move issue between statuses
+- create sub-issue
+- create issue and draft workspace handoff
+- delete assignee, tag, and relationship
+
+## Snapshot tests
+
+Use Ratatui buffer snapshots for:
+
+- board view
+- list view
+- issue detail panel
+- create issue modal
+- narrow terminal full-screen issue editor
+
+## Success criteria
+
+The design is successful if:
+
+- the user can create an issue in a few keystrokes
+- board and list navigation remain fast in large projects
+- issue-to-workspace handoff is obvious and low-friction
+- the Projects route and Workspaces route feel like one coherent terminal product
