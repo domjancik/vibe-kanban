@@ -440,6 +440,12 @@ html {
       animation: none;
     }
   }
+
+  .terminal-shell > .xterm {
+    box-sizing: border-box;
+    height: 100%;
+    padding: 6px 12px;
+  }
 }
 
 /* Color emoji utility - uses system color emoji fonts for reactions */
