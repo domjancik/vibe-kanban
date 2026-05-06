@@ -313,7 +313,7 @@ impl App {
 
     async fn handle_key(&mut self, key: KeyEvent, size: Rect) {
         if self.bundle.terminal.input_mode && self.selected_pane == Pane::Terminal {
-            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char(']') {
+            if is_terminal_exit_key(&key) {
                 self.bundle.terminal.input_mode = false;
                 self.focus = Focus::Main;
                 self.status = "Left terminal input mode".to_string();
@@ -2083,6 +2083,26 @@ fn default_variant_to_none(variant: String) -> Option<String> {
         None
     } else {
         Some(variant)
+    }
+}
+
+fn is_terminal_exit_key(key: &KeyEvent) -> bool {
+    match key {
+        KeyEvent {
+            code: KeyCode::Esc,
+            ..
+        } => true,
+        KeyEvent {
+            code: KeyCode::Char(']'),
+            modifiers,
+            ..
+        } if modifiers.contains(KeyModifiers::CONTROL) => true,
+        KeyEvent {
+            code: KeyCode::Char('g'),
+            modifiers,
+            ..
+        } if modifiers.contains(KeyModifiers::CONTROL) => true,
+        _ => false,
     }
 }
 
