@@ -28,6 +28,11 @@ use crate::{
     },
 };
 
+enum WorkspaceRow<'a> {
+    Header(&'static str),
+    Workspace(&'a WorkspaceWithStatus),
+}
+
 pub struct App {
     api: Api,
     rx: UnboundedReceiver<NetEvent>,
@@ -151,9 +156,17 @@ impl App {
                 if Some(workspace_id) == self.selected_workspace_id {
                     let previous = self.bundle.selected_session_id;
                     self.bundle.sessions = sessions;
-                    self.bundle.selected_session_id =
-                        previous.or_else(|| self.bundle.sessions.first().map(|session| session.id));
-                    self.rebind_session_streams(size);
+                    let next_selected = previous
+                        .filter(|selected| self.bundle.sessions.iter().any(|session| session.id == *selected))
+                        .or_else(|| self.bundle.sessions.first().map(|session| session.id));
+                    let changed = next_selected != self.bundle.selected_session_id;
+                    self.bundle.selected_session_id = next_selected;
+                    if changed {
+                        self.bundle.process_map.clear();
+                        self.bundle.log_entries.clear();
+                        self.bundle.selected_process_id = None;
+                        self.rebind_session_streams();
+                    }
                 }
             }
             NetEvent::ReposLoaded {
@@ -198,11 +211,16 @@ impl App {
             } => {
                 if Some(session_id) == self.bundle.selected_session_id {
                     self.bundle.process_map = processes;
-                    let selected_process_id = self.bundle.selected_process_id;
-                    self.bundle.selected_process_id = selected_process_id.or_else(|| {
-                        active_process(&self.bundle.process_map).map(|process| process.id)
-                    });
-                    self.rebind_logs_only(size);
+                    let previous_process_id = self.bundle.selected_process_id;
+                    let next_process_id = previous_process_id
+                        .filter(|selected| self.bundle.process_map.contains_key(selected))
+                        .or_else(|| active_process(&self.bundle.process_map).map(|process| process.id));
+                    let changed = next_process_id != previous_process_id;
+                    self.bundle.selected_process_id = next_process_id;
+                    if changed {
+                        self.bundle.log_entries.clear();
+                        self.rebind_logs_only();
+                    }
                 }
             }
             NetEvent::LogsUpdated {
@@ -546,7 +564,7 @@ impl App {
     fn move_selection(&mut self, delta: i32, size: Rect) {
         match self.focus {
             Focus::WorkspaceList => {
-                let ids = self.filtered_workspace_ids();
+                let ids = self.visible_workspace_ids();
                 if ids.is_empty() {
                     return;
                 }
@@ -587,7 +605,7 @@ impl App {
                         .clamp(0, self.bundle.sessions.len().saturating_sub(1) as i32)
                         as usize;
                     self.bundle.selected_session_id = Some(self.bundle.sessions[next].id);
-                    self.rebind_session_streams(size);
+                    self.rebind_session_streams();
                 }
                 Pane::Git => {
                     let scroll = self.bundle.log_scroll as i32 + delta;
@@ -644,51 +662,56 @@ impl App {
     }
 
     fn render_workspace_list(&self, frame: &mut Frame, area: Rect) {
-        let items = self
-            .filtered_workspaces()
-            .into_iter()
-            .map(|workspace| {
-                let summary = self.summaries.get(&workspace.id);
-                let mut line = workspace_title(&workspace.workspace);
-                if workspace.workspace.pinned {
-                    line.push_str("  [pin]");
+        let rows = self.workspace_rows();
+        let items = rows
+            .iter()
+            .map(|row| match row {
+                WorkspaceRow::Header(title) => ListItem::new(Line::styled(
+                    format!(" {title} "),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                WorkspaceRow::Workspace(workspace) => {
+                    let summary = self.summaries.get(&workspace.id);
+                    let mut line = workspace_title(&workspace.workspace);
+                    if workspace.workspace.pinned {
+                        line.push_str("  [pin]");
+                    }
+                    if workspace.is_running {
+                        line.push_str("  [run]");
+                    }
+                    if summary.is_some_and(|summary| summary.has_pending_approval) {
+                        line.push_str("  [approval]");
+                    }
+                    if summary.is_some_and(|summary| summary.has_running_dev_server) {
+                        line.push_str("  [dev]");
+                    }
+                    if summary.is_some_and(|summary| summary.has_unseen_turns) {
+                        line.push_str("  [new]");
+                    }
+                    let meta = if let Some(summary) = summary {
+                        format!(
+                            "{}  +{} -{}  {}",
+                            workspace.workspace.branch,
+                            summary.lines_added.unwrap_or_default(),
+                            summary.lines_removed.unwrap_or_default(),
+                            format_relative_time(summary.latest_process_completed_at)
+                        )
+                    } else {
+                        workspace.workspace.branch.clone()
+                    };
+                    ListItem::new(Text::from(vec![
+                        Line::raw(line),
+                        Line::styled(meta, Style::default().fg(Color::DarkGray)),
+                    ]))
                 }
-                if workspace.is_running {
-                    line.push_str("  [run]");
-                }
-                if summary.is_some_and(|summary| summary.has_pending_approval) {
-                    line.push_str("  [approval]");
-                }
-                if summary.is_some_and(|summary| summary.has_running_dev_server) {
-                    line.push_str("  [dev]");
-                }
-                if summary.is_some_and(|summary| summary.has_unseen_turns) {
-                    line.push_str("  [new]");
-                }
-                let meta = if let Some(summary) = summary {
-                    format!(
-                        "{}  +{} -{}  {}",
-                        workspace.workspace.branch,
-                        summary.lines_added.unwrap_or_default(),
-                        summary.lines_removed.unwrap_or_default(),
-                        format_relative_time(summary.latest_process_completed_at)
-                    )
-                } else {
-                    workspace.workspace.branch.clone()
-                };
-                ListItem::new(Text::from(vec![
-                    Line::raw(line),
-                    Line::styled(meta, Style::default().fg(Color::DarkGray)),
-                ]))
             })
             .collect::<Vec<_>>();
 
         let mut state = ListState::default();
-        if let Some(selected_id) = self.selected_workspace_id {
-            let ids = self.filtered_workspace_ids();
-            if let Some(index) = ids.iter().position(|id| *id == selected_id) {
-                state.select(Some(index));
-            }
+        if let Some(index) = self.selected_workspace_row_index(&rows) {
+            state.select(Some(index));
         }
 
         let block = Block::default()
@@ -846,13 +869,14 @@ impl App {
             &mut state,
         );
 
-        let process_lines = self
+        let mut processes = self
             .bundle
             .process_map
             .values()
             .cloned()
             .collect::<Vec<ExecutionProcess>>();
-        let process_lines = process_lines
+        processes.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+        let process_lines = processes
             .iter()
             .map(|process| {
                 let label = format!(
@@ -1067,11 +1091,7 @@ impl App {
     fn header(&self) -> Paragraph<'_> {
         let workspace = self
             .selected_workspace_id
-            .and_then(|id| {
-                self.all_workspaces()
-                    .into_iter()
-                    .find(|workspace| workspace.id == id)
-            })
+            .and_then(|id| self.find_workspace(id))
             .map(|workspace| workspace_title(&workspace.workspace))
             .unwrap_or_else(|| "No workspace".to_string());
         Paragraph::new(Line::from(vec![
@@ -1097,7 +1117,7 @@ impl App {
         if self.selected_workspace_id.is_some() {
             return;
         }
-        self.selected_workspace_id = self.filtered_workspace_ids().first().copied();
+        self.selected_workspace_id = self.visible_workspace_ids().first().copied();
         self.load_selected_workspace(size);
     }
 
@@ -1118,23 +1138,25 @@ impl App {
         );
     }
 
-    fn rebind_session_streams(&mut self, size: Rect) {
+    fn rebind_session_streams(&mut self) {
         self.api.replace_process_stream(
             self.bundle.selected_session_id,
-            self.bundle.selected_process_id,
-            self.selected_workspace_id,
-            (size.width.saturating_sub(40), size.height.saturating_sub(6)),
             self.tx.clone(),
             &mut self.subscriptions,
         );
     }
 
-    fn rebind_logs_only(&mut self, size: Rect) {
-        self.rebind_session_streams(size);
+    fn rebind_logs_only(&mut self) {
+        self.api.replace_logs_stream(
+            self.bundle.selected_process_id,
+            self.tx.clone(),
+            &mut self.subscriptions,
+        );
     }
 
     fn switch_session_or_process(&mut self, size: Rect) {
-        self.rebind_session_streams(size);
+        let _ = size;
+        self.rebind_session_streams();
     }
 
     fn current_session(&self) -> Option<&Session> {
@@ -1145,9 +1167,6 @@ impl App {
 
     fn all_workspaces(&self) -> Vec<&WorkspaceWithStatus> {
         let mut workspaces = self.active_workspaces.values().collect::<Vec<_>>();
-        if self.show_archived {
-            workspaces.extend(self.archived_workspaces.values());
-        }
         workspaces.sort_by(|left, right| {
             right
                 .pinned
@@ -1172,6 +1191,90 @@ impl App {
             .collect()
     }
 
+    fn filtered_archived_workspaces(&self) -> Vec<&WorkspaceWithStatus> {
+        let mut workspaces = self
+            .archived_workspaces
+            .values()
+            .filter(|workspace| {
+                if self.filter.is_empty() {
+                    return true;
+                }
+                let title = workspace_title(&workspace.workspace).to_lowercase();
+                let branch = workspace.branch.to_lowercase();
+                let filter = self.filter.to_lowercase();
+                title.contains(&filter) || branch.contains(&filter)
+            })
+            .collect::<Vec<_>>();
+        workspaces.sort_by(|left, right| {
+            right
+                .pinned
+                .cmp(&left.pinned)
+                .then_with(|| right.created_at.cmp(&left.created_at))
+        });
+        workspaces
+    }
+
+    fn workspace_rows(&self) -> Vec<WorkspaceRow<'_>> {
+        let active = self.filtered_workspaces();
+        let mut needs_attention = Vec::new();
+        let mut running = Vec::new();
+        let mut idle = Vec::new();
+
+        for workspace in active {
+            let summary = self.summaries.get(&workspace.id);
+            let needs_attention_bucket = summary.is_some_and(|summary| {
+                summary.has_pending_approval || summary.has_unseen_turns
+            });
+            if needs_attention_bucket {
+                needs_attention.push(workspace);
+            } else if workspace.is_running
+                || summary.is_some_and(|summary| summary.has_running_dev_server)
+            {
+                running.push(workspace);
+            } else {
+                idle.push(workspace);
+            }
+        }
+
+        let mut rows = Vec::new();
+        self.push_workspace_group(&mut rows, "Needs Attention", &needs_attention);
+        self.push_workspace_group(&mut rows, "Running", &running);
+        self.push_workspace_group(&mut rows, "Idle", &idle);
+
+        if self.show_archived {
+            let archived = self.filtered_archived_workspaces();
+            self.push_workspace_group(&mut rows, "Archived", &archived);
+        }
+
+        rows
+    }
+
+    fn push_workspace_group<'a>(
+        &self,
+        rows: &mut Vec<WorkspaceRow<'a>>,
+        title: &'static str,
+        workspaces: &[&'a WorkspaceWithStatus],
+    ) {
+        if workspaces.is_empty() {
+            return;
+        }
+        rows.push(WorkspaceRow::Header(title));
+        rows.extend(
+            workspaces
+                .iter()
+                .copied()
+                .map(WorkspaceRow::Workspace),
+        );
+    }
+
+    fn selected_workspace_row_index(&self, rows: &[WorkspaceRow<'_>]) -> Option<usize> {
+        let selected_id = self.selected_workspace_id?;
+        rows.iter().position(|row| match row {
+            WorkspaceRow::Header(_) => false,
+            WorkspaceRow::Workspace(workspace) => workspace.id == selected_id,
+        })
+    }
+
     fn filtered_workspace_ids(&self) -> Vec<Uuid> {
         self.filtered_workspaces()
             .into_iter()
@@ -1179,14 +1282,28 @@ impl App {
             .collect()
     }
 
+    fn visible_workspace_ids(&self) -> Vec<Uuid> {
+        self.workspace_rows()
+            .into_iter()
+            .filter_map(|row| match row {
+                WorkspaceRow::Header(_) => None,
+                WorkspaceRow::Workspace(workspace) => Some(workspace.id),
+            })
+            .collect()
+    }
+
+    fn find_workspace(&self, workspace_id: Uuid) -> Option<&WorkspaceWithStatus> {
+        self.active_workspaces
+            .get(&workspace_id)
+            .or_else(|| self.archived_workspaces.get(&workspace_id))
+    }
+
     async fn toggle_pinned(&mut self) {
         let Some(workspace_id) = self.selected_workspace_id else {
             return;
         };
         let Some(workspace) = self
-            .all_workspaces()
-            .into_iter()
-            .find(|workspace| workspace.id == workspace_id)
+            .find_workspace(workspace_id)
         else {
             return;
         };
@@ -1205,9 +1322,7 @@ impl App {
             return;
         };
         let Some(workspace) = self
-            .all_workspaces()
-            .into_iter()
-            .find(|workspace| workspace.id == workspace_id)
+            .find_workspace(workspace_id)
         else {
             return;
         };

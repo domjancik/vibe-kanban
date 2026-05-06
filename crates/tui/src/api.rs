@@ -261,40 +261,30 @@ impl Api {
     pub fn replace_process_stream(
         &self,
         session_id: Option<Uuid>,
-        selected_process_id: Option<Uuid>,
-        workspace_id: Option<Uuid>,
-        size: (u16, u16),
         tx: UnboundedSender<NetEvent>,
         subscriptions: &mut WorkspaceSubscriptions,
     ) {
         if let Some(handle) = subscriptions.processes.take() {
             handle.abort();
         }
-        if let Some(handle) = subscriptions.logs.take() {
-            handle.abort();
-        }
-        if let Some(handle) = subscriptions.terminal.take() {
-            handle.abort();
-        }
-        subscriptions.terminal_tx = None;
 
         if let Some(session_id) = session_id {
             subscriptions.processes =
                 Some(spawn_process_stream(self.clone(), session_id, tx.clone()));
         }
+    }
+
+    pub fn replace_logs_stream(
+        &self,
+        selected_process_id: Option<Uuid>,
+        tx: UnboundedSender<NetEvent>,
+        subscriptions: &mut WorkspaceSubscriptions,
+    ) {
+        if let Some(handle) = subscriptions.logs.take() {
+            handle.abort();
+        }
         if let Some(process_id) = selected_process_id {
             subscriptions.logs = Some(spawn_logs_stream(self.clone(), process_id, tx.clone()));
-        }
-        if let Some(workspace_id) = workspace_id {
-            let (terminal_tx, terminal_rx) = unbounded_channel();
-            subscriptions.terminal_tx = Some(terminal_tx);
-            subscriptions.terminal = Some(spawn_terminal_stream(
-                self.clone(),
-                workspace_id,
-                size,
-                tx,
-                terminal_rx,
-            ));
         }
     }
 
