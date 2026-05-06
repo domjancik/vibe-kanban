@@ -3452,8 +3452,8 @@ fn render_normalized_chat_entry(entry: &executors::logs::NormalizedEntry) -> Vec
         ],
         NormalizedEntryType::UserMessage => render_markdown_labeled_content(
             "user",
-            Color::Red,
-            Style::default().fg(Color::Rgb(255, 205, 205)),
+            Color::Blue,
+            Style::default().fg(Color::Rgb(170, 210, 255)),
             content,
         ),
         NormalizedEntryType::AssistantMessage => {
@@ -3797,14 +3797,14 @@ mod tests {
     }
 
     #[test]
-    fn user_label_is_rendered_in_red() {
+    fn user_label_is_rendered_in_blue() {
         let lines = render_normalized_chat_entry(&entry(
             NormalizedEntryType::UserMessage,
             "Hello **world**",
         ));
         let label = &lines[0];
         assert_eq!(label.spans[0].content.as_ref(), "user");
-        assert_eq!(label.style.fg, Some(Color::Red));
+        assert_eq!(label.style.fg, Some(Color::Blue));
         assert!(label.style.add_modifier.contains(Modifier::BOLD));
     }
 
