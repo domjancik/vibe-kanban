@@ -947,14 +947,26 @@ impl App {
     }
 
     fn render_main(&self, frame: &mut Frame, area: Rect) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Min(10),
-                Constraint::Length(5),
-            ])
-            .split(area);
+        let chunks = if self.selected_pane == Pane::Chat {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Min(10),
+                    Constraint::Length(3),
+                    Constraint::Length(5),
+                ])
+                .split(area)
+        } else {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Min(10),
+                    Constraint::Length(5),
+                ])
+                .split(area)
+        };
 
         let tabs = Tabs::new(
             Pane::all()
@@ -994,16 +1006,27 @@ impl App {
             Pane::Notes => self.bundle.notes.as_str(),
             _ => self.composer.as_str(),
         };
-        let composer = if self.selected_pane == Pane::Chat {
-            Paragraph::new(self.composer_panel_text(composer_text))
-                .block(panel_block(composer_title, self.focus == Focus::Composer))
-                .wrap(Wrap { trim: false })
+        if self.selected_pane == Pane::Chat {
+            frame.render_widget(
+                Paragraph::new(self.composer_selection_line())
+                    .block(panel_block("Selection", false))
+                    .wrap(Wrap { trim: false }),
+                chunks[2],
+            );
+            frame.render_widget(
+                Paragraph::new(composer_text)
+                    .block(panel_block(composer_title, self.focus == Focus::Composer))
+                    .wrap(Wrap { trim: false }),
+                chunks[3],
+            );
         } else {
-            Paragraph::new(composer_text)
-                .block(panel_block(composer_title, self.focus == Focus::Composer))
-                .wrap(Wrap { trim: false })
-        };
-        frame.render_widget(composer, chunks[2]);
+            frame.render_widget(
+                Paragraph::new(composer_text)
+                    .block(panel_block(composer_title, self.focus == Focus::Composer))
+                    .wrap(Wrap { trim: false }),
+                chunks[2],
+            );
+        }
     }
 
     fn render_detail(&self, frame: &mut Frame, area: Rect) {
@@ -1317,7 +1340,7 @@ impl App {
         Paragraph::new(status.to_string()).block(Block::default().borders(Borders::TOP))
     }
 
-    fn composer_panel_text(&self, composer_text: &str) -> Text<'static> {
+    fn composer_selection_line(&self) -> Line<'static> {
         let config = self.composer_config.as_ref();
         let executor = config
             .map(|config| config.executor.to_string())
@@ -1338,72 +1361,27 @@ impl App {
             .map(|config| display_permission(config.permission_policy.as_ref()).to_string())
             .unwrap_or_else(|| "default".to_string());
 
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled(
-                    "Exec ",
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(executor, Style::default().fg(Color::Cyan)),
-                Span::raw("  "),
-                Span::styled(
-                    "Variant ",
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(variant, Style::default().fg(Color::Yellow)),
-                Span::raw("  "),
-                Span::styled(
-                    "Model ",
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(model, Style::default().fg(Color::Green)),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    "Reason ",
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(reasoning, Style::default().fg(Color::Magenta)),
-                Span::raw("  "),
-                Span::styled(
-                    "Mode ",
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(agent_mode, Style::default().fg(Color::LightBlue)),
-                Span::raw("  "),
-                Span::styled(
-                    "Perm ",
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(permission, Style::default().fg(Color::LightRed)),
-            ]),
-            Line::styled(
-                "E executor  V variant  M model  R reasoning  A mode  P permission",
-                Style::default().fg(Color::DarkGray),
-            ),
-            Line::raw(""),
-        ];
-        lines.extend(
-            composer_text
-                .lines()
-                .map(|line| Line::raw(line.to_string())),
-        );
-        if composer_text.is_empty() {
-            lines.push(Line::raw(String::new()));
-        }
-        Text::from(lines)
+        Line::from(vec![
+            Span::styled("Exec ", Style::default().fg(Color::DarkGray)),
+            Span::styled(executor, Style::default().fg(Color::Cyan)),
+            Span::raw("  "),
+            Span::styled("Var ", Style::default().fg(Color::DarkGray)),
+            Span::styled(variant, Style::default().fg(Color::Yellow)),
+            Span::raw("  "),
+            Span::styled("Model ", Style::default().fg(Color::DarkGray)),
+            Span::styled(model, Style::default().fg(Color::Green)),
+            Span::raw("  "),
+            Span::styled("Rsn ", Style::default().fg(Color::DarkGray)),
+            Span::styled(reasoning, Style::default().fg(Color::Magenta)),
+            Span::raw("  "),
+            Span::styled("Mode ", Style::default().fg(Color::DarkGray)),
+            Span::styled(agent_mode, Style::default().fg(Color::LightBlue)),
+            Span::raw("  "),
+            Span::styled("Perm ", Style::default().fg(Color::DarkGray)),
+            Span::styled(permission, Style::default().fg(Color::LightRed)),
+            Span::raw("  "),
+            Span::styled("Keys E/V/M/R/A/P", Style::default().fg(Color::DarkGray)),
+        ])
     }
 
     fn current_discovery_session_id(&self) -> Option<Uuid> {
