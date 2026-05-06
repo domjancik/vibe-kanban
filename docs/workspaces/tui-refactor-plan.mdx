@@ -1,0 +1,393 @@
+---
+title: "TUI Refactor Plan"
+description: "A staged refactor plan for decomposing the growing Ratatui app shell into smaller, testable modules."
+---
+
+# TUI Refactor Plan
+
+This document describes a practical refactor plan for `crates/tui` as the workspaces terminal client grows beyond a single-file implementation.
+
+<Info>
+This plan assumes the current product scope defined in the [TUI Implementation Spec](/workspaces/tui-implementation-spec) remains the source of truth for behaviour. The goal here is to improve maintainability without changing the user-facing model.
+</Info>
+
+## Why this refactor is needed
+
+`crates/tui/src/app.rs` has grown into the main delivery bottleneck for the terminal client.
+
+Today it combines:
+
+- top-level app state
+- terminal event loop ownership
+- async network event handling
+- keyboard dispatch
+- text editing and Vim-mode behaviour
+- workspace and session selection
+- conversation loading and caching
+- queue and draft orchestration
+- pane rendering
+- modal rendering
+- generic rendering helpers and tests
+
+That concentration makes the code harder to review, test, and extend safely. Small UI changes now require you to reason about state transitions, network side effects, and rendering details in the same file.
+
+## Refactor goals
+
+You should refactor towards these outcomes:
+
+- keep `App::run` as the single top-level shell for terminal IO and shutdown
+- move pane rendering into dedicated UI modules
+- separate key decoding from state mutation
+- isolate async orchestration from pure state updates
+- reuse one editor core for composer, notes, and rename flows
+- move conversation history and optimistic rendering into a dedicated subsystem
+- split wire-format types from domain helpers and formatting utilities
+- preserve current behaviour during the migration
+
+## Current problem areas
+
+### `app.rs` is doing product orchestration and view rendering
+
+The same module owns both lifecycle code and pane drawing. This makes it difficult to change layout, focus rules, or modal behaviour without touching unrelated runtime logic.
+
+### Key handling is tightly coupled to behaviour
+
+The current key handler maps raw `KeyEvent` values directly to mutations and async calls. That makes shortcuts harder to audit and makes tests more fragile than necessary.
+
+### Editor logic is duplicated across multiple flows
+
+Composer editing, notes editing, session rename editing, and Vim-specific movement all live inside `app.rs`. The cursor movement and mutation rules should be shared.
+
+### Conversation logic is a subsystem hidden inside `app.rs`
+
+Conversation bootstrap, log backfill, optimistic messages, chat cache invalidation, markdown rendering, and token usage display all belong to one domain area. They should not be scattered between app state and generic helpers.
+
+### API transport and stream plumbing are mixed together
+
+`api.rs` currently holds HTTP helpers, endpoint-specific methods, websocket stream factories, terminal transport, and patch-stream infrastructure. That creates another large module with weak internal boundaries.
+
+### `model.rs` mixes DTOs, state, and formatting
+
+Wire payloads, terminal state, events, enums, and display helpers sit together in one module even though they change for different reasons.
+
+## Target module layout
+
+You should move towards this structure:
+
+```text
+crates/tui/src/
+  main.rs
+  app/
+    mod.rs
+    state.rs
+    update.rs
+    actions.rs
+    layout.rs
+  ui/
+    mod.rs
+    header.rs
+    footer.rs
+    workspace_list.rs
+    main_pane.rs
+    detail_pane.rs
+    panes/
+      chat.rs
+      changes.rs
+      logs.rs
+      git.rs
+      terminal.rs
+      notes.rs
+    modal/
+      agent_picker.rs
+      session_rename.rs
+    widgets/
+      panel.rs
+      scrollbar.rs
+  input/
+    mod.rs
+    keymap.rs
+    navigation.rs
+    terminal.rs
+  editor/
+    mod.rs
+    buffer.rs
+    vim.rs
+    render.rs
+  conversation/
+    mod.rs
+    state.rs
+    history.rs
+    optimistic.rs
+    render.rs
+    markdown.rs
+    wrap.rs
+  composer/
+    mod.rs
+    state.rs
+    config.rs
+    draft.rs
+    queue.rs
+  workspace/
+    mod.rs
+    list.rs
+    session.rs
+    actions.rs
+  api/
+    mod.rs
+    client.rs
+    streams.rs
+    workspace.rs
+    terminal.rs
+  model/
+    mod.rs
+    dto.rs
+    domain.rs
+    format.rs
+```
+
+<Tip>
+You do not need to land this shape in one change. Treat it as the end state and migrate towards it in narrow slices.
+</Tip>
+
+## Responsibility boundaries
+
+### `app/`
+
+Keep only the shell responsibilities here:
+
+- initialise channels and background tasks
+- run the draw and event loop
+- coordinate shutdown
+- delegate to reducers and render functions
+
+`app/state.rs` should hold the top-level state tree. `app/update.rs` should apply semantic actions and network events.
+
+### `ui/`
+
+Move all Ratatui rendering code here:
+
+- top-level layout selection
+- workspace list rendering
+- main pane rendering
+- detail pane rendering
+- modals
+- shared widgets such as panel borders and scrollbars
+
+These modules should accept immutable state or view-model inputs wherever possible.
+
+### `input/`
+
+Convert raw terminal input into semantic intents.
+
+Examples:
+
+- `SelectNextWorkspace`
+- `SelectPrevPane`
+- `OpenNewSession`
+- `SubmitComposer`
+- `CycleExecutor`
+- `EnterTerminalInput`
+
+This layer should know about shortcuts, not about API calls.
+
+### `editor/`
+
+Create a reusable editing core for:
+
+- composer
+- notes
+- session rename
+
+This module should own:
+
+- cursor movement
+- insert and delete behaviour
+- line navigation
+- word motions
+- Vim operator state
+- cursor rendering rules
+
+### `conversation/`
+
+This should become a first-class subsystem.
+
+It should own:
+
+- process ordering
+- snapshot bootstrap and backfill
+- optimistic message state
+- chat line generation
+- markdown rendering
+- wrapping and viewport calculations
+- token usage derivation
+
+### `composer/`
+
+Keep follow-up specific behaviour here:
+
+- executor, model, reasoning, agent, and permission selection
+- draft loading and saving
+- queue state and queue actions
+- session-sensitive scratch and queue context
+
+### `workspace/`
+
+Keep list and selection behaviour here:
+
+- grouping and filtering
+- active versus archived list composition
+- workspace selection rules
+- session selection rules
+- workspace-scoped actions such as pin and archive
+
+### `api/`
+
+Separate these concerns:
+
+- HTTP client and envelope parsing
+- generic patch-stream runner
+- workspace-specific endpoint methods
+- terminal websocket transport
+
+This lets you test stream plumbing separately from domain behaviour.
+
+### `model/`
+
+Split data by reason to change:
+
+- DTOs from the server
+- domain enums and state helpers
+- formatting and display helpers
+
+## Recommended migration sequence
+
+<Steps>
+<Step title="Extract pure UI code first">
+  Move rendering functions and shared widgets out of `app.rs` without changing behaviour.
+
+  Start with:
+
+  - header and footer
+  - panel borders
+  - scrollbars
+  - workspace list
+  - detail pane
+  - non-chat panes
+
+  <Check>
+  This gives you an immediate size reduction in `app.rs` with relatively low behavioural risk.
+  </Check>
+</Step>
+
+<Step title="Extract the shared editor core">
+  Move buffer editing, cursor movement, and Vim-mode behaviour into `editor/`.
+
+  Then point:
+
+  - composer
+  - notes
+  - session rename
+
+  at the same editing primitives.
+
+  <Check>
+  This removes one of the highest-density logic clusters from `app.rs`.
+  </Check>
+</Step>
+
+<Step title="Extract the terminal pane as one unit">
+  Move terminal rendering, geometry calculation, resize handling, and input forwarding together.
+
+  This pane already has a tighter coupling between rendered area and PTY size than the other panes, so it should not be split across unrelated modules.
+</Step>
+
+<Step title="Introduce semantic actions">
+  Add a small action layer between `KeyEvent` and state mutation.
+
+  `input/keymap.rs` should map raw keys to semantic intents. `app/update.rs` should consume those intents.
+
+  <Check>
+  Once this exists, shortcut behaviour becomes easier to test and extend.
+  </Check>
+</Step>
+
+<Step title="Move conversation logic into its own subsystem">
+  Extract conversation history loading, optimistic entry reconciliation, cache invalidation, markdown rendering, and wrapping.
+
+  Keep the user-visible behaviour unchanged during this step.
+</Step>
+
+<Step title="Split composer and workspace state">
+  Break the top-level `App` struct into sub-state structs such as:
+
+  - `WorkspaceCatalogState`
+  - `WorkspaceViewState`
+  - `ComposerState`
+  - `ConversationState`
+  - `ModalState`
+  - `StatusState`
+
+  <Check>
+  This makes network event handling more local and easier to reason about.
+  </Check>
+</Step>
+
+<Step title="Decompose `api.rs` and `model.rs`">
+  Once the app-side seams are in place, split API transport and wire models into smaller modules.
+
+  Leave this until later so you avoid refactoring everything at once.
+</Step>
+</Steps>
+
+## Testing strategy during the refactor
+
+You should expand tests as modules move out of `app.rs`.
+
+Focus on:
+
+- editor cursor and mutation rules
+- Vim motions and operators
+- key-to-intent mapping
+- workspace grouping and filtering
+- conversation process ordering
+- optimistic entry reconciliation
+- chat viewport calculations
+- markdown rendering edge cases
+
+<Warning>
+Do not wait until the end of the refactor to improve coverage. The main value of this split is that it turns hidden behaviour into testable units.
+</Warning>
+
+## Guardrails
+
+Keep these constraints in place while refactoring:
+
+- do not change the keyboard-first interaction model from the implementation spec
+- do not move terminal ownership out of the top-level app shell
+- do not mix raw `KeyEvent` handling back into domain modules once semantic actions exist
+- do not couple pure render functions to async side effects
+- do not introduce deep abstraction layers that only wrap one call site
+
+## Suggested first patch set
+
+If you want the safest first implementation slice, use this order:
+
+1. Add `ui/widgets/panel.rs` and `ui/widgets/scrollbar.rs`.
+2. Add `ui/header.rs` and `ui/footer.rs`.
+3. Move workspace list rendering into `ui/workspace_list.rs`.
+4. Move detail pane rendering into `ui/detail_pane.rs`.
+5. Move terminal-specific code into `ui/panes/terminal.rs`.
+
+That sequence reduces the size of `app.rs` quickly while keeping most state mutation code unchanged.
+
+## Expected end state
+
+When this refactor is complete, `app.rs` should read like an app shell instead of an implementation dump.
+
+You should be able to:
+
+- review a pane change without reading queue logic
+- update a shortcut without reading websocket code
+- test editor behaviour without booting the whole app
+- evolve conversation rendering without touching workspace selection
+- add new TUI sections from the spec without growing a single file indefinitely
