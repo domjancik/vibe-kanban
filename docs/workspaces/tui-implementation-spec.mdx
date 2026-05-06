@@ -367,6 +367,12 @@ The TUI should do the same:
 3. restore draft content only once on initial load for the active scratch id
 4. avoid overwriting active typing with late-arriving scratch updates
 
+The terminal client should also surface draft state directly near the composer, including at minimum:
+
+- loading or restored state
+- pending local save state
+- queue-conflict state when scratch writes are rejected because a follow-up is already queued
+
 ### Clear semantics
 
 The TUI should clear the draft when:
@@ -426,6 +432,14 @@ The TUI should:
 3. allow replace-queue behaviour explicitly
 4. allow queue cancellation
 5. reconcile queue status after execution transitions
+
+In the TUI controls, queue actions should be visible rather than hidden behind implicit behavior only. The composer or adjacent workspace controls should expose:
+
+- send or queue depending on current run state
+- explicit queue or replace shortcut
+- explicit cancel-queue shortcut
+- explicit discard-draft shortcut
+- visible stop-execution control in the same action cluster
 
 ### Queue UI states
 

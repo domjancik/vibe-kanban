@@ -3,7 +3,10 @@ use std::{collections::HashMap, str::FromStr, time::Duration};
 use anyhow::Result;
 use crossterm::event::{Event as CrosstermEvent, EventStream, KeyCode, KeyEvent, KeyModifiers};
 use db::models::{
-    execution_process::ExecutionProcess, session::Session, workspace::WorkspaceWithStatus,
+    execution_process::{ExecutionProcess, ExecutionProcessStatus},
+    scratch::DraftFollowUpData,
+    session::Session,
+    workspace::WorkspaceWithStatus,
 };
 use executors::{
     executor_discovery::ExecutorDiscoveredOptions,
@@ -29,9 +32,9 @@ use uuid::Uuid;
 use crate::{
     api::{Api, TerminalCommand, WorkspaceSubscriptions},
     model::{
-        Focus, NetEvent, Pane, PatchType, TerminalState, WorkspaceBundle, WorkspaceSummary,
-        active_process, diff_title, display_permission, display_variant, format_patch_entry,
-        format_relative_time, workspace_title,
+        Focus, NetEvent, Pane, PatchType, QueueStatus, TerminalState, WorkspaceBundle,
+        WorkspaceSummary, active_process, diff_title, display_permission, display_variant,
+        format_patch_entry, format_relative_time, workspace_title,
     },
 };
 
@@ -69,6 +72,14 @@ pub struct App {
     composer_options: Option<ExecutorDiscoveredOptions>,
     composer: String,
     composer_cursor: usize,
+    composer_dirty: bool,
+    composer_queue_conflict: bool,
+    composer_scratch_id: Option<Uuid>,
+    composer_scratch_loaded: bool,
+    queue_session_id: Option<Uuid>,
+    queue_status: QueueStatus,
+    queue_pending: bool,
+    last_composer_edit: Option<std::time::Instant>,
     notes_cursor: usize,
     agent_picker: Option<AgentPickerState>,
     creating_new_session: bool,
@@ -107,6 +118,14 @@ impl App {
             composer_options: None,
             composer: String::new(),
             composer_cursor: 0,
+            composer_dirty: false,
+            composer_queue_conflict: false,
+            composer_scratch_id: None,
+            composer_scratch_loaded: false,
+            queue_session_id: None,
+            queue_status: QueueStatus::Empty,
+            queue_pending: false,
+            last_composer_edit: None,
             notes_cursor: 0,
             agent_picker: None,
             creating_new_session: false,
@@ -126,6 +145,7 @@ impl App {
             select! {
                 _ = ticker.tick() => {
                     self.flush_notes_if_needed().await;
+                    self.flush_draft_if_needed().await;
                 }
                 Some(event) = self.rx.recv() => {
                     self.handle_net_event(event, rect_from_size(terminal.size()?)).await;
@@ -206,6 +226,7 @@ impl App {
                         self.rebind_session_streams();
                     }
                     self.rebind_discovery_stream();
+                    self.sync_composer_context();
                 }
             }
             NetEvent::ReposLoaded {
@@ -249,6 +270,8 @@ impl App {
                 processes,
             } => {
                 if Some(session_id) == self.bundle.selected_session_id {
+                    let had_running = self.has_running_process();
+                    let previous_count = self.bundle.process_map.len();
                     self.bundle.process_map = processes;
                     let previous_process_id = self.bundle.selected_process_id;
                     let next_process_id = previous_process_id
@@ -263,6 +286,11 @@ impl App {
                         self.rebind_logs_only();
                     }
                     self.sync_composer_executor_with_session();
+                    if had_running != self.has_running_process()
+                        || previous_count != self.bundle.process_map.len()
+                    {
+                        self.refresh_queue_status();
+                    }
                 }
             }
             NetEvent::LogsUpdated {
@@ -280,6 +308,42 @@ impl App {
                     .is_some_and(|config| config.executor == executor)
                 {
                     self.composer_options = Some(options);
+                }
+            }
+            NetEvent::DraftLoaded { scratch_id, draft } => {
+                if Some(scratch_id) == self.current_composer_scratch_id()
+                    && (!self.composer_scratch_loaded || !self.composer_dirty)
+                {
+                    self.composer = draft
+                        .as_ref()
+                        .map(|draft| draft.message.clone())
+                        .unwrap_or_default();
+                    self.composer_cursor = self.composer.len();
+                    self.composer_scratch_loaded = true;
+                    self.composer_dirty = false;
+                    self.last_composer_edit = None;
+                    self.composer_queue_conflict = false;
+                    if let Some(draft) = draft {
+                        let executor_changed = self
+                            .composer_config
+                            .as_ref()
+                            .map(|config| config.executor != draft.executor_config.executor)
+                            .unwrap_or(true);
+                        self.composer_config = Some(draft.executor_config);
+                        if executor_changed {
+                            self.rebind_discovery_stream();
+                        }
+                    }
+                }
+            }
+            NetEvent::QueueLoaded { session_id, status } => {
+                if Some(session_id) == self.current_queue_session_id() {
+                    self.queue_session_id = Some(session_id);
+                    self.queue_status = status;
+                    self.queue_pending = false;
+                    if matches!(self.queue_status, QueueStatus::Empty) {
+                        self.composer_queue_conflict = false;
+                    }
                 }
             }
             NetEvent::NotesSaved(workspace_id) => {
@@ -419,6 +483,7 @@ impl App {
                 self.selected_pane = Pane::Chat;
                 self.focus = Focus::Composer;
                 self.rebind_discovery_stream();
+                self.sync_composer_context();
                 self.status = "New session: type a prompt and press Enter".to_string();
             }
             KeyEvent {
@@ -469,6 +534,18 @@ impl App {
                 code: KeyCode::Char('P'),
                 ..
             } => self.cycle_permission_mode(),
+            KeyEvent {
+                code: KeyCode::Char('Q'),
+                ..
+            } => self.queue_prompt().await,
+            KeyEvent {
+                code: KeyCode::Char('X'),
+                ..
+            } => self.cancel_queued_prompt().await,
+            KeyEvent {
+                code: KeyCode::Char('D'),
+                ..
+            } => self.discard_draft().await,
             KeyEvent {
                 code: KeyCode::Enter,
                 ..
@@ -587,6 +664,9 @@ impl App {
         if notes {
             self.bundle.notes_dirty = true;
             self.bundle.last_notes_edit = Some(std::time::Instant::now());
+        } else {
+            self.composer_dirty = true;
+            self.last_composer_edit = Some(std::time::Instant::now());
         }
     }
 
@@ -599,10 +679,15 @@ impl App {
         if prompt.is_empty() {
             return;
         }
+        if self.has_running_process() && !self.creating_new_session {
+            self.queue_prompt().await;
+            return;
+        }
         let Some(executor_config) = self.composer_config.clone() else {
             self.status = "Composer config is still loading".to_string();
             return;
         };
+        let scratch_id = self.current_composer_scratch_id();
         let session = if self.creating_new_session {
             None
         } else {
@@ -616,9 +701,15 @@ impl App {
             Ok(session_id) => {
                 self.composer.clear();
                 self.composer_cursor = 0;
+                self.composer_dirty = false;
+                self.last_composer_edit = None;
+                self.composer_queue_conflict = false;
                 self.focus = Focus::Main;
                 self.creating_new_session = false;
                 self.bundle.selected_session_id = Some(session_id);
+                if let Some(scratch_id) = scratch_id {
+                    let _ = self.api.delete_follow_up_draft(scratch_id).await;
+                }
                 self.api.load_workspace(workspace_id, self.tx.clone());
                 self.status = "Prompt sent".to_string();
             }
@@ -655,6 +746,52 @@ impl App {
             Err(error) => {
                 self.error = Some(error.to_string());
                 self.status = error.to_string();
+            }
+        }
+    }
+
+    async fn flush_draft_if_needed(&mut self) {
+        let Some(scratch_id) = self.current_composer_scratch_id() else {
+            return;
+        };
+        if !self.composer_dirty {
+            return;
+        }
+        let Some(last_edit) = self.last_composer_edit else {
+            return;
+        };
+        if last_edit.elapsed() < Duration::from_millis(500) {
+            return;
+        }
+        if self.is_queue_present() {
+            self.composer_queue_conflict = true;
+            return;
+        }
+        let Some(executor_config) = self.composer_config.clone() else {
+            return;
+        };
+        match self
+            .api
+            .save_follow_up_draft(
+                scratch_id,
+                DraftFollowUpData {
+                    message: self.composer.clone(),
+                    executor_config,
+                },
+            )
+            .await
+        {
+            Ok(()) => {
+                self.composer_dirty = false;
+                self.last_composer_edit = None;
+                self.composer_queue_conflict = false;
+            }
+            Err(error) => {
+                self.error = Some(error.to_string());
+                self.status = error.to_string();
+                if error.to_string().contains("queued") {
+                    self.composer_queue_conflict = true;
+                }
             }
         }
     }
@@ -969,8 +1106,8 @@ impl App {
                 .constraints([
                     Constraint::Length(3),
                     Constraint::Min(10),
-                    Constraint::Length(3),
-                    Constraint::Length(5),
+                    Constraint::Length(4),
+                    Constraint::Length(7),
                 ])
                 .split(area)
         } else {
@@ -1024,9 +1161,12 @@ impl App {
         };
         if self.selected_pane == Pane::Chat {
             frame.render_widget(
-                Paragraph::new(self.composer_selection_line())
-                    .block(panel_block("Selection", false))
-                    .wrap(Wrap { trim: false }),
+                Paragraph::new(Text::from(vec![
+                    self.composer_selection_line(),
+                    self.composer_status_line(),
+                ]))
+                .block(panel_block("Selection", false))
+                .wrap(Wrap { trim: false }),
                 chunks[2],
             );
             frame.render_widget(
@@ -1049,8 +1189,8 @@ impl App {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
+                Constraint::Length(12),
                 Constraint::Length(9),
-                Constraint::Length(11),
                 Constraint::Min(8),
             ])
             .split(area);
@@ -1061,6 +1201,23 @@ impl App {
                 Line::raw(format!("branch: {}", workspace.branch)),
                 Line::raw(format!("archived: {}", workspace.archived)),
                 Line::raw(format!("pinned: {}", workspace.pinned)),
+                Line::styled(
+                    format!("draft: {}", self.draft_status_label()),
+                    Style::default().fg(Color::LightBlue),
+                ),
+                Line::styled(
+                    format!("queue: {}", self.queue_status_label()),
+                    Style::default().fg(Color::Yellow),
+                ),
+                Line::styled(
+                    "Enter send/queue  Q queue/replace  X cancel queue  D discard draft"
+                        .to_string(),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Line::styled(
+                    "v stop execution  s dev server  c cleanup  e editor".to_string(),
+                    Style::default().fg(Color::DarkGray),
+                ),
                 Line::raw(format!(
                     "updated: {}",
                     format_relative_time(Some(workspace.updated_at))
@@ -1142,12 +1299,33 @@ impl App {
     }
 
     fn render_chat(&self, frame: &mut Frame, area: Rect) {
-        let lines = self
-            .bundle
-            .log_entries
-            .iter()
-            .flat_map(render_chat_entry)
-            .collect::<Vec<_>>();
+        let mut lines = Vec::new();
+        if let QueueStatus::Queued { message } = &self.queue_status {
+            lines.push(Line::styled(
+                "queued follow-up",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            for line in message.data.message.lines() {
+                lines.push(Line::styled(
+                    format!("  {line}"),
+                    Style::default().fg(Color::LightYellow),
+                ));
+            }
+            lines.push(Line::styled(
+                format!("  executor {}", message.data.executor_config.executor),
+                Style::default().fg(Color::DarkGray),
+            ));
+            lines.push(Line::raw(""));
+        }
+        lines.extend(
+            self.bundle
+                .log_entries
+                .iter()
+                .flat_map(render_chat_entry)
+                .collect::<Vec<_>>(),
+        );
         let title = if self.creating_new_session {
             "Conversation (new session)"
         } else {
@@ -1481,12 +1659,144 @@ impl App {
         ])
     }
 
+    fn composer_status_line(&self) -> Line<'static> {
+        let draft = self.draft_status_label();
+        let queue = self.queue_status_label();
+        let draft_style = if self.composer_queue_conflict {
+            Style::default().fg(Color::Yellow)
+        } else if self.composer_dirty {
+            Style::default().fg(Color::LightBlue)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        let queue_style = if self.queue_pending {
+            Style::default().fg(Color::Yellow)
+        } else if self.is_queue_present() {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        Line::from(vec![
+            Span::styled("Draft ", Style::default().fg(Color::Gray)),
+            Span::styled(draft, draft_style),
+            Span::raw("  "),
+            Span::styled("Queue ", Style::default().fg(Color::Gray)),
+            Span::styled(queue, queue_style),
+            Span::raw("  "),
+            Span::styled(
+                "Q",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" queue ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "X",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" cancel ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "D",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" discard", Style::default().fg(Color::DarkGray)),
+        ])
+    }
+
+    fn draft_status_label(&self) -> String {
+        if self.composer_queue_conflict {
+            "blocked by queued follow-up".to_string()
+        } else if self.composer_dirty {
+            "saving...".to_string()
+        } else if self.composer_scratch_loaded {
+            "synced".to_string()
+        } else {
+            "loading".to_string()
+        }
+    }
+
+    fn queue_status_label(&self) -> String {
+        if self.queue_pending {
+            return "loading".to_string();
+        }
+        match &self.queue_status {
+            QueueStatus::Empty => "not queued".to_string(),
+            QueueStatus::Queued { message } => {
+                format!("queued at {}", message.queued_at.format("%H:%M:%S"))
+            }
+        }
+    }
+
     fn current_discovery_session_id(&self) -> Option<Uuid> {
         if self.creating_new_session {
             None
         } else {
             self.bundle.selected_session_id
         }
+    }
+
+    fn current_composer_scratch_id(&self) -> Option<Uuid> {
+        if self.creating_new_session {
+            self.selected_workspace_id
+        } else {
+            self.bundle.selected_session_id
+        }
+    }
+
+    fn current_queue_session_id(&self) -> Option<Uuid> {
+        if self.creating_new_session {
+            None
+        } else {
+            self.bundle.selected_session_id
+        }
+    }
+
+    fn sync_composer_context(&mut self) {
+        let scratch_id = self.current_composer_scratch_id();
+        if scratch_id != self.composer_scratch_id {
+            self.composer_scratch_id = scratch_id;
+            self.composer_scratch_loaded = false;
+            self.composer.clear();
+            self.composer_cursor = 0;
+            self.composer_dirty = false;
+            self.last_composer_edit = None;
+            self.composer_queue_conflict = false;
+            self.api
+                .replace_draft_stream(scratch_id, self.tx.clone(), &mut self.subscriptions);
+        }
+
+        let queue_session_id = self.current_queue_session_id();
+        if queue_session_id != self.queue_session_id {
+            self.queue_session_id = queue_session_id;
+            self.queue_status = QueueStatus::Empty;
+            self.queue_pending = false;
+        }
+        self.refresh_queue_status();
+    }
+
+    fn refresh_queue_status(&mut self) {
+        if let Some(session_id) = self.current_queue_session_id() {
+            self.queue_pending = true;
+            self.api.load_queue_status(session_id, self.tx.clone());
+        } else {
+            self.queue_status = QueueStatus::Empty;
+            self.queue_pending = false;
+        }
+    }
+
+    fn has_running_process(&self) -> bool {
+        self.bundle
+            .process_map
+            .values()
+            .any(|process| process.status == ExecutionProcessStatus::Running)
+    }
+
+    fn is_queue_present(&self) -> bool {
+        matches!(self.queue_status, QueueStatus::Queued { .. })
     }
 
     fn rebind_discovery_stream(&mut self) {
@@ -1958,6 +2268,9 @@ impl App {
         if self.creating_new_session {
             return;
         }
+        if self.composer_dirty || !self.composer.is_empty() || self.is_queue_present() {
+            return;
+        }
         let Some(session) = self.current_session() else {
             return;
         };
@@ -1995,6 +2308,15 @@ impl App {
         self.creating_new_session = false;
         self.bundle = WorkspaceBundle::default();
         self.bundle.terminal = TerminalState::default();
+        self.composer.clear();
+        self.composer_cursor = 0;
+        self.composer_dirty = false;
+        self.last_composer_edit = None;
+        self.composer_scratch_loaded = false;
+        self.composer_scratch_id = None;
+        self.queue_status = QueueStatus::Empty;
+        self.queue_session_id = None;
+        self.queue_pending = false;
         self.api.load_workspace(workspace_id, self.tx.clone());
         self.api.replace_workspace_subscriptions(
             workspace_id,
@@ -2012,6 +2334,7 @@ impl App {
             self.tx.clone(),
             &mut self.subscriptions,
         );
+        self.sync_composer_context();
     }
 
     fn rebind_logs_only(&mut self) {
@@ -2031,6 +2354,108 @@ impl App {
         self.bundle
             .selected_session_id
             .and_then(|id| self.bundle.sessions.iter().find(|session| session.id == id))
+    }
+
+    async fn queue_prompt(&mut self) {
+        let Some(session_id) = self.current_queue_session_id() else {
+            self.status = "Queueing is only available for an existing session".to_string();
+            return;
+        };
+        let prompt = self.composer.trim().to_string();
+        if prompt.is_empty() {
+            self.status = "Composer is empty".to_string();
+            return;
+        }
+        let Some(executor_config) = self.composer_config.clone() else {
+            self.status = "Composer config is still loading".to_string();
+            return;
+        };
+        let draft = DraftFollowUpData {
+            message: prompt,
+            executor_config,
+        };
+        if let Some(scratch_id) = self.current_composer_scratch_id() {
+            let _ = self
+                .api
+                .save_follow_up_draft(scratch_id, draft.clone())
+                .await;
+        }
+        match self.api.queue_follow_up(session_id, draft).await {
+            Ok(status) => {
+                self.queue_status = status;
+                self.queue_pending = false;
+                self.composer.clear();
+                self.composer_cursor = 0;
+                self.composer_dirty = false;
+                self.last_composer_edit = None;
+                self.focus = Focus::Main;
+                self.status = "Queued follow-up".to_string();
+                self.error = None;
+            }
+            Err(error) => {
+                self.error = Some(error.to_string());
+                self.status = error.to_string();
+            }
+        }
+    }
+
+    async fn cancel_queued_prompt(&mut self) {
+        let Some(session_id) = self.current_queue_session_id() else {
+            self.status = "No session queue to cancel".to_string();
+            return;
+        };
+        let queued = match &self.queue_status {
+            QueueStatus::Queued { message } => Some(message.data.clone()),
+            QueueStatus::Empty => None,
+        };
+        match self.api.cancel_queued_follow_up(session_id).await {
+            Ok(status) => {
+                self.queue_status = status;
+                self.queue_pending = false;
+                if let Some(queued) = queued {
+                    let executor_changed = self
+                        .composer_config
+                        .as_ref()
+                        .map(|config| config.executor != queued.executor_config.executor)
+                        .unwrap_or(true);
+                    self.composer = queued.message;
+                    self.composer_cursor = self.composer.len();
+                    self.composer_config = Some(queued.executor_config);
+                    self.composer_dirty = true;
+                    self.last_composer_edit = Some(std::time::Instant::now());
+                    self.composer_queue_conflict = false;
+                    if executor_changed {
+                        self.rebind_discovery_stream();
+                    }
+                }
+                self.status = "Cancelled queued follow-up".to_string();
+                self.error = None;
+            }
+            Err(error) => {
+                self.error = Some(error.to_string());
+                self.status = error.to_string();
+            }
+        }
+    }
+
+    async fn discard_draft(&mut self) {
+        self.composer.clear();
+        self.composer_cursor = 0;
+        self.composer_dirty = false;
+        self.last_composer_edit = None;
+        self.composer_queue_conflict = false;
+        if let Some(scratch_id) = self.current_composer_scratch_id() {
+            match self.api.delete_follow_up_draft(scratch_id).await {
+                Ok(()) => {
+                    self.status = "Discarded follow-up draft".to_string();
+                    self.error = None;
+                }
+                Err(error) => {
+                    self.error = Some(error.to_string());
+                    self.status = error.to_string();
+                }
+            }
+        }
     }
 
     fn all_workspaces(&self) -> Vec<&WorkspaceWithStatus> {
@@ -2197,7 +2622,10 @@ impl App {
     async fn stop_workspace(&mut self) {
         if let Some(workspace_id) = self.selected_workspace_id {
             match self.api.stop_workspace(workspace_id).await {
-                Ok(()) => self.status = "Stopped workspace execution".to_string(),
+                Ok(()) => {
+                    self.status = "Stopped workspace execution".to_string();
+                    self.refresh_queue_status();
+                }
                 Err(error) => self.status = error.to_string(),
             }
         }

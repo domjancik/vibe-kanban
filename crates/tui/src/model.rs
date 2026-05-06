@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::PathBuf};
 use chrono::{DateTime, Utc};
 use db::models::{
     execution_process::{ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus},
-    scratch::WorkspaceNotesData,
+    scratch::{DraftFollowUpData, WorkspaceNotesData},
     session::Session,
     workspace::{Workspace, WorkspaceWithStatus},
     workspace_repo::RepoWithTargetBranch,
@@ -85,6 +85,7 @@ pub struct ScratchRecord {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ScratchPayload {
+    DraftFollowUp(DraftFollowUpData),
     WorkspaceNotes(WorkspaceNotesData),
     Other,
 }
@@ -97,7 +98,25 @@ pub struct UpdateScratchRequest {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UpdateScratchPayload {
+    DraftFollowUp(DraftFollowUpData),
     WorkspaceNotes(WorkspaceNotesData),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct QueuedMessage {
+    pub session_id: Uuid,
+    pub data: DraftFollowUpData,
+    pub queued_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum QueueStatus {
+    #[default]
+    Empty,
+    Queued {
+        message: QueuedMessage,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -378,6 +397,14 @@ pub enum NetEvent {
     ExecutorOptionsUpdated {
         executor: BaseCodingAgent,
         options: ExecutorDiscoveredOptions,
+    },
+    DraftLoaded {
+        scratch_id: Uuid,
+        draft: Option<DraftFollowUpData>,
+    },
+    QueueLoaded {
+        session_id: Uuid,
+        status: QueueStatus,
     },
     NotesSaved(Uuid),
     TerminalConnected(Uuid),

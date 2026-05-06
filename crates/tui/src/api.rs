@@ -2,7 +2,7 @@ use std::{collections::HashMap, fs, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use db::models::{session::Session, workspace::Workspace};
+use db::models::{scratch::DraftFollowUpData, session::Session, workspace::Workspace};
 use futures_util::{SinkExt, StreamExt};
 use json_patch::Patch;
 use reqwest::Client;
@@ -22,9 +22,9 @@ use uuid::Uuid;
 use crate::model::{
     ApiEnvelope, CreateSessionRequest, DiffStreamState, ExecutionProcessesState,
     ExecutorDiscoveryStreamState, FollowUpRequest, LogEntriesState, NetEvent, OpenEditorRequest,
-    PatchType, ScratchPayload, ScratchRecord, ScratchStreamState, StreamKind, UpdateScratchPayload,
-    UpdateScratchRequest, UpdateWorkspaceRequest, UserSystemInfo, WorkspaceStreamState,
-    WorkspaceSummaryRequest, WorkspaceSummaryResponse,
+    PatchType, QueueStatus, ScratchPayload, ScratchRecord, ScratchStreamState, StreamKind,
+    UpdateScratchPayload, UpdateScratchRequest, UpdateWorkspaceRequest, UserSystemInfo,
+    WorkspaceStreamState, WorkspaceSummaryRequest, WorkspaceSummaryResponse,
 };
 
 #[derive(Clone)]
@@ -37,6 +37,7 @@ pub struct Api {
 pub struct WorkspaceSubscriptions {
     pub diff: Option<JoinHandle<()>>,
     pub notes: Option<JoinHandle<()>>,
+    pub draft: Option<JoinHandle<()>>,
     pub processes: Option<JoinHandle<()>>,
     pub logs: Option<JoinHandle<()>>,
     pub discovery: Option<JoinHandle<()>>,
@@ -103,6 +104,17 @@ impl Api {
             .await
             .with_context(|| format!("POST {path} failed"))?;
         let _: Value = parse_api_response(response).await?;
+        Ok(())
+    }
+
+    pub async fn delete_empty(&self, path: &str) -> Result<()> {
+        let response = self
+            .client
+            .delete(format!("{}{}", self.base_url, path))
+            .send()
+            .await
+            .with_context(|| format!("DELETE {path} failed"))?;
+        let _: () = parse_api_response(response).await?;
         Ok(())
     }
 
@@ -226,6 +238,7 @@ impl Api {
                 Ok(scratch) => {
                     let notes = match scratch.payload {
                         ScratchPayload::WorkspaceNotes(data) => data.content,
+                        ScratchPayload::DraftFollowUp(_) => String::new(),
                         ScratchPayload::Other => String::new(),
                     };
                     let _ = tx.send(NetEvent::NotesLoaded {
@@ -274,6 +287,20 @@ impl Api {
             tx,
             terminal_rx,
         ));
+    }
+
+    pub fn replace_draft_stream(
+        &self,
+        scratch_id: Option<Uuid>,
+        tx: UnboundedSender<NetEvent>,
+        subscriptions: &mut WorkspaceSubscriptions,
+    ) {
+        if let Some(handle) = subscriptions.draft.take() {
+            handle.abort();
+        }
+        if let Some(scratch_id) = scratch_id {
+            subscriptions.draft = Some(spawn_draft_stream(self.clone(), scratch_id, tx));
+        }
     }
 
     pub fn replace_process_stream(
@@ -339,6 +366,74 @@ impl Api {
             )
             .await?;
         Ok(())
+    }
+
+    pub fn load_queue_status(&self, session_id: Uuid, tx: UnboundedSender<NetEvent>) {
+        let api = self.clone();
+        tokio::spawn(async move {
+            match api
+                .get::<QueueStatus>(&format!("/api/sessions/{session_id}/queue"))
+                .await
+            {
+                Ok(status) => {
+                    let _ = tx.send(NetEvent::QueueLoaded { session_id, status });
+                }
+                Err(error) => {
+                    let _ = tx.send(NetEvent::Error(error.to_string()));
+                }
+            }
+        });
+    }
+
+    pub async fn save_follow_up_draft(
+        &self,
+        scratch_id: Uuid,
+        draft: DraftFollowUpData,
+    ) -> Result<()> {
+        let request = UpdateScratchRequest {
+            payload: UpdateScratchPayload::DraftFollowUp(draft),
+        };
+        let _: ScratchRecord = self
+            .put(
+                &format!("/api/scratch/draft_follow_up/{scratch_id}"),
+                &request,
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_follow_up_draft(&self, scratch_id: Uuid) -> Result<()> {
+        self.delete_empty(&format!("/api/scratch/draft_follow_up/{scratch_id}"))
+            .await
+    }
+
+    pub async fn queue_follow_up(
+        &self,
+        session_id: Uuid,
+        draft: DraftFollowUpData,
+    ) -> Result<QueueStatus> {
+        self.post(
+            &format!("/api/sessions/{session_id}/queue"),
+            &serde_json::json!({
+                "message": draft.message,
+                "executor_config": draft.executor_config,
+            }),
+        )
+        .await
+    }
+
+    pub async fn cancel_queued_follow_up(&self, session_id: Uuid) -> Result<QueueStatus> {
+        let response = self
+            .client
+            .delete(format!(
+                "{}{}",
+                self.base_url,
+                format!("/api/sessions/{session_id}/queue")
+            ))
+            .send()
+            .await
+            .with_context(|| format!("DELETE /api/sessions/{session_id}/queue failed"))?;
+        parse_api_response(response).await
     }
 
     pub async fn toggle_pinned(&self, workspace_id: Uuid, pinned: bool) -> Result<()> {
@@ -439,6 +534,7 @@ impl WorkspaceSubscriptions {
         for handle in [
             self.diff.take(),
             self.notes.take(),
+            self.draft.take(),
             self.processes.take(),
             self.logs.take(),
             self.discovery.take(),
@@ -604,6 +700,7 @@ fn spawn_notes_stream(
                     .scratch
                     .and_then(|scratch| match scratch.payload {
                         ScratchPayload::WorkspaceNotes(data) => Some(data.content),
+                        ScratchPayload::DraftFollowUp(_) => None,
                         ScratchPayload::Other => None,
                     })
                     .unwrap_or_default();
@@ -619,6 +716,31 @@ fn spawn_notes_stream(
             let _ = tx.send(NetEvent::Error(error.to_string()));
         }
         let _ = tx.send(NetEvent::StreamClosed(StreamKind::Notes(workspace_id)));
+    })
+}
+
+fn spawn_draft_stream(api: Api, scratch_id: Uuid, tx: UnboundedSender<NetEvent>) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let endpoint = format!(
+            "{}/api/scratch/draft_follow_up/{scratch_id}/stream/ws",
+            ws_base(&api.base_url)
+        );
+        let result = run_patch_stream::<ScratchStreamState, _>(
+            endpoint,
+            json!({ "scratch": null }),
+            move |state| {
+                let draft = state.scratch.and_then(|scratch| match scratch.payload {
+                    ScratchPayload::DraftFollowUp(data) => Some(data),
+                    _ => None,
+                });
+                NetEvent::DraftLoaded { scratch_id, draft }
+            },
+            tx.clone(),
+        )
+        .await;
+        if let Err(error) = result {
+            let _ = tx.send(NetEvent::Error(error.to_string()));
+        }
     })
 }
 
