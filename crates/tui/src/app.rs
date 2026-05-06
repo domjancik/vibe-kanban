@@ -1322,8 +1322,8 @@ impl App {
     }
 
     fn handle_terminal_resize(&mut self, size: Rect) {
-        let cols = size.width.saturating_sub(2).max(1);
-        let rows = size.height.saturating_sub(2).max(1);
+        let cols = size.width.max(1);
+        let rows = size.height.max(1);
         if self.bundle.terminal.size != (cols, rows) {
             self.bundle.terminal.size = (cols, rows);
             self.bundle.terminal.parser.set_size(rows, cols);
@@ -1461,13 +1461,7 @@ impl App {
                 _ => {}
             },
             Focus::Main | Focus::Composer => match self.selected_pane {
-                Pane::Chat => {
-                    self.chat_end_offset = if to_end {
-                        0
-                    } else {
-                        u16::MAX
-                    }
-                }
+                Pane::Chat => self.chat_end_offset = if to_end { 0 } else { u16::MAX },
                 Pane::Logs | Pane::Git => {
                     self.bundle.log_scroll = if to_end {
                         self.max_scroll_for_selected_pane()
@@ -1533,10 +1527,8 @@ impl App {
                 Constraint::Length(5),
             ])
             .split(body)[1];
-        (
-            main.width.saturating_sub(2).max(1),
-            main.height.saturating_sub(2).max(1),
-        )
+        let content = terminal_content_area(main);
+        (content.width.max(1), content.height.max(1))
     }
 
     fn adjust_chat_scroll(&mut self, delta: i32) {
@@ -2158,7 +2150,14 @@ impl App {
     }
 
     fn render_terminal(&mut self, frame: &mut Frame, area: Rect) {
-        self.handle_terminal_resize(area);
+        let title = if self.bundle.terminal.input_mode {
+            "Terminal *"
+        } else {
+            "Terminal"
+        };
+        let block = panel_block(title, self.focus == Focus::Main);
+        let content_area = terminal_content_area(block.inner(area));
+        self.handle_terminal_resize(content_area);
         let screen = self.bundle.terminal.parser.screen();
         let mut lines = Vec::new();
         for row in 0..screen.size().0 {
@@ -2170,13 +2169,8 @@ impl App {
             }
             lines.push(Line::raw(text.trim_end_matches(' ').to_string()));
         }
-        let title = if self.bundle.terminal.input_mode {
-            "Terminal *"
-        } else {
-            "Terminal"
-        };
-        let block = panel_block(title, self.focus == Focus::Main);
-        frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+        frame.render_widget(block, area);
+        frame.render_widget(Paragraph::new(Text::from(lines)), content_area);
         if let Some(error) = &self.bundle.terminal.error {
             let popup = centered_rect(70, 20, area);
             frame.render_widget(Clear, popup);
@@ -2310,7 +2304,11 @@ impl App {
         let popup = centered_rect(64, 24, area);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Length(1)])
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Length(1),
+            ])
             .split(popup);
 
         frame.render_widget(Clear, popup);
@@ -3358,7 +3356,11 @@ impl App {
             return;
         }
 
-        match self.api.rename_session(rename.session_id, trimmed.clone()).await {
+        match self
+            .api
+            .rename_session(rename.session_id, trimmed.clone())
+            .await
+        {
             Ok(updated) => {
                 if let Some(session) = self
                     .bundle
@@ -4061,6 +4063,17 @@ fn panel_block<'a>(title: &'a str, active: bool) -> Block<'a> {
         .borders(Borders::ALL)
         .border_style(style)
         .title(Span::styled(title.to_string(), style))
+}
+
+fn terminal_content_area(area: Rect) -> Rect {
+    area.inner(ratatui::layout::Margin {
+        vertical: 1,
+        horizontal: 1,
+    })
+    .inner(ratatui::layout::Margin {
+        vertical: 0,
+        horizontal: 1,
+    })
 }
 
 fn default_variant_to_none(variant: String) -> Option<String> {
@@ -4896,8 +4909,8 @@ mod tests {
 
     use super::{
         ComposerEditorMode, VimMode, chat_window_bounds, move_cursor_vertical, next_word_start,
-        parse_inline_markdown, prev_word_start, render_editor_buffer,
-        render_normalized_chat_entry, wrap_line,
+        parse_inline_markdown, prev_word_start, render_editor_buffer, render_normalized_chat_entry,
+        wrap_line,
     };
 
     fn entry(entry_type: NormalizedEntryType, content: &str) -> NormalizedEntry {
