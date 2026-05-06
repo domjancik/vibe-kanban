@@ -175,12 +175,12 @@ On macOS terminals, the TUI should also support the common equivalents when the 
 - `i`: focus composer
 - `Esc`: leave composer focus
 - `Enter`: submit prompt
-- `E`: cycle executor
-- `V`: cycle executor variant or preset
-- `M`: cycle model
-- `R`: cycle reasoning effort
-- `A`: open agent mode picker with fuzzy search
-- `P`: cycle permission mode
+- `E`: cycle executor when the selection strip is focused
+- `V`: cycle executor variant or preset when the selection strip is focused
+- `M`: cycle model when the selection strip is focused
+- `R`: cycle reasoning effort when the selection strip is focused
+- `A`: open agent mode picker with fuzzy search when the selection strip is focused
+- `P`: cycle permission mode when the selection strip is focused
 - `Ctrl+n` `Ctrl+p`: switch session
 - `[` `]`: previous or next unread or user turn
 - `r`: retry selected or latest turn when supported
@@ -282,6 +282,19 @@ The conversation pane should behave like the web Workspaces main panel:
 - keep the composer visible
 - stream agent output incrementally
 
+### Composer layout
+
+The implemented composer model is intentionally split into two distinct regions:
+
+- `Selection`: a compact one-line strip for executor configuration and send-adjacent controls
+- `Composer`: the multiline text editor for the draft itself
+
+This separation matters because configuration shortcuts should not compete with normal text entry.
+
+When the selection strip is focused, the shortcut keys above mutate executor configuration. When the composer editor is focused, the same keypresses should be treated as text input instead.
+
+The composer should expand vertically as the draft wraps, within sensible bounds, rather than remaining fixed-height and hiding most of the draft body.
+
 ### Composer configuration
 
 The composer must not be limited to plain text entry. It should expose the same executor-configuration concepts the web UI exposes before a send:
@@ -372,6 +385,7 @@ The terminal client should also surface draft state directly near the composer, 
 - loading or restored state
 - pending local save state
 - queue-conflict state when scratch writes are rejected because a follow-up is already queued
+- queued state and queue mutation in progress
 
 ### Clear semantics
 
@@ -440,6 +454,8 @@ In the TUI controls, queue actions should be visible rather than hidden behind i
 - explicit cancel-queue shortcut
 - explicit discard-draft shortcut
 - visible stop-execution control in the same action cluster
+
+Queued follow-ups should remain out of the visible chat transcript until they become real execution-backed turns. Queue state belongs in the composer or adjacent status UI, not in canonical conversation history.
 
 ### Queue UI states
 
@@ -530,6 +546,28 @@ Use a terminal-native style:
 - assistant turns boxed or indented
 - tool and log fragments collapsible
 
+The current TUI presentation should be treated as the intended v1 baseline:
+
+- `user`, `assistant`, and `system` are the primary dialogue layer and stay flush-left
+- secondary events such as tool calls, thinking, loading, feedback, errors, and stdout or stderr should be visually subordinate and indented
+- user and assistant message bodies should support lightweight markdown rendering
+- chat labels should preserve colour consistently through wrapping and virtual scrolling
+
+Recommended label colours:
+
+- `user`: blue
+- `assistant`: green
+- `system`: purple
+
+### Context usage display
+
+Token-usage events should not be rendered as normal transcript rows.
+
+Instead, the chat pane should show only the latest context-usage state in a compact status strip at the bottom of the pane, for example:
+
+- `context {used}/{window}`
+- a filling bar whose colour shifts from green to yellow to red as usage approaches the model context window
+
 ### Streaming model
 
 The TUI should separate three related streams:
@@ -539,6 +577,12 @@ The TUI should separate three related streams:
 - optional raw log stream for a dedicated logs mode
 
 The active execution process should be the latest non-soft-deleted process in the selected session.
+
+The conversation viewport should be end-anchored rather than top-anchored:
+
+- opening a session should land on the newest visible interaction
+- prepending older history must not jump the viewport to the top
+- rendering should be virtualised around the visible tail so long sessions remain responsive
 
 ## Changes pane specification
 
@@ -626,7 +670,12 @@ Reuse the existing websocket PTY endpoint:
 - terminal pane can take focus and capture raw key input
 - resize events must propagate to the backend PTY
 - terminal should default to the sole repo directory when the workspace has one repo, matching the server route behaviour
-- provide an escape hatch such as `Ctrl+]` to leave terminal input mode
+- provide multiple reliable escape hatches to leave terminal input mode:
+  - `Esc`
+  - `Ctrl+]`
+  - `Ctrl+G`
+
+Resize handling must use the actual inner terminal pane geometry, not the outer frame size. The client should send PTY resize events only when the effective row or column count changes. This avoids side-cropping and repeated redraw churn.
 
 ### Rendering
 

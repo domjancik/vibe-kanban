@@ -302,10 +302,12 @@ This uses the existing process-log primitives, but adjusts the stopping rule to 
 
 The existing UI already recognises the need to preserve scroll while history changes above the viewport.
 
-The correct rule is:
+For the TUI, the practical rule should be framed in end-anchored terms:
 
-- prepend older rows
-- preserve the screen position of the current anchor row
+- the recent tail is the primary anchor
+- opening a session should start at the newest visible interaction
+- prepending older rows must not move the visible tail away from the user
+- the viewport should not jump to the top while recent history is already readable
 
 ### Anchor choice
 
@@ -316,15 +318,17 @@ When backfilling older history:
 
 ### Implementation requirement
 
-Compute:
+An implementation may use either:
 
-- anchor row id
-- anchor row offset before merge
-- anchor row offset after merge
+- explicit anchor-row offset preservation
+- or an end-offset-based virtual scroll model
 
-Then:
+Either approach is valid if it preserves the same user-visible invariant:
 
-- adjust scroll by delta
+- older history becomes available
+- the visible latest interaction does not move unexpectedly
+
+For the Ratatui client, an end-offset model is a strong fit because it naturally keeps the newest interaction stable while older rows are prepended.
 
 This ensures older content becomes available without moving the user’s visible focus.
 
@@ -485,6 +489,10 @@ Pending optimistic rows should look like real sent messages, but with a subtle s
 
 - `Sending…`
 - or a spinner
+
+Once canonical agent or system activity for the new turn arrives, the optimistic row should remain in place until a canonical user message for that same turn is materialised. It must not disappear merely because non-user entries have started streaming.
+
+If the backend log representation omits explicit user-message entries for a process, the client should synthesise the historical user turn from the process prompt or equivalent execution metadata so the final transcript still contains both sides of the conversation.
 
 Failed rows should expose:
 
