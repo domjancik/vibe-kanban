@@ -1465,7 +1465,7 @@ impl App {
                     self.chat_end_offset = if to_end {
                         0
                     } else {
-                        self.max_scroll_for_selected_pane()
+                        u16::MAX
                     }
                 }
                 Pane::Logs | Pane::Git => {
