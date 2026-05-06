@@ -1805,17 +1805,26 @@ impl App {
         } else {
             (inner, None)
         };
+        let padded_messages_area = messages_area.inner(ratatui::layout::Margin {
+            vertical: 0,
+            horizontal: 1,
+        });
+        let content_area = if padded_messages_area.width > 0 {
+            padded_messages_area
+        } else {
+            messages_area
+        };
 
         let lines = self.chat_window_lines(
-            messages_area.height.max(1) as usize,
-            messages_area.width.max(1) as usize,
+            content_area.height.max(1) as usize,
+            content_area.width.max(1) as usize,
         );
         frame.render_widget(
             Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
-            messages_area,
+            content_area,
         );
-        let total_lines = wrap_lines(self.chat_lines(), messages_area.width.max(1) as usize).len();
-        let visible_lines = messages_area.height.max(1) as usize;
+        let total_lines = wrap_lines(self.chat_lines(), content_area.width.max(1) as usize).len();
+        let visible_lines = content_area.height.max(1) as usize;
         let top_offset = total_lines
             .saturating_sub(visible_lines.saturating_add(self.chat_end_offset as usize));
         render_vertical_scrollbar(frame, area, total_lines, visible_lines, top_offset);
