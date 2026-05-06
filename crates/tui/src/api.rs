@@ -456,27 +456,32 @@ impl Api {
         let (stream, _) = connect_async(endpoint.as_str()).await?;
         let (_, mut read) = stream.split();
         let mut state = json!({ "entries": [] });
+        let mut received_patch = false;
 
-        while let Some(message) =
-            tokio::time::timeout(Duration::from_millis(1500), read.next()).await?
+        while let Some(message) = tokio::time::timeout(Duration::from_millis(1500), read.next())
+            .await
+            .unwrap_or(None)
         {
             let message = message?;
             let Message::Text(text) = message else {
                 continue;
             };
             if text.contains(r#""Ready":true"#) || text.contains(r#""finished":true"#) {
+                if received_patch {
+                    break;
+                }
                 continue;
             }
             let payload: Value = serde_json::from_str(&text)?;
             if let Some(patch_value) = payload.get("JsonPatch") {
                 let patch: Patch = serde_json::from_value(patch_value.clone())?;
                 json_patch::patch(&mut state, &patch)?;
-                let typed: LogEntriesState = serde_json::from_value(state)?;
-                return Ok(typed.entries);
+                received_patch = true;
             }
         }
 
-        Ok(Vec::new())
+        let typed: LogEntriesState = serde_json::from_value(state)?;
+        Ok(typed.entries)
     }
 
     pub async fn toggle_pinned(&self, workspace_id: Uuid, pinned: bool) -> Result<()> {
