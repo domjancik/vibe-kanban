@@ -1837,7 +1837,7 @@ impl App {
         let scratch_id = self.current_composer_scratch_id();
         if scratch_id != self.composer_scratch_id {
             self.composer_scratch_id = scratch_id;
-            self.composer_scratch_loaded = false;
+            self.composer_scratch_loaded = scratch_id.is_none();
             self.composer.clear();
             self.composer_cursor = 0;
             self.composer_dirty = false;
