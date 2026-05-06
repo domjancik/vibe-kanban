@@ -43,6 +43,17 @@ enum WorkspaceRow<'a> {
     Workspace(&'a WorkspaceWithStatus),
 }
 
+enum SessionRow<'a> {
+    NewSession,
+    Session(&'a Session),
+}
+
+#[derive(Clone, Copy)]
+enum SessionTarget {
+    NewSession,
+    Existing(Uuid),
+}
+
 struct AgentPickerState {
     query: String,
     selected: usize,
@@ -1141,26 +1152,16 @@ impl App {
                     self.bundle.selected_diff_index = next;
                 }
                 Pane::Chat | Pane::Logs => {
-                    if self.bundle.sessions.is_empty() {
+                    let rows = self.session_rows();
+                    if rows.is_empty() {
                         return;
                     }
-                    let current = self
-                        .bundle
-                        .selected_session_id
-                        .and_then(|id| {
-                            self.bundle
-                                .sessions
-                                .iter()
-                                .position(|session| session.id == id)
-                        })
-                        .unwrap_or(0) as i32;
-                    let next = (current + delta)
-                        .clamp(0, self.bundle.sessions.len().saturating_sub(1) as i32)
+                    let current = self.selected_session_row_index(&rows).unwrap_or(0) as i32;
+                    let next = (current + delta).clamp(0, rows.len().saturating_sub(1) as i32)
                         as usize;
-                    self.bundle.selected_session_id = Some(self.bundle.sessions[next].id);
-                    self.creating_new_session = false;
-                    self.rebind_session_streams();
-                    self.rebind_discovery_stream();
+                    if let Some(target) = session_target(&rows[next]) {
+                        self.select_session_target(target);
+                    }
                 }
                 Pane::Git => {
                     let scroll = self.bundle.log_scroll as i32 + delta;
@@ -1213,18 +1214,18 @@ impl App {
                     };
                 }
                 Pane::Chat | Pane::Logs => {
-                    if self.bundle.sessions.is_empty() {
+                    let rows = self.session_rows();
+                    if rows.is_empty() {
                         return;
                     }
-                    self.bundle.selected_session_id = Some(
-                        if to_end {
-                            self.bundle.sessions.last().map(|session| session.id)
-                        } else {
-                            self.bundle.sessions.first().map(|session| session.id)
-                        }
-                        .unwrap(),
-                    );
-                    self.rebind_session_streams();
+                    let target = if to_end {
+                        rows.last().unwrap_or(&rows[0])
+                    } else {
+                        &rows[0]
+                    };
+                    if let Some(target) = session_target(target) {
+                        self.select_session_target(target);
+                    }
                 }
                 Pane::Git => {
                     self.bundle.log_scroll = if to_end {
@@ -1571,33 +1572,40 @@ impl App {
             chunks[0],
         );
 
-        let sessions = self
-            .bundle
-            .sessions
+        let session_rows = self.session_rows();
+        let sessions = session_rows
             .iter()
-            .map(|session| {
-                let name = session
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| session.id.to_string());
-                let executor = session
-                    .executor
-                    .clone()
-                    .unwrap_or_else(|| "unknown".to_string());
-                ListItem::new(Text::from(vec![
-                    Line::raw(name),
-                    Line::styled(executor, Style::default().fg(Color::DarkGray)),
-                ]))
+            .map(|row| match row {
+                SessionRow::NewSession => ListItem::new(Text::from(vec![
+                    Line::styled(
+                        "+ New session",
+                        Style::default()
+                            .fg(Color::LightGreen)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Line::styled(
+                        "Start a fresh thread in this workspace",
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ])),
+                SessionRow::Session(session) => {
+                    let name = session
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| session.id.to_string());
+                    let executor = session
+                        .executor
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string());
+                    ListItem::new(Text::from(vec![
+                        Line::raw(name),
+                        Line::styled(executor, Style::default().fg(Color::DarkGray)),
+                    ]))
+                }
             })
             .collect::<Vec<_>>();
         let mut state = ListState::default();
-        if let Some(selected) = self.bundle.selected_session_id
-            && let Some(index) = self
-                .bundle
-                .sessions
-                .iter()
-                .position(|session| session.id == selected)
-        {
+        if let Some(index) = self.selected_session_row_index(&session_rows) {
             state.select(Some(index));
         }
         frame.render_stateful_widget(
@@ -3156,7 +3164,52 @@ impl App {
 
     fn switch_session_or_process(&mut self, size: Rect) {
         let _ = size;
-        self.rebind_session_streams();
+        let rows = self.session_rows();
+        let index = self.selected_session_row_index(&rows).unwrap_or(0);
+        if let Some(row) = rows.get(index) {
+            if let Some(target) = session_target(row) {
+                self.select_session_target(target);
+            }
+        }
+    }
+
+    fn session_rows(&self) -> Vec<SessionRow<'_>> {
+        let mut rows = Vec::with_capacity(self.bundle.sessions.len() + 1);
+        rows.push(SessionRow::NewSession);
+        rows.extend(self.bundle.sessions.iter().map(SessionRow::Session));
+        rows
+    }
+
+    fn selected_session_row_index(&self, rows: &[SessionRow<'_>]) -> Option<usize> {
+        if self.creating_new_session {
+            return Some(0);
+        }
+        let selected = self.bundle.selected_session_id?;
+        rows.iter().position(|row| match row {
+            SessionRow::NewSession => false,
+            SessionRow::Session(session) => session.id == selected,
+        })
+    }
+
+    fn select_session_target(&mut self, target: SessionTarget) {
+        match target {
+            SessionTarget::NewSession => {
+                self.creating_new_session = true;
+                self.selected_pane = Pane::Chat;
+                self.rebind_discovery_stream();
+                self.sync_composer_context();
+                self.status = "New session: type a prompt and press Enter".to_string();
+            }
+            SessionTarget::Existing(session_id) => {
+                if self.bundle.selected_session_id != Some(session_id) || self.creating_new_session
+                {
+                    self.bundle.selected_session_id = Some(session_id);
+                    self.creating_new_session = false;
+                    self.rebind_session_streams();
+                    self.rebind_discovery_stream();
+                }
+            }
+        }
     }
 
     fn current_session(&self) -> Option<&Session> {
@@ -4200,6 +4253,13 @@ fn move_cursor_vertical(buffer: &str, cursor: usize, direction: i32) -> usize {
     let next_line_end = line_end_index(buffer, next_line_start);
     let next_line = &buffer[next_line_start..next_line_end];
     next_line_start + byte_index_for_column(next_line, current_column)
+}
+
+fn session_target(row: &SessionRow<'_>) -> Option<SessionTarget> {
+    Some(match row {
+        SessionRow::NewSession => SessionTarget::NewSession,
+        SessionRow::Session(session) => SessionTarget::Existing(session.id),
+    })
 }
 
 #[cfg(test)]
