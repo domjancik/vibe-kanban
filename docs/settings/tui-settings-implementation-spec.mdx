@@ -1,0 +1,666 @@
+---
+title: "Settings TUI Spec"
+description: "Detailed implementation specification for a Ratatui-based Settings interface and settings flows"
+---
+
+# Ratatui Settings TUI
+
+This document defines a terminal-native Settings interface for Vibe Kanban.
+
+It complements the other TUI specifications:
+
+- [Workspaces TUI Spec](/workspaces/tui-implementation-spec)
+- [Projects TUI Spec](/projects/tui-kanban-implementation-spec)
+
+The goal is to make configuration changes possible without falling back to the web dialog.
+
+## Goals
+
+The Settings TUI should let you:
+
+- open settings from anywhere in the TUI shell
+- navigate host-specific and account-specific sections
+- switch machine target when settings are host-scoped
+- edit and save configuration safely
+- detect unsaved changes
+- manage agent, MCP, repository, relay, and organisation flows
+
+## Non-goals
+
+The first version should not try to reproduce every visual pattern from the web dialog:
+
+- exact two-column modal parity
+- graphical forms generated from the same React renderer
+- full billing portal experience inside the TUI
+- deep WYSIWYG editing
+
+External or browser-based flows can remain delegated when needed, as long as the TUI makes the transition clear.
+
+## Existing settings model
+
+The current web dialog already separates settings into two groups.
+
+### Host-specific sections
+
+- `general`
+- `repos`
+- `agents`
+- `mcp`
+
+These require a selected machine target.
+
+### Account or universal sections
+
+- `organizations`
+- `remote-projects`
+- `relay`
+
+These are not tied to a single machine config target in the same way.
+
+### Existing dialog behaviour worth preserving
+
+- machine selector for host settings
+- unsaved-changes confirmation on close
+- section-based navigation
+- initial-section deep links
+
+## TUI entry points
+
+Settings should be reachable globally from all major routes.
+
+### Open triggers
+
+- command palette action: `Open Settings`
+- global shortcut: `g s`
+- optional direct key: `S` from root shell, if not overloaded
+
+### Open behaviour
+
+Settings should open as:
+
+- a modal on wide terminals
+- a full-screen route on narrow terminals
+
+The TUI should preserve the current screen state behind the modal whenever possible.
+
+## Layout model
+
+### Wide layout
+
+For terminals `>= 140` columns:
+
+- left sidebar: settings navigation
+- centre content: active settings section
+- top bar: machine selector or context summary
+
+Suggested split:
+
+- nav: 28-32 columns
+- content: remaining width
+
+### Medium layout
+
+For terminals `< 140` columns:
+
+- top: section tabs or section picker
+- body: active form
+
+### Narrow layout
+
+For terminals `< 110` columns:
+
+- full-screen settings route
+- one section visible at a time
+- back action returns to the settings index instead of dismissing immediately
+
+## Navigation model
+
+### Global settings keys
+
+- `q`: close settings or go back one settings level
+- `Esc`: back or discard draft prompt
+- `Tab` and `Shift+Tab`: move between focus zones
+- `/`: search settings sections or options
+- `Enter`: activate focused control
+- `Ctrl+s`: save current section when supported
+
+### Settings nav keys
+
+- `j` `k` or arrows: move between sections
+- `Enter`: open focused section
+- `m`: focus machine selector
+
+### Form keys
+
+- `i`: enter edit mode on a field
+- `Esc`: leave field edit mode
+- `Space`: toggle checkbox
+- `s`: save when focus is on the save bar
+- `r`: reset current section if supported
+
+## Route and state model
+
+The TUI should treat settings as a shell-level route:
+
+- `SettingsHome`
+- `SettingsSection(section_id, host_id?)`
+
+### Deep-link support
+
+The shell should be able to open settings with initial context:
+
+- section id
+- optional repo id
+- optional organisation id
+- optional project id
+- optional host id
+
+That mirrors the web dialog’s `initialSection`, `initialState`, and `initialHostId` concept.
+
+## Machine target selection
+
+Host-scoped settings require machine targeting.
+
+### Sources
+
+The web app exposes:
+
+- local machine
+- paired relay hosts
+
+The TUI should provide the same model:
+
+- `This machine`
+- remote hosts
+- `Pair other machines` action
+
+### Behaviour
+
+- if no host is available, disable host sections
+- if only the local host is available, select it by default
+- if a remote host is chosen, host-scoped reads and writes target that host
+
+## Data and API mapping
+
+## Host configuration
+
+For host-scoped settings, reuse:
+
+- `GET /api/info`
+- `PUT /api/config`
+
+via the host-aware request model already used by the web app.
+
+### Relevant config areas
+
+- theme
+- language
+- default coding agent
+- editor config
+- git config
+- notification config
+- telemetry flag
+- send-message shortcut
+- task tags
+
+## MCP configuration
+
+Reuse:
+
+- `GET /api/mcp-config?...`
+- `POST /api/mcp-config?...`
+
+The TUI should not invent a second MCP storage layer.
+
+## Agent profiles
+
+The web app uses a dedicated profiles API:
+
+- `GET /api/profiles`
+- `PUT /api/profiles`
+
+The TUI should treat agent configuration as a host-scoped editable resource.
+
+## Organisations
+
+Reuse remote APIs for:
+
+- listing organisations
+- creating organisations
+- listing members
+- inviting members
+- updating member roles
+- removing members
+- revoking invitations
+- reading billing status
+- deleting organisations
+
+## Repositories
+
+The TUI should reuse the same repository config model used by the web settings:
+
+- display name
+- path visibility
+- dev server script
+- setup script
+- cleanup script
+- archive script if present
+- default branch and working-dir metadata where applicable
+
+## Remote projects
+
+The TUI should expose:
+
+- organisation-scoped project browsing
+- remote project create and edit where existing APIs support it
+- remote project deletion where supported
+
+If the current remote-project settings implementation depends on a broad client-side orchestration layer, start with read and select flows first, then add mutation flows.
+
+## Section specifications
+
+## General
+
+This section should be the default landing page when a machine target exists.
+
+### Flows
+
+- change theme
+- change language
+- set default coding agent and variant
+- configure editor type and custom command
+- configure remote SSH editor host
+- set git branch prefix
+- set workspace directory
+- enable or disable notifications
+- enable or disable telemetry
+- set message-send shortcut
+- manage task tags
+
+### Task tags
+
+Task tags deserve their own subflow:
+
+- list tags
+- create tag
+- edit tag
+- delete tag
+
+Reuse:
+
+- `GET /api/tags`
+- `POST /api/tags`
+- `PUT /api/tags/{tag_id}`
+- `DELETE /api/tags/{tag_id}`
+
+## Repositories
+
+This section should start with a repository selector, optionally filtered by project.
+
+### Flows
+
+- pick repository
+- edit display name
+- edit dev server script
+- edit setup script
+- edit cleanup script
+- edit archive script if exposed
+
+### Editing model
+
+Scripts should use a multi-line text editor pane with:
+
+- syntax hinting if practical
+- dirty-state tracking
+- save and reset actions
+
+## Agents
+
+The web app uses a finder-style layout. The TUI should preserve that mental model.
+
+### Columns
+
+- left: executors
+- middle: variants or profiles
+- right: selected configuration form
+
+### Flows
+
+- select executor
+- select existing variant
+- create variant
+- clone variant
+- rename variant if supported
+- delete variant
+- edit executor config form
+- save profile content
+
+### Form strategy
+
+Because the web app renders dynamic schemas, the TUI should not hardcode every field per executor if it can avoid it.
+
+Preferred approaches:
+
+1. render schema-driven forms in terminal widgets
+2. fall back to structured JSON or YAML editing for advanced fields
+
+The first pass can mix both:
+
+- common fields rendered as widgets
+- advanced nested fields edited in a structured text editor
+
+## MCP
+
+This section is a host-scoped JSON editing flow.
+
+### Flows
+
+- select agent profile
+- load MCP config
+- edit server JSON
+- insert popular preconfigured server
+- validate JSON
+- save MCP config
+
+### Requirements
+
+- show config file path
+- show unsupported-agent state cleanly
+- block save on invalid JSON
+- preserve unsaved changes if the user navigates away and cancels discard
+
+## Organisations
+
+This section is account-scoped.
+
+### Flows
+
+- select organisation
+- create organisation
+- view members
+- invite member
+- change member role
+- remove member
+- view invitations
+- revoke invitation
+- open billing portal
+- delete organisation
+
+### Destructive operations
+
+Use explicit confirmation steps for:
+
+- member removal
+- invitation revocation
+- organisation deletion
+
+Billing portal opening can remain an external browser handoff.
+
+## Remote projects
+
+This section should support cloud project administration across organisations.
+
+### Flows
+
+- select organisation
+- browse projects
+- create project if API support is available
+- rename project if API support is available
+- delete project if API support is available
+- jump from remote project to the project board route when relevant
+
+## Relay
+
+This section should cover machine pairing and relay management.
+
+### Flows
+
+- list paired hosts
+- create or display pairing code
+- unpair host
+- update relay-related config if supported
+
+If pairing requires a browser or out-of-band confirmation, the TUI should present:
+
+- the code
+- expiry
+- next action
+
+without pretending the whole flow is local-only.
+
+## Unsaved changes model
+
+The settings experience must be safe around partial edits.
+
+### Required behaviour
+
+- track dirty state per section
+- prompt on close when the active section is dirty
+- prompt on section switch when leaving a dirty section
+- prompt on machine switch when leaving a dirty host-scoped section
+
+### Prompt actions
+
+- save
+- discard
+- cancel
+
+The current web dialog only guarantees discard or cancel at modal close. The TUI can improve this by offering save directly in the prompt if the section supports immediate validation.
+
+## Search and discoverability
+
+The settings surface is large enough to need search.
+
+### Search targets
+
+- section names
+- field labels
+- executor names
+- repository names
+- organisation names
+
+### Search modes
+
+- global settings search from nav
+- local in-section search for long lists
+
+## Rust architecture
+
+The settings flows should live in the same `crates/tui` shell proposed by the other specs.
+
+### Suggested module layout
+
+```text
+crates/tui/src/
+  settings/
+    mod.rs
+    state.rs
+    actions.rs
+    forms.rs
+    validation.rs
+    host_selector.rs
+    sections/
+      general.rs
+      repos.rs
+      agents.rs
+      mcp.rs
+      organizations.rs
+      remote_projects.rs
+      relay.rs
+```
+
+### Top-level settings state
+
+- active section
+- selected host id
+- available hosts
+- dirty flags by section
+- per-section form state
+- save status
+- validation errors
+
+## Rendering strategy
+
+## Navigation rail
+
+Render sections grouped exactly as the web dialog groups them:
+
+- `Machine Settings`
+- `Account Settings`
+
+The machine selector should sit above host-scoped sections.
+
+## Form presentation
+
+Use a small set of reusable widgets:
+
+- text input
+- textarea
+- checkbox
+- select
+- multiselect
+- code editor
+- confirmation dialog
+
+For long forms, use:
+
+- sticky section header
+- sticky save bar
+- scrollable field body
+
+## Persistence and refresh
+
+### Read strategy
+
+- load section data on first open
+- cache it in memory per host or organisation context
+- invalidate after successful save
+
+### Write strategy
+
+- optimistic updates only for simple toggles
+- use server-confirmed updates for complex structured edits
+
+## Error handling
+
+### Failure cases
+
+- host unavailable during save
+- invalid MCP JSON
+- profile schema mismatch
+- organisation permissions insufficient
+- remote project mutation rejected
+
+### Required UX
+
+- inline field errors when possible
+- toast for cross-cutting failures
+- keep dirty content in memory after failed save
+- offer retry
+
+## Backend gaps and recommended additions
+
+The existing settings surface is workable, but several additions would simplify a terminal implementation.
+
+### Recommended additions
+
+1. Add a settings bootstrap endpoint that returns:
+   - config
+   - profile metadata
+   - host targets
+   - capability summary
+
+2. Add a machine-targeted repository settings endpoint if current repo editing relies on too much UI-level orchestration.
+
+3. Expose task-tag APIs and profile APIs with stronger typed metadata for TUI form generation.
+
+4. Add explicit relay management endpoints if the current section depends on browser-specific flows.
+
+## Phased delivery plan
+
+## Phase 0: basic shell integration
+
+Deliver:
+
+- open settings from command palette
+- section navigation
+- machine selection
+- read-only general and repo views
+
+Exit criteria:
+
+- a user can inspect current config from the terminal
+
+## Phase 1: core editing
+
+Deliver:
+
+- general settings editing
+- repository script editing
+- task-tag management
+- unsaved changes prompts
+
+Exit criteria:
+
+- a user can configure local development behaviour without leaving the TUI
+
+## Phase 2: advanced host settings
+
+Deliver:
+
+- agent profile editing
+- MCP editing
+- relay flows
+
+Exit criteria:
+
+- the terminal can manage most machine-scoped configuration
+
+## Phase 3: account administration
+
+Deliver:
+
+- organisations
+- invitations
+- remote projects administration
+
+Exit criteria:
+
+- the TUI covers both local machine setup and cloud account administration coherently
+
+## Testing strategy
+
+## Unit tests
+
+- dirty-state transitions
+- host-switch guards
+- section navigation
+- form validation
+- save request assembly
+
+## Integration tests
+
+- save general config
+- edit repository scripts
+- save MCP config with validation
+- create and revoke invitation
+- change organisation member role
+
+## Snapshot tests
+
+Use Ratatui buffer snapshots for:
+
+- settings navigation rail
+- general settings form
+- agents three-column view
+- MCP editor
+- narrow-screen full-screen settings route
+
+## Success criteria
+
+The design is successful if:
+
+- users can open and change configuration from anywhere in the TUI
+- host-scoped and account-scoped settings are clearly separated
+- advanced configuration flows like agents and MCP remain manageable in a terminal
+- unsaved changes are protected consistently
