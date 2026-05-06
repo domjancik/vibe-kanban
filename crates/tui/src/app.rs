@@ -141,6 +141,8 @@ pub struct App {
     last_composer_edit: Option<std::time::Instant>,
     chat_end_offset: u16,
     chat_render_cache: Option<ChatRenderCache>,
+    chat_render_cache_dirty: bool,
+    last_chat_render_cache_build: Option<std::time::Instant>,
     conversation_loader: Option<tokio::task::JoinHandle<()>>,
     conversation_process_entries: HashMap<Uuid, Vec<PatchType>>,
     conversation_process_order: Vec<Uuid>,
@@ -201,6 +203,8 @@ impl App {
             last_composer_edit: None,
             chat_end_offset: 0,
             chat_render_cache: None,
+            chat_render_cache_dirty: true,
+            last_chat_render_cache_build: None,
             conversation_loader: None,
             conversation_process_entries: HashMap::new(),
             conversation_process_order: Vec::new(),
@@ -406,7 +410,7 @@ impl App {
                     {
                         self.refresh_queue_status();
                     }
-                    self.invalidate_chat_render_cache();
+                    self.mark_chat_render_cache_dirty();
                     self.refresh_conversation_history();
                 }
             }
@@ -422,7 +426,7 @@ impl App {
                     self.conversation_process_entries
                         .insert(process_id, entries);
                     self.reconcile_optimistic_entries();
-                    self.invalidate_chat_render_cache();
+                    self.mark_chat_render_cache_dirty();
                 }
             }
             NetEvent::ExecutorOptionsUpdated { executor, options } => {
@@ -500,7 +504,7 @@ impl App {
                     self.conversation_process_entries
                         .insert(process_id, entries);
                     self.reconcile_optimistic_entries();
-                    self.invalidate_chat_render_cache();
+                    self.mark_chat_render_cache_dirty();
                     self.chat_end_offset = 0;
                 }
             }
@@ -509,14 +513,14 @@ impl App {
                     self.conversation_bootstrapping = false;
                     self.conversation_backfilling = self.conversation_process_entries.len()
                         < self.conversation_process_order.len();
-                    self.invalidate_chat_render_cache();
+                    self.mark_chat_render_cache_dirty();
                 }
             }
             NetEvent::ConversationBackfillComplete { session_id } => {
                 if Some(session_id) == self.bundle.selected_session_id {
                     self.conversation_bootstrapping = false;
                     self.conversation_backfilling = false;
-                    self.invalidate_chat_render_cache();
+                    self.mark_chat_render_cache_dirty();
                 }
             }
             NetEvent::QueueLoaded { session_id, status } => {
@@ -527,7 +531,7 @@ impl App {
                     if matches!(self.queue_status, QueueStatus::Empty) {
                         self.composer_queue_conflict = false;
                     }
-                    self.invalidate_chat_render_cache();
+                    self.mark_chat_render_cache_dirty();
                 }
             }
             NetEvent::TerminalConnected(workspace_id) => {
@@ -2485,7 +2489,7 @@ impl App {
         self.optimistic_entries
             .retain(|entry| Some(entry.scope.clone()) == current_scope);
         if self.optimistic_entries.len() != optimistic_before {
-            self.invalidate_chat_render_cache();
+            self.mark_chat_render_cache_dirty();
         }
 
         let scratch_id = self.current_composer_scratch_id();
@@ -2520,7 +2524,7 @@ impl App {
             self.queue_status = QueueStatus::Empty;
             self.queue_pending = false;
             if had_queue {
-                self.invalidate_chat_render_cache();
+                self.mark_chat_render_cache_dirty();
             }
         }
     }
@@ -2561,7 +2565,7 @@ impl App {
             executor_config,
             state: OptimisticState::Pending,
         });
-        self.invalidate_chat_render_cache();
+        self.mark_chat_render_cache_dirty();
         local_id
     }
 
@@ -2572,7 +2576,7 @@ impl App {
             .find(|entry| entry.local_id == local_id)
         {
             entry.state = OptimisticState::Failed;
-            self.invalidate_chat_render_cache();
+            self.mark_chat_render_cache_dirty();
         }
     }
 
@@ -2582,7 +2586,7 @@ impl App {
                 entry.scope = ConversationScope::Session(session_id);
             }
         }
-        self.invalidate_chat_render_cache();
+        self.mark_chat_render_cache_dirty();
     }
 
     fn reset_conversation_state(&mut self) {
@@ -2594,7 +2598,7 @@ impl App {
         self.conversation_bootstrapping = false;
         self.conversation_backfilling = false;
         self.optimistic_entries.clear();
-        self.invalidate_chat_render_cache();
+        self.reset_chat_render_cache();
     }
 
     fn refresh_conversation_history(&mut self) {
@@ -2686,7 +2690,7 @@ impl App {
     fn reconcile_optimistic_entries(&mut self) {
         let Some(scope) = self.current_conversation_scope() else {
             self.optimistic_entries.clear();
-            self.invalidate_chat_render_cache();
+            self.mark_chat_render_cache_dirty();
             return;
         };
         let before = self.optimistic_entries.len();
@@ -2713,7 +2717,7 @@ impl App {
                     .any(|message| message == entry.message.trim())
         });
         if self.optimistic_entries.len() != before {
-            self.invalidate_chat_render_cache();
+            self.mark_chat_render_cache_dirty();
         }
     }
 
@@ -2764,12 +2768,18 @@ impl App {
 
     fn chat_render_cache(&mut self, width: usize) -> &ChatRenderCache {
         let width = width.max(1);
-        if self
+        let should_rebuild = self
             .chat_render_cache
             .as_ref()
             .is_none_or(|cache| cache.width != width)
-        {
+            || (self.chat_render_cache_dirty
+                && self
+                    .last_chat_render_cache_build
+                    .is_none_or(|built| built.elapsed() >= Duration::from_millis(33)));
+        if should_rebuild {
             self.chat_render_cache = Some(self.build_chat_render_cache(width));
+            self.chat_render_cache_dirty = false;
+            self.last_chat_render_cache_build = Some(std::time::Instant::now());
         }
         self.chat_render_cache.as_ref().expect("chat cache populated")
     }
@@ -2796,8 +2806,14 @@ impl App {
         }
     }
 
-    fn invalidate_chat_render_cache(&mut self) {
+    fn mark_chat_render_cache_dirty(&mut self) {
+        self.chat_render_cache_dirty = true;
+    }
+
+    fn reset_chat_render_cache(&mut self) {
         self.chat_render_cache = None;
+        self.chat_render_cache_dirty = true;
+        self.last_chat_render_cache_build = None;
     }
 
     fn chat_lines(&self) -> Vec<Line<'static>> {
