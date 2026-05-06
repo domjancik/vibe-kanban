@@ -406,9 +406,27 @@ pub enum NetEvent {
         scratch_id: Uuid,
         draft: Option<DraftFollowUpData>,
     },
+    DraftSaved {
+        scratch_id: Uuid,
+        revision: u64,
+    },
+    DraftSaveFailed {
+        scratch_id: Uuid,
+        revision: u64,
+        message: String,
+    },
     QueueLoaded {
         session_id: Uuid,
         status: QueueStatus,
+    },
+    NotesSaved {
+        workspace_id: Uuid,
+        revision: u64,
+    },
+    NotesSaveFailed {
+        workspace_id: Uuid,
+        revision: u64,
+        message: String,
     },
     TerminalConnected(Uuid),
     TerminalOutput(Uuid, Vec<u8>),

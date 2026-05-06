@@ -59,6 +59,12 @@ struct AgentPickerState {
     selected: usize,
 }
 
+struct ChatRenderCache {
+    width: usize,
+    lines: Vec<Line<'static>>,
+    latest_token_usage: Option<(u32, u32)>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ComposerEditorMode {
     Standard,
@@ -124,6 +130,8 @@ pub struct App {
     composer_editor_mode: ComposerEditorMode,
     vim_pending_operator: Option<VimOperator>,
     composer_dirty: bool,
+    composer_edit_revision: u64,
+    draft_save_in_flight: bool,
     composer_queue_conflict: bool,
     composer_scratch_id: Option<Uuid>,
     composer_scratch_loaded: bool,
@@ -132,6 +140,7 @@ pub struct App {
     queue_pending: bool,
     last_composer_edit: Option<std::time::Instant>,
     chat_end_offset: u16,
+    chat_render_cache: Option<ChatRenderCache>,
     conversation_loader: Option<tokio::task::JoinHandle<()>>,
     conversation_process_entries: HashMap<Uuid, Vec<PatchType>>,
     conversation_process_order: Vec<Uuid>,
@@ -139,6 +148,8 @@ pub struct App {
     conversation_backfilling: bool,
     optimistic_entries: Vec<OptimisticConversationEntry>,
     notes_cursor: usize,
+    notes_edit_revision: u64,
+    notes_save_in_flight: bool,
     agent_picker: Option<AgentPickerState>,
     creating_new_session: bool,
     should_quit: bool,
@@ -179,6 +190,8 @@ impl App {
             composer_editor_mode: ComposerEditorMode::Standard,
             vim_pending_operator: None,
             composer_dirty: false,
+            composer_edit_revision: 0,
+            draft_save_in_flight: false,
             composer_queue_conflict: false,
             composer_scratch_id: None,
             composer_scratch_loaded: false,
@@ -187,6 +200,7 @@ impl App {
             queue_pending: false,
             last_composer_edit: None,
             chat_end_offset: 0,
+            chat_render_cache: None,
             conversation_loader: None,
             conversation_process_entries: HashMap::new(),
             conversation_process_order: Vec::new(),
@@ -194,6 +208,8 @@ impl App {
             conversation_backfilling: false,
             optimistic_entries: Vec::new(),
             notes_cursor: 0,
+            notes_edit_revision: 0,
+            notes_save_in_flight: false,
             agent_picker: None,
             creating_new_session: false,
             should_quit: false,
@@ -324,6 +340,34 @@ impl App {
                     self.notes_cursor = self.bundle.notes.len();
                 }
             }
+            NetEvent::NotesSaved {
+                workspace_id,
+                revision,
+            } => {
+                if Some(workspace_id) == self.selected_workspace_id {
+                    self.notes_save_in_flight = false;
+                    if revision == self.notes_edit_revision {
+                        self.bundle.notes_dirty = false;
+                        self.bundle.last_notes_edit = None;
+                    }
+                    self.status = "Notes saved".to_string();
+                }
+            }
+            NetEvent::NotesSaveFailed {
+                workspace_id,
+                revision,
+                message,
+            } => {
+                if Some(workspace_id) == self.selected_workspace_id
+                    && revision == self.notes_edit_revision
+                {
+                    self.notes_save_in_flight = false;
+                    self.error = Some(message.clone());
+                    self.status = message;
+                } else if Some(workspace_id) == self.selected_workspace_id {
+                    self.notes_save_in_flight = false;
+                }
+            }
             NetEvent::DiffsUpdated {
                 workspace_id,
                 diffs,
@@ -362,6 +406,7 @@ impl App {
                     {
                         self.refresh_queue_status();
                     }
+                    self.invalidate_chat_render_cache();
                     self.refresh_conversation_history();
                 }
             }
@@ -377,6 +422,7 @@ impl App {
                     self.conversation_process_entries
                         .insert(process_id, entries);
                     self.reconcile_optimistic_entries();
+                    self.invalidate_chat_render_cache();
                 }
             }
             NetEvent::ExecutorOptionsUpdated { executor, options } => {
@@ -414,6 +460,37 @@ impl App {
                     }
                 }
             }
+            NetEvent::DraftSaved {
+                scratch_id,
+                revision,
+            } => {
+                if Some(scratch_id) == self.current_composer_scratch_id() {
+                    self.draft_save_in_flight = false;
+                    if revision == self.composer_edit_revision {
+                        self.composer_dirty = false;
+                        self.last_composer_edit = None;
+                        self.composer_queue_conflict = false;
+                    }
+                }
+            }
+            NetEvent::DraftSaveFailed {
+                scratch_id,
+                revision,
+                message,
+            } => {
+                if Some(scratch_id) == self.current_composer_scratch_id()
+                    && revision == self.composer_edit_revision
+                {
+                    self.draft_save_in_flight = false;
+                    if message.contains("queued") {
+                        self.composer_queue_conflict = true;
+                    }
+                    self.error = Some(message.clone());
+                    self.status = message;
+                } else if Some(scratch_id) == self.current_composer_scratch_id() {
+                    self.draft_save_in_flight = false;
+                }
+            }
             NetEvent::ConversationHistoryLoaded {
                 session_id,
                 process_id,
@@ -423,6 +500,7 @@ impl App {
                     self.conversation_process_entries
                         .insert(process_id, entries);
                     self.reconcile_optimistic_entries();
+                    self.invalidate_chat_render_cache();
                     self.chat_end_offset = 0;
                 }
             }
@@ -431,12 +509,14 @@ impl App {
                     self.conversation_bootstrapping = false;
                     self.conversation_backfilling = self.conversation_process_entries.len()
                         < self.conversation_process_order.len();
+                    self.invalidate_chat_render_cache();
                 }
             }
             NetEvent::ConversationBackfillComplete { session_id } => {
                 if Some(session_id) == self.bundle.selected_session_id {
                     self.conversation_bootstrapping = false;
                     self.conversation_backfilling = false;
+                    self.invalidate_chat_render_cache();
                 }
             }
             NetEvent::QueueLoaded { session_id, status } => {
@@ -447,6 +527,7 @@ impl App {
                     if matches!(self.queue_status, QueueStatus::Empty) {
                         self.composer_queue_conflict = false;
                     }
+                    self.invalidate_chat_render_cache();
                 }
             }
             NetEvent::TerminalConnected(workspace_id) => {
@@ -793,9 +874,11 @@ impl App {
         if notes && changed {
             self.bundle.notes_dirty = true;
             self.bundle.last_notes_edit = Some(std::time::Instant::now());
+            self.notes_edit_revision = self.notes_edit_revision.saturating_add(1);
         } else if changed {
             self.composer_dirty = true;
             self.last_composer_edit = Some(std::time::Instant::now());
+            self.composer_edit_revision = self.composer_edit_revision.saturating_add(1);
         }
     }
 
@@ -970,6 +1053,7 @@ impl App {
                     self.composer.remove(self.composer_cursor);
                     self.composer_dirty = true;
                     self.last_composer_edit = Some(std::time::Instant::now());
+                    self.composer_edit_revision = self.composer_edit_revision.saturating_add(1);
                 }
                 true
             }
@@ -982,6 +1066,7 @@ impl App {
                 self.composer_cursor += 1;
                 self.composer_dirty = true;
                 self.last_composer_edit = Some(std::time::Instant::now());
+                self.composer_edit_revision = self.composer_edit_revision.saturating_add(1);
                 self.composer_editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
                 self.status = "Composer mode: Vim Insert".to_string();
                 true
@@ -994,6 +1079,7 @@ impl App {
                 self.composer.insert(self.composer_cursor, '\n');
                 self.composer_dirty = true;
                 self.last_composer_edit = Some(std::time::Instant::now());
+                self.composer_edit_revision = self.composer_edit_revision.saturating_add(1);
                 self.composer_editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
                 self.status = "Composer mode: Vim Insert".to_string();
                 true
@@ -1131,7 +1217,7 @@ impl App {
         let Some(workspace_id) = self.selected_workspace_id else {
             return;
         };
-        if !self.bundle.notes_dirty {
+        if !self.bundle.notes_dirty || self.notes_save_in_flight {
             return;
         }
         let Some(last_edit) = self.bundle.last_notes_edit else {
@@ -1140,31 +1226,39 @@ impl App {
         if last_edit.elapsed() < Duration::from_millis(900) {
             return;
         }
-        match self
-            .api
-            .save_notes(workspace_id, self.bundle.notes.clone())
-            .await
-        {
-            Ok(()) => {
-                self.bundle.notes_dirty = false;
-                self.bundle.last_notes_edit = None;
-                self.status = "Notes saved".to_string();
+        self.notes_save_in_flight = true;
+        let api = self.api.clone();
+        let tx = self.tx.clone();
+        let notes = self.bundle.notes.clone();
+        let revision = self.notes_edit_revision;
+        tokio::spawn(async move {
+            match api.save_notes(workspace_id, notes).await {
+                Ok(()) => {
+                    let _ = tx.send(NetEvent::NotesSaved {
+                        workspace_id,
+                        revision,
+                    });
+                }
+                Err(error) => {
+                    let _ = tx.send(NetEvent::NotesSaveFailed {
+                        workspace_id,
+                        revision,
+                        message: error.to_string(),
+                    });
+                }
             }
-            Err(error) => {
-                self.error = Some(error.to_string());
-                self.status = error.to_string();
-            }
-        }
+        });
     }
 
     async fn flush_draft_if_needed(&mut self) {
         let Some(scratch_id) = self.current_composer_scratch_id() else {
             self.composer_dirty = false;
+            self.draft_save_in_flight = false;
             self.last_composer_edit = None;
             self.composer_scratch_loaded = true;
             return;
         };
-        if !self.composer_dirty {
+        if !self.composer_dirty || self.draft_save_in_flight {
             return;
         }
         let Some(last_edit) = self.last_composer_edit else {
@@ -1180,30 +1274,31 @@ impl App {
         let Some(executor_config) = self.composer_config.clone() else {
             return;
         };
-        match self
-            .api
-            .save_follow_up_draft(
-                scratch_id,
-                DraftFollowUpData {
-                    message: self.composer.clone(),
-                    executor_config,
-                },
-            )
-            .await
-        {
-            Ok(()) => {
-                self.composer_dirty = false;
-                self.last_composer_edit = None;
-                self.composer_queue_conflict = false;
-            }
-            Err(error) => {
-                self.error = Some(error.to_string());
-                self.status = error.to_string();
-                if error.to_string().contains("queued") {
-                    self.composer_queue_conflict = true;
+        self.draft_save_in_flight = true;
+        let api = self.api.clone();
+        let tx = self.tx.clone();
+        let draft = DraftFollowUpData {
+            message: self.composer.clone(),
+            executor_config,
+        };
+        let revision = self.composer_edit_revision;
+        tokio::spawn(async move {
+            match api.save_follow_up_draft(scratch_id, draft).await {
+                Ok(()) => {
+                    let _ = tx.send(NetEvent::DraftSaved {
+                        scratch_id,
+                        revision,
+                    });
+                }
+                Err(error) => {
+                    let _ = tx.send(NetEvent::DraftSaveFailed {
+                        scratch_id,
+                        revision,
+                        message: error.to_string(),
+                    });
                 }
             }
-        }
+        });
     }
 
     fn handle_terminal_resize(&mut self, size: Rect) {
@@ -1783,7 +1878,7 @@ impl App {
         );
     }
 
-    fn render_chat(&self, frame: &mut Frame, area: Rect) {
+    fn render_chat(&mut self, frame: &mut Frame, area: Rect) {
         let title = if self.creating_new_session {
             "Conversation (new session)"
         } else {
@@ -1815,27 +1910,38 @@ impl App {
             messages_area
         };
 
-        let lines = self.chat_window_lines(
-            content_area.height.max(1) as usize,
-            content_area.width.max(1) as usize,
-        );
+        let visible_lines = content_area.height.max(1) as usize;
+        let chat_end_offset = self.chat_end_offset as usize;
+        let (total_lines, latest_token_usage, lines) = {
+            let cache = self.chat_render_cache(content_area.width.max(1) as usize);
+            let end = cache.lines.len().saturating_sub(chat_end_offset);
+            let start = end.saturating_sub(visible_lines);
+            (
+                cache.lines.len(),
+                cache.latest_token_usage,
+                cache.lines[start..end].to_vec(),
+            )
+        };
         frame.render_widget(
             Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
             content_area,
         );
-        let total_lines = wrap_lines(self.chat_lines(), content_area.width.max(1) as usize).len();
-        let visible_lines = content_area.height.max(1) as usize;
         let top_offset = total_lines
-            .saturating_sub(visible_lines.saturating_add(self.chat_end_offset as usize));
+            .saturating_sub(visible_lines.saturating_add(chat_end_offset));
         render_vertical_scrollbar(frame, area, total_lines, visible_lines, top_offset);
 
         if let Some(status_area) = status_area {
-            self.render_chat_status(frame, status_area);
+            self.render_chat_status(frame, status_area, latest_token_usage);
         }
     }
 
-    fn render_chat_status(&self, frame: &mut Frame, area: Rect) {
-        let Some((total_tokens, context_window)) = self.latest_chat_token_usage() else {
+    fn render_chat_status(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        latest_token_usage: Option<(u32, u32)>,
+    ) {
+        let Some((total_tokens, context_window)) = latest_token_usage else {
             frame.render_widget(
                 Paragraph::new(Line::styled(
                     "latest context usage unavailable",
@@ -2375,8 +2481,12 @@ impl App {
 
     fn sync_composer_context(&mut self) {
         let current_scope = self.current_conversation_scope();
+        let optimistic_before = self.optimistic_entries.len();
         self.optimistic_entries
             .retain(|entry| Some(entry.scope.clone()) == current_scope);
+        if self.optimistic_entries.len() != optimistic_before {
+            self.invalidate_chat_render_cache();
+        }
 
         let scratch_id = self.current_composer_scratch_id();
         if scratch_id != self.composer_scratch_id {
@@ -2385,6 +2495,7 @@ impl App {
             self.composer.clear();
             self.composer_cursor = 0;
             self.composer_dirty = false;
+            self.draft_save_in_flight = false;
             self.last_composer_edit = None;
             self.composer_queue_conflict = false;
             self.api
@@ -2405,8 +2516,12 @@ impl App {
             self.queue_pending = true;
             self.api.load_queue_status(session_id, self.tx.clone());
         } else {
+            let had_queue = !matches!(self.queue_status, QueueStatus::Empty);
             self.queue_status = QueueStatus::Empty;
             self.queue_pending = false;
+            if had_queue {
+                self.invalidate_chat_render_cache();
+            }
         }
     }
 
@@ -2446,6 +2561,7 @@ impl App {
             executor_config,
             state: OptimisticState::Pending,
         });
+        self.invalidate_chat_render_cache();
         local_id
     }
 
@@ -2456,6 +2572,7 @@ impl App {
             .find(|entry| entry.local_id == local_id)
         {
             entry.state = OptimisticState::Failed;
+            self.invalidate_chat_render_cache();
         }
     }
 
@@ -2465,6 +2582,7 @@ impl App {
                 entry.scope = ConversationScope::Session(session_id);
             }
         }
+        self.invalidate_chat_render_cache();
     }
 
     fn reset_conversation_state(&mut self) {
@@ -2476,6 +2594,7 @@ impl App {
         self.conversation_bootstrapping = false;
         self.conversation_backfilling = false;
         self.optimistic_entries.clear();
+        self.invalidate_chat_render_cache();
     }
 
     fn refresh_conversation_history(&mut self) {
@@ -2567,8 +2686,10 @@ impl App {
     fn reconcile_optimistic_entries(&mut self) {
         let Some(scope) = self.current_conversation_scope() else {
             self.optimistic_entries.clear();
+            self.invalidate_chat_render_cache();
             return;
         };
+        let before = self.optimistic_entries.len();
         let canonical_messages = self
             .canonical_chat_entries()
             .into_iter()
@@ -2591,6 +2712,9 @@ impl App {
                     .iter()
                     .any(|message| message == entry.message.trim())
         });
+        if self.optimistic_entries.len() != before {
+            self.invalidate_chat_render_cache();
+        }
     }
 
     fn canonical_chat_entries(&self) -> Vec<PatchType> {
@@ -2638,8 +2762,22 @@ impl App {
         self.chat_lines().len()
     }
 
-    fn latest_chat_token_usage(&self) -> Option<(u32, u32)> {
-        self.canonical_chat_entries()
+    fn chat_render_cache(&mut self, width: usize) -> &ChatRenderCache {
+        let width = width.max(1);
+        if self
+            .chat_render_cache
+            .as_ref()
+            .is_none_or(|cache| cache.width != width)
+        {
+            self.chat_render_cache = Some(self.build_chat_render_cache(width));
+        }
+        self.chat_render_cache.as_ref().expect("chat cache populated")
+    }
+
+    fn build_chat_render_cache(&self, width: usize) -> ChatRenderCache {
+        let lines = wrap_lines(self.chat_lines(), width);
+        let latest_token_usage = self
+            .canonical_chat_entries()
             .iter()
             .rev()
             .find_map(|entry| match entry {
@@ -2650,111 +2788,16 @@ impl App {
                     _ => None,
                 },
                 _ => None,
-            })
+            });
+        ChatRenderCache {
+            width,
+            lines,
+            latest_token_usage,
+        }
     }
 
-    fn chat_window_lines(
-        &self,
-        viewport_height: usize,
-        viewport_width: usize,
-    ) -> Vec<Line<'static>> {
-        if viewport_height == 0 {
-            return Vec::new();
-        }
-
-        let target_tail_lines = viewport_height.saturating_add(self.chat_end_offset as usize);
-        let mut tail_groups: Vec<Vec<Line<'static>>> = Vec::new();
-        let mut collected_tail_lines = 0usize;
-
-        for entry in self
-            .optimistic_entries
-            .iter()
-            .filter(|entry| Some(&entry.scope) == self.current_conversation_scope().as_ref())
-            .rev()
-        {
-            let lines = render_optimistic_chat_entry(entry);
-            let wrapped = wrap_lines(lines, viewport_width);
-            collected_tail_lines = collected_tail_lines.saturating_add(wrapped.len());
-            tail_groups.push(wrapped);
-            if collected_tail_lines >= target_tail_lines {
-                break;
-            }
-        }
-
-        if collected_tail_lines < target_tail_lines {
-            for entry in self.canonical_chat_entries().iter().rev() {
-                let lines = render_chat_entry(entry);
-                let wrapped = wrap_lines(lines, viewport_width);
-                collected_tail_lines = collected_tail_lines.saturating_add(wrapped.len());
-                tail_groups.push(wrapped);
-                if collected_tail_lines >= target_tail_lines {
-                    break;
-                }
-            }
-        }
-
-        if collected_tail_lines < target_tail_lines {
-            if let QueueStatus::Queued { message } = &self.queue_status {
-                let mut lines = vec![Line::styled(
-                    "queued follow-up",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                )];
-                for line in message.data.message.lines() {
-                    lines.push(Line::styled(
-                        format!("  {line}"),
-                        Style::default().fg(Color::LightYellow),
-                    ));
-                }
-                lines.push(Line::styled(
-                    format!("  executor {}", message.data.executor_config.executor),
-                    Style::default().fg(Color::DarkGray),
-                ));
-                lines.push(Line::raw(""));
-                let wrapped = wrap_lines(lines, viewport_width);
-                collected_tail_lines = collected_tail_lines.saturating_add(wrapped.len());
-                tail_groups.push(wrapped);
-            }
-        }
-
-        if collected_tail_lines < target_tail_lines {
-            let leading_lines = if self.conversation_bootstrapping
-                && self.conversation_process_entries.is_empty()
-            {
-                vec![
-                    Line::styled(
-                        "Loading recent conversation...",
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                    Line::raw(""),
-                ]
-            } else if self.conversation_backfilling {
-                vec![
-                    Line::styled(
-                        "Loading older messages...",
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                    Line::raw(""),
-                ]
-            } else {
-                Vec::new()
-            };
-            if !leading_lines.is_empty() {
-                tail_groups.push(wrap_lines(leading_lines, viewport_width));
-            }
-        }
-
-        let mut tail_lines = Vec::new();
-        for group in tail_groups.into_iter().rev() {
-            tail_lines.extend(group);
-        }
-
-        let end = tail_lines
-            .len()
-            .saturating_sub(self.chat_end_offset as usize);
-        let start = end.saturating_sub(viewport_height);
-        tail_lines[start..end].to_vec()
+    fn invalidate_chat_render_cache(&mut self) {
+        self.chat_render_cache = None;
     }
 
     fn chat_lines(&self) -> Vec<Line<'static>> {
@@ -3328,9 +3371,11 @@ impl App {
         self.composer.clear();
         self.composer_cursor = 0;
         self.composer_dirty = false;
+        self.draft_save_in_flight = false;
         self.last_composer_edit = None;
         self.composer_scratch_loaded = false;
         self.composer_scratch_id = None;
+        self.notes_save_in_flight = false;
         self.queue_status = QueueStatus::Empty;
         self.queue_session_id = None;
         self.queue_pending = false;
