@@ -37,10 +37,14 @@ use crate::{
         render_log_entry, render_optimistic_chat_entry, wrap_lines,
     },
     editor::{
-        ComposerEditorMode, VimMode, VimOperator, line_end_index, line_start_index,
-        move_cursor_vertical, next_word_start, prev_word_start, render_editor_buffer,
+        ComposerEditorMode, VimMode, VimOperator, apply_text_edit_action, line_end_index,
+        line_start_index, move_cursor_vertical, next_word_start, prev_word_start,
+        render_editor_buffer,
     },
-    input::{AppIntent, map_app_key, next_focus, prev_focus},
+    input::{
+        AppIntent, TextInputEvent, TextInputOptions, map_app_key, map_text_input_key, next_focus,
+        prev_focus,
+    },
     model::{
         Focus, NetEvent, Pane, PatchType, QueueStatus, TerminalState, WorkspaceBundle,
         WorkspaceSummary, active_process, diff_title, display_permission, display_variant,
@@ -643,87 +647,28 @@ impl App {
             (&mut self.composer, &mut self.composer_cursor)
         };
         let mut changed = false;
-        match key {
-            KeyEvent {
-                code: KeyCode::Enter,
-                modifiers,
-                ..
-            } if !notes && !modifiers.contains(KeyModifiers::SHIFT) => {
-                self.submit_prompt().await;
+        let options = if notes {
+            TextInputOptions {
+                submit_on_enter: false,
+                enter_inserts_newline: true,
+                shift_enter_inserts_newline: false,
             }
-            KeyEvent {
-                code: KeyCode::Enter,
-                ..
-            } => {
-                buffer.insert(*cursor, '\n');
-                *cursor += 1;
-                changed = true;
+        } else {
+            TextInputOptions {
+                submit_on_enter: true,
+                enter_inserts_newline: false,
+                shift_enter_inserts_newline: true,
             }
-            KeyEvent {
-                code: KeyCode::Backspace,
-                ..
-            } => {
-                if *cursor > 0 {
-                    buffer.remove(*cursor - 1);
-                    *cursor -= 1;
-                    changed = true;
-                }
+        };
+
+        match map_text_input_key(key, options) {
+            Some(TextInputEvent::Submit) => self.submit_prompt().await,
+            Some(TextInputEvent::Edit(action)) => {
+                let before = (buffer.clone(), *cursor);
+                apply_text_edit_action(buffer, cursor, action);
+                changed = before.0 != *buffer || before.1 != *cursor;
             }
-            KeyEvent {
-                code: KeyCode::Delete,
-                ..
-            } => {
-                if *cursor < buffer.len() {
-                    buffer.remove(*cursor);
-                    changed = true;
-                }
-            }
-            KeyEvent {
-                code: KeyCode::Left,
-                ..
-            } => *cursor = cursor.saturating_sub(1),
-            KeyEvent {
-                code: KeyCode::Right,
-                ..
-            } => *cursor = (*cursor + 1).min(buffer.len()),
-            KeyEvent {
-                code: KeyCode::Up, ..
-            } => *cursor = move_cursor_vertical(buffer, *cursor, -1),
-            KeyEvent {
-                code: KeyCode::Down,
-                ..
-            } => *cursor = move_cursor_vertical(buffer, *cursor, 1),
-            KeyEvent {
-                code: KeyCode::Home,
-                ..
-            } => *cursor = line_start_index(buffer, *cursor),
-            KeyEvent {
-                code: KeyCode::End, ..
-            } => *cursor = line_end_index(buffer, *cursor),
-            KeyEvent {
-                code: KeyCode::Char('a'),
-                modifiers,
-                ..
-            } if modifiers == KeyModifiers::CONTROL => {
-                *cursor = line_start_index(buffer, *cursor);
-            }
-            KeyEvent {
-                code: KeyCode::Char('e'),
-                modifiers,
-                ..
-            } if modifiers == KeyModifiers::CONTROL => {
-                *cursor = line_end_index(buffer, *cursor);
-            }
-            KeyEvent {
-                code: KeyCode::Char(ch),
-                modifiers,
-                ..
-            } if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => {
-                buffer.insert(*cursor, ch);
-                *cursor += 1;
-                changed = true;
-            }
-            _ => {}
+            None => {}
         }
         if notes && changed {
             self.bundle.notes_dirty = true;
@@ -3120,61 +3065,21 @@ impl App {
                 self.session_rename = None;
                 self.status = "Cancelled session rename".to_string();
             }
-            KeyEvent {
-                code: KeyCode::Enter,
-                ..
-            } => self.submit_session_rename().await,
-            KeyEvent {
-                code: KeyCode::Backspace,
-                ..
-            } => {
-                if rename.cursor > 0 {
-                    rename.name.remove(rename.cursor - 1);
-                    rename.cursor -= 1;
+            _ => match map_text_input_key(
+                key,
+                TextInputOptions {
+                    submit_on_enter: true,
+                    enter_inserts_newline: false,
+                    shift_enter_inserts_newline: false,
+                },
+            ) {
+                Some(TextInputEvent::Submit) => self.submit_session_rename().await,
+                Some(TextInputEvent::Edit(action)) => {
+                    apply_text_edit_action(&mut rename.name, &mut rename.cursor, action);
+                    rename.cursor = rename.cursor.min(rename.name.len());
                 }
-            }
-            KeyEvent {
-                code: KeyCode::Delete,
-                ..
-            } => {
-                if rename.cursor < rename.name.len() {
-                    rename.name.remove(rename.cursor);
-                }
-            }
-            KeyEvent {
-                code: KeyCode::Left,
-                ..
-            } => rename.cursor = rename.cursor.saturating_sub(1),
-            KeyEvent {
-                code: KeyCode::Right,
-                ..
-            } => rename.cursor = (rename.cursor + 1).min(rename.name.len()),
-            KeyEvent {
-                code: KeyCode::Home,
-                ..
-            } => rename.cursor = 0,
-            KeyEvent {
-                code: KeyCode::End, ..
-            } => rename.cursor = rename.name.len(),
-            KeyEvent {
-                code: KeyCode::Char('a'),
-                modifiers,
-                ..
-            } if modifiers == KeyModifiers::CONTROL => rename.cursor = 0,
-            KeyEvent {
-                code: KeyCode::Char('e'),
-                modifiers,
-                ..
-            } if modifiers == KeyModifiers::CONTROL => rename.cursor = rename.name.len(),
-            KeyEvent {
-                code: KeyCode::Char(ch),
-                modifiers,
-                ..
-            } if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => {
-                rename.name.insert(rename.cursor, ch);
-                rename.cursor += 1;
-            }
-            _ => {}
+                None => {}
+            },
         }
     }
 
