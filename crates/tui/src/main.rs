@@ -1,4 +1,6 @@
 mod api;
+mod api_terminal;
+mod api_transport;
 mod app;
 mod app_editor;
 mod app_state;
@@ -8,6 +10,10 @@ mod conversation;
 mod editor;
 mod input;
 mod model;
+mod model_domain;
+mod model_event;
+mod model_format;
+mod model_wire;
 mod ui;
 mod workspace;
 

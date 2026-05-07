@@ -1,30 +1,32 @@
-use std::{collections::HashMap, fs, io::Write, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::HashMap, time::Duration};
 
-use anyhow::{Context, Result, anyhow};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use anyhow::{Context, Result};
 use db::models::{scratch::DraftFollowUpData, session::Session, workspace::Workspace};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use json_patch::Patch;
 use reqwest::Client;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use tokio::{
-    sync::{
-        Mutex,
-        mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
-    },
+    sync::mpsc::{UnboundedSender, unbounded_channel},
     task::JoinHandle,
     time::sleep,
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use uuid::Uuid;
 
-use crate::model::{
-    ApiEnvelope, CreateSessionRequest, DiffStreamState, ExecutionProcessesState,
-    ExecutorDiscoveryStreamState, FollowUpRequest, LogEntriesState, NetEvent, OpenEditorRequest,
-    PatchType, QueueStatus, ScratchPayload, ScratchRecord, ScratchStreamState,
-    UpdateScratchPayload, UpdateScratchRequest, UpdateSessionRequest, UpdateWorkspaceRequest,
-    UserSystemInfo, WorkspaceStreamState, WorkspaceSummaryRequest, WorkspaceSummaryResponse,
+pub use crate::api_transport::detect_base_url;
+use crate::{
+    api_terminal::spawn_terminal_stream,
+    api_transport::{log_api, parse_api_response, run_patch_stream, ws_base},
+    model::{
+        CreateSessionRequest, DiffStreamState, ExecutionProcessesState,
+        ExecutorDiscoveryStreamState, FollowUpRequest, LogEntriesState, NetEvent,
+        OpenEditorRequest, PatchType, QueueStatus, ScratchPayload, ScratchRecord,
+        ScratchStreamState, UpdateScratchPayload, UpdateScratchRequest, UpdateSessionRequest,
+        UpdateWorkspaceRequest, UserSystemInfo, WorkspaceStreamState, WorkspaceSummaryRequest,
+        WorkspaceSummaryResponse,
+    },
 };
 
 const SCRATCH_TYPE_DRAFT_FOLLOW_UP: &str = "DRAFT_FOLLOW_UP";
@@ -600,77 +602,6 @@ impl WorkspaceSubscriptions {
     }
 }
 
-pub fn detect_base_url() -> String {
-    if let Ok(base) = std::env::var("VK_TUI_BASE_URL") {
-        return base;
-    }
-    if let Ok(port) = std::env::var("BACKEND_PORT").or_else(|_| std::env::var("PORT")) {
-        return format!("http://127.0.0.1:{}", port.trim());
-    }
-    let mut cursor = std::env::current_dir().ok();
-    while let Some(dir) = cursor {
-        let path = dir.join(".dev-ports.json");
-        if path.exists()
-            && let Ok(content) = fs::read_to_string(&path)
-            && let Ok(json) = serde_json::from_str::<Value>(&content)
-            && let Some(port) = json.get("backend").and_then(Value::as_u64)
-        {
-            return format!("http://127.0.0.1:{port}");
-        }
-        cursor = dir.parent().map(PathBuf::from);
-    }
-    "http://127.0.0.1:3001".to_string()
-}
-
-async fn parse_api_response<T: DeserializeOwned>(
-    method: &str,
-    path: &str,
-    response: reqwest::Response,
-) -> Result<T> {
-    let status = response.status();
-    let body = response.text().await?;
-    log_api(format!("HTTP {method} {path} -> {status}"));
-    let envelope: ApiEnvelope<T> = serde_json::from_str(&body).with_context(|| {
-        log_api(format!(
-            "HTTP {method} {path} parse error body={}",
-            truncate_for_log(&body)
-        ));
-        format!("invalid API response: {body}")
-    })?;
-    if !status.is_success() || !envelope.success {
-        log_api(format!(
-            "HTTP {method} {path} api error body={}",
-            truncate_for_log(&body)
-        ));
-        return Err(anyhow!(
-            envelope
-                .message
-                .unwrap_or_else(|| format!("request failed with status {status}"))
-        ));
-    }
-    envelope
-        .data
-        .ok_or_else(|| anyhow!("API response did not include data"))
-}
-
-fn log_api(message: String) {
-    let path = std::env::var("VK_TUI_API_LOG")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir().join("vibe-kanban-tui-api.log"));
-    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "[tui-api] {message}");
-    }
-}
-
-fn truncate_for_log(body: &str) -> String {
-    const LIMIT: usize = 400;
-    if body.len() <= LIMIT {
-        body.to_string()
-    } else {
-        format!("{}...", &body[..LIMIT])
-    }
-}
-
 fn spawn_workspace_stream(
     api: Api,
     archived: bool,
@@ -923,120 +854,4 @@ fn spawn_discovery_stream(
             let _ = tx.send(NetEvent::Error(error.to_string()));
         }
     })
-}
-
-fn spawn_terminal_stream(
-    api: Api,
-    workspace_id: Uuid,
-    size: (u16, u16),
-    tx: UnboundedSender<NetEvent>,
-    mut input_rx: UnboundedReceiver<TerminalCommand>,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let endpoint = format!(
-            "{}/api/terminal/ws?workspace_id={workspace_id}&cols={}&rows={}",
-            ws_base(&api.base_url),
-            size.0,
-            size.1
-        );
-
-        let result = async {
-            let (stream, _) = connect_async(endpoint.as_str()).await?;
-            let (write, mut read) = stream.split();
-            let write = Arc::new(Mutex::new(write));
-
-            let _ = tx.send(NetEvent::TerminalConnected(workspace_id));
-
-            let writer = {
-                let tx = tx.clone();
-                let write = Arc::clone(&write);
-                tokio::spawn(async move {
-                    while let Some(command) = input_rx.recv().await {
-                        let json = match command {
-                            TerminalCommand::Input(bytes) => json!({
-                                "type": "input",
-                                "data": STANDARD.encode(bytes),
-                            }),
-                            TerminalCommand::Resize(cols, rows) => json!({
-                                "type": "resize",
-                                "cols": cols,
-                                "rows": rows,
-                            }),
-                        };
-                        let message = Message::Text(json.to_string());
-                        if let Err(error) = write.lock().await.send(message).await {
-                            let _ =
-                                tx.send(NetEvent::TerminalError(workspace_id, error.to_string()));
-                            break;
-                        }
-                    }
-                })
-            };
-
-            while let Some(message) = read.next().await {
-                let message = message?;
-                let Message::Text(text) = message else {
-                    continue;
-                };
-                let payload: Value = serde_json::from_str(&text)?;
-                if let Some(data) = payload.get("data").and_then(Value::as_str) {
-                    let output = STANDARD.decode(data)?;
-                    let _ = tx.send(NetEvent::TerminalOutput(workspace_id, output));
-                } else if let Some(error) = payload.get("message").and_then(Value::as_str) {
-                    let _ = tx.send(NetEvent::TerminalError(workspace_id, error.to_string()));
-                }
-            }
-
-            writer.abort();
-            Result::<()>::Ok(())
-        }
-        .await;
-
-        if let Err(error) = result {
-            let _ = tx.send(NetEvent::TerminalError(workspace_id, error.to_string()));
-        }
-    })
-}
-
-async fn run_patch_stream<T, F>(
-    endpoint: String,
-    initial: Value,
-    make_event: F,
-    tx: UnboundedSender<NetEvent>,
-) -> Result<()>
-where
-    T: DeserializeOwned,
-    F: Fn(T) -> NetEvent,
-{
-    let (stream, _) = connect_async(endpoint.as_str()).await?;
-    let (_, mut read) = stream.split();
-    let mut state = initial;
-
-    while let Some(message) = read.next().await {
-        let message = message?;
-        let Message::Text(text) = message else {
-            continue;
-        };
-        if text.contains(r#""Ready":true"#) || text.contains(r#""finished":true"#) {
-            continue;
-        }
-        let payload: Value = serde_json::from_str(&text)?;
-        if let Some(patch_value) = payload.get("JsonPatch") {
-            let patch: Patch = serde_json::from_value(patch_value.clone())?;
-            json_patch::patch(&mut state, &patch)?;
-            let typed: T = serde_json::from_value(state.clone())?;
-            let _ = tx.send(make_event(typed));
-        }
-    }
-    Ok(())
-}
-
-fn ws_base(base: &str) -> String {
-    if let Some(rest) = base.strip_prefix("https://") {
-        format!("wss://{rest}")
-    } else if let Some(rest) = base.strip_prefix("http://") {
-        format!("ws://{rest}")
-    } else {
-        base.to_string()
-    }
 }
