@@ -37,8 +37,12 @@ pub(crate) struct SearchPromptState {
     pub(crate) target: SearchTarget,
     pub(crate) query: String,
     pub(crate) cursor: usize,
+    pub(crate) original_query: String,
+    pub(crate) original_conversation_search: Option<ConversationSearchState>,
+    pub(crate) original_chat_end_offset: u16,
 }
 
+#[derive(Clone)]
 pub(crate) struct ConversationSearchState {
     pub(crate) query: String,
     pub(crate) matches: Vec<usize>,

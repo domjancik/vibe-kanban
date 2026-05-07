@@ -33,6 +33,11 @@ impl App {
         self.search_prompt = Some(SearchPromptState {
             target,
             cursor: query.len(),
+            original_query: query.clone(),
+            original_conversation_search: (target == SearchTarget::Conversation)
+                .then(|| self.conversation_search.clone())
+                .flatten(),
+            original_chat_end_offset: self.chat_end_offset,
             query,
         });
         self.error = None;
@@ -52,8 +57,7 @@ impl App {
             KeyEvent {
                 code: KeyCode::Esc, ..
             } => {
-                self.search_prompt = None;
-                self.status = "Closed search".to_string();
+                self.cancel_search_prompt(size);
             }
             _ => {
                 let options = TextInputOptions {
@@ -134,6 +138,33 @@ impl App {
     fn submit_search_prompt(&mut self, size: Rect) {
         self.apply_search_prompt(size);
         self.search_prompt = None;
+    }
+
+    fn cancel_search_prompt(&mut self, size: Rect) {
+        let Some(prompt) = self.search_prompt.take() else {
+            return;
+        };
+
+        match prompt.target {
+            SearchTarget::Workspaces => {
+                let previous = self.selected_workspace_id;
+                self.filter = prompt.original_query;
+                self.sync_workspace_selection_to_filter();
+                if self.selected_workspace_id != previous {
+                    self.load_selected_workspace(size);
+                }
+            }
+            SearchTarget::Sessions => {
+                self.session_filter = prompt.original_query;
+                self.sync_session_selection_to_filter();
+            }
+            SearchTarget::Conversation => {
+                self.conversation_search = prompt.original_conversation_search;
+                self.chat_end_offset = prompt.original_chat_end_offset;
+            }
+        }
+
+        self.status = "Closed search".to_string();
     }
 
     fn apply_search_prompt(&mut self, size: Rect) {
@@ -399,32 +430,73 @@ fn line_text(line: &Line<'_>) -> String {
 }
 
 fn matching_line_indexes(lines: &[Line<'_>], query: &str) -> Vec<usize> {
-    let query = query.trim().to_lowercase();
-    if query.is_empty() {
-        return Vec::new();
-    }
     lines
         .iter()
         .enumerate()
         .filter_map(|(index, line)| {
-            let text = line_text(line).to_lowercase();
-            text.contains(&query).then_some(index)
+            (!find_case_insensitive_match_ranges(&line_text(line), query).is_empty()).then_some(index)
         })
         .collect()
 }
 
 pub(crate) fn highlight_line_matches(line: &Line<'_>, query: &str) -> Line<'static> {
+    let matches = find_case_insensitive_match_ranges(&line_text(line), query);
+    if matches.is_empty() {
+        return Line::from(
+            line.spans
+                .iter()
+                .map(|span| Span::styled(span.content.to_string(), span.style))
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    let highlight_style = Style::default()
+        .bg(Color::Rgb(64, 56, 0))
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
     let mut spans = Vec::new();
+    let mut line_offset = 0;
+    let mut match_index = 0;
     for span in &line.spans {
-        spans.extend(highlight_text_span(
-            span.content.as_ref(),
-            span.style,
-            query,
-            Style::default()
-                .bg(Color::Rgb(64, 56, 0))
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ));
+        let text = span.content.as_ref();
+        let span_start = line_offset;
+        let span_end = span_start + text.len();
+        let mut local_cursor = 0;
+
+        while let Some(&(match_start, match_end)) = matches.get(match_index) {
+            if match_end <= span_start {
+                match_index += 1;
+                continue;
+            }
+            if match_start >= span_end {
+                break;
+            }
+
+            let overlap_start = match_start.max(span_start) - span_start;
+            let overlap_end = match_end.min(span_end) - span_start;
+            if local_cursor < overlap_start {
+                spans.push(Span::styled(
+                    text[local_cursor..overlap_start].to_string(),
+                    span.style,
+                ));
+            }
+            spans.push(Span::styled(
+                text[overlap_start..overlap_end].to_string(),
+                span.style.patch(highlight_style),
+            ));
+            local_cursor = overlap_end;
+
+            if match_end <= span_end {
+                match_index += 1;
+            } else {
+                break;
+            }
+        }
+
+        if local_cursor < text.len() {
+            spans.push(Span::styled(text[local_cursor..].to_string(), span.style));
+        }
+        line_offset = span_end;
     }
     Line::from(spans)
 }
@@ -464,31 +536,38 @@ fn find_case_insensitive_match_ranges(text: &str, query: &str) -> Vec<(usize, us
         return Vec::new();
     }
 
-    let text_chars = text.char_indices().collect::<Vec<_>>();
-    let lowered_text = text
-        .chars()
-        .map(|ch| ch.to_ascii_lowercase())
-        .collect::<Vec<_>>();
-    let lowered_query = query
-        .chars()
-        .map(|ch| ch.to_ascii_lowercase())
-        .collect::<Vec<_>>();
-    if lowered_query.is_empty() || lowered_query.len() > lowered_text.len() {
+    let lowered_query = query.to_lowercase();
+    if lowered_query.is_empty() {
         return Vec::new();
     }
 
+    let text_chars = text.char_indices().collect::<Vec<_>>();
     let mut matches = Vec::new();
     let mut index = 0;
-    while index + lowered_query.len() <= lowered_text.len() {
-        if lowered_text[index..index + lowered_query.len()] == lowered_query[..] {
+    while index < text_chars.len() {
+        let mut lowered_window = String::new();
+        let mut matched_end = None;
+
+        for end_index in index..text_chars.len() {
+            lowered_window.push_str(&text_chars[end_index].1.to_lowercase().to_string());
+            if lowered_window == lowered_query {
+                matched_end = Some(end_index + 1);
+                break;
+            }
+            if !lowered_query.starts_with(&lowered_window) {
+                break;
+            }
+        }
+
+        if let Some(end_index) = matched_end {
             let start = text_chars[index].0;
-            let end = if index + lowered_query.len() < text_chars.len() {
-                text_chars[index + lowered_query.len()].0
+            let end = if end_index < text_chars.len() {
+                text_chars[end_index].0
             } else {
                 text.len()
             };
             matches.push((start, end));
-            index += lowered_query.len();
+            index = end_index;
         } else {
             index += 1;
         }
@@ -498,10 +577,20 @@ fn find_case_insensitive_match_ranges(text: &str, query: &str) -> Vec<(usize, us
 
 #[cfg(test)]
 mod tests {
-    use ratatui::{style::Style, text::Line};
+    use ratatui::{
+        layout::Rect,
+        style::{Color, Style},
+        text::{Line, Span},
+    };
 
     use super::{
-        find_case_insensitive_match_ranges, highlight_text_span, line_text, matching_line_indexes,
+        find_case_insensitive_match_ranges, highlight_line_matches, highlight_text_span, line_text,
+        matching_line_indexes,
+    };
+    use crate::{
+        api::Api,
+        app::App,
+        model::Focus,
     };
 
     #[test]
@@ -530,11 +619,54 @@ mod tests {
     }
 
     #[test]
+    fn find_case_insensitive_match_ranges_handles_unicode_case_folding() {
+        assert_eq!(
+            find_case_insensitive_match_ranges("Über Café", "über"),
+            vec![(0, "Über".len())]
+        );
+    }
+
+    #[test]
     fn highlight_text_span_preserves_unmatched_segments() {
         let spans = highlight_text_span("alpha beta", Style::default(), "be", Style::default());
         assert_eq!(spans.len(), 3);
         assert_eq!(spans[0].content.as_ref(), "alpha ");
         assert_eq!(spans[1].content.as_ref(), "be");
         assert_eq!(spans[2].content.as_ref(), "ta");
+    }
+
+    #[test]
+    fn highlight_line_matches_across_span_boundaries() {
+        let line = Line::from(vec![
+            Span::styled("foo", Style::default().fg(Color::Blue)),
+            Span::styled(" bar", Style::default().fg(Color::Green)),
+        ]);
+
+        let highlighted = highlight_line_matches(&line, "foo bar");
+
+        assert_eq!(line_text(&highlighted), "foo bar");
+        assert_eq!(highlighted.spans.len(), 2);
+        assert_eq!(highlighted.spans[0].style.bg, Some(Color::Rgb(64, 56, 0)));
+        assert_eq!(highlighted.spans[1].style.bg, Some(Color::Rgb(64, 56, 0)));
+    }
+
+    #[tokio::test]
+    async fn canceling_workspace_search_restores_original_filter() {
+        let mut app = App::new(Api::new("http://127.0.0.1:9".to_string()).unwrap());
+        app.focus = Focus::WorkspaceList;
+        app.filter = "orig".to_string();
+
+        app.open_search(Rect::new(0, 0, 120, 40));
+        if let Some(prompt) = app.search_prompt.as_mut() {
+            prompt.query = "changed".to_string();
+            prompt.cursor = prompt.query.len();
+        }
+        app.apply_search_prompt(Rect::new(0, 0, 120, 40));
+        assert_eq!(app.filter, "changed");
+
+        app.cancel_search_prompt(Rect::new(0, 0, 120, 40));
+
+        assert_eq!(app.filter, "orig");
+        assert!(app.search_prompt.is_none());
     }
 }

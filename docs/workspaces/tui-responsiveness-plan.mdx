@@ -1,0 +1,247 @@
+---
+title: TUI Responsiveness Plan
+description: Plan to reduce blocking work, avoid throwaway loads, and keep the TUI responsive during navigation, streaming, and rendering.
+---
+
+# TUI Responsiveness Plan
+
+This plan focuses on the TUI paths that most directly affect perceived responsiveness:
+
+- input handling
+- workspace and session selection
+- conversation rendering
+- streaming updates
+- redraw behaviour
+
+The goal is simple: the TUI should react to input immediately, do no unnecessary work during rapid navigation, and stay smooth as logs, conversation entries, and terminal output grow.
+
+## Desired outcomes
+
+You should optimise for these outcomes first:
+
+- Keypresses never wait on network round-trips.
+- Rapid workspace changes trigger at most one load for the final selection.
+- Redraws happen only when visible state changes.
+- Large conversations, logs, and diffs do not force full recomputation on every frame.
+- Background loads can be cancelled, ignored, or coalesced when they become stale.
+
+## Guiding principles
+
+- Prefer immediate UI state updates and delayed data loading over synchronous fetches.
+- Separate highlighted state from loaded state when the user is navigating quickly.
+- Cache by stable inputs such as transcript revision and width.
+- Invalidate narrowly instead of rebuilding entire panes.
+- Instrument before and after each phase so you can verify the gain.
+
+## Phase 1: Remove blocking work from the UI loop
+
+Move all user-triggered network work off the main event loop.
+
+### Scope
+
+- prompt submission
+- queue and cancel queue
+- pin and archive actions
+- dev server and cleanup actions
+- open editor requests
+
+### Implementation
+
+1. Spawn background tasks for each network action instead of awaiting them from key handlers.
+2. Emit completion and failure results back through `NetEvent`.
+3. Keep temporary optimistic UI state in the app while the task is in flight.
+4. Add a small in-flight guard per action where duplicate requests would be harmful.
+
+### Expected result
+
+The UI keeps accepting input and drawing while the backend request is running.
+
+## Phase 2: Debounce workspace loads after selection changes
+
+This is the highest-value fix for throwaway work during navigation.
+
+### Recommendation
+
+Add a debounce before `load_selected_workspace` runs.
+
+- Recommended delay: `100-200ms`
+- Update the list highlight immediately.
+- Delay the actual workspace load until the selection is stable.
+- Cancel the pending load if the user moves again before the debounce window closes.
+
+### State model
+
+Split the current selection into two concepts:
+
+- `highlighted_workspace_id`: what the cursor is currently on
+- `loaded_workspace_id`: what the main and detail panes are currently showing
+
+### Implementation
+
+1. Update `highlighted_workspace_id` on every move.
+2. Start or refresh a debounce timer.
+3. When the timer fires, compare the current highlighted workspace to the last loaded workspace.
+4. Only then reset pane state, replace subscriptions, and begin workspace data loading.
+
+### Expected result
+
+Quick `j` and `k` navigation does not spawn a burst of HTTP requests and websocket reconnects that are immediately discarded.
+
+## Phase 3: Make loads cancellable and stale-safe
+
+Debounce alone is not enough. You also need stale response protection.
+
+### Implementation
+
+1. Assign a generation or request id to each workspace load.
+2. Attach that id to all follow-up tasks and completion events.
+3. Ignore any event whose generation no longer matches the current loaded workspace.
+4. Replace fire-and-forget groups of loads with a single orchestrator task where practical.
+
+### Expected result
+
+Late responses from old selections stop consuming UI work and stop overwriting newer state.
+
+## Phase 4: Redraw only when something visible changes
+
+The TUI should not redraw at a fixed cadence unless there is a clear reason.
+
+### Implementation
+
+1. Introduce a `dirty` flag or equivalent redraw trigger.
+2. Mark the UI dirty on:
+   - key events that change visible state
+   - network events that change visible state
+   - timer-driven draft or notes flushes that change status
+3. Keep a fallback tick only for behaviour that truly needs it, such as cursor blink.
+4. Avoid pane recomputation during idle ticks.
+
+### Expected result
+
+Idle CPU usage drops, and heavy panes stop rebuilding repeatedly when nothing changed.
+
+## Phase 5: Reduce conversation rendering cost
+
+Conversation rendering is likely to dominate CPU and allocation cost as transcripts grow.
+
+### Implementation
+
+1. Cache rendered conversation output by:
+   - transcript revision
+   - wrap width
+   - search query where relevant
+2. Stop rebuilding canonical entries unless process data or optimistic entries changed.
+3. Replace character-by-character wrapping with span-aware or word-aware wrapping.
+4. Avoid cloning visible line slices on every render when a borrowed view will do.
+5. Invalidate only the affected portion when new entries append to the end.
+
+### Expected result
+
+Large conversations scroll and update smoothly without full transcript recomputation on each frame.
+
+## Phase 6: Cache expensive non-chat panes
+
+The same principle applies outside conversation rendering.
+
+### Targets
+
+- logs pane line generation
+- diff text generation
+- terminal visible row extraction
+- workspace and session list row construction where repeated allocation is measurable
+
+### Implementation
+
+1. Cache renderable lines or text per pane.
+2. Rebuild only when source data or width changes.
+3. Treat terminal resize as an explicit invalidation boundary.
+4. Keep list selection movement independent from list content rebuilding.
+
+### Expected result
+
+Switching panes or idling on a pane no longer forces full recomputation of stable content.
+
+## Phase 7: Reduce stream materialisation overhead
+
+The current websocket patch flow should avoid re-deserialising entire state snapshots when possible.
+
+### Implementation
+
+1. Measure how much time is spent in patch apply and deserialisation.
+2. Replace full-state `Value` cloning and typed reparse with more incremental typed updates where feasible.
+3. If a full typed snapshot is still required, do it in a background task and emit a compact event to the UI.
+4. Prefer append-oriented updates for logs and conversation when the stream semantics allow it.
+
+### Expected result
+
+Streaming updates remain cheap even when the underlying state becomes large.
+
+## Phase 8: Stabilise conversation bootstrap and backfill
+
+History loading should not restart from scratch whenever process metadata shifts.
+
+### Implementation
+
+1. Distinguish between:
+   - process order changed
+   - process content changed
+   - active process changed
+2. Only restart history bootstrap when the process set materially changed.
+3. Preserve useful in-flight results where possible.
+4. Backfill older history at lower priority than rendering recent content.
+
+### Expected result
+
+The conversation pane shows recent context quickly and avoids repeated bootstrap churn.
+
+## Instrumentation and verification
+
+Add lightweight timing and counters before or alongside the changes.
+
+### Metrics
+
+- keypress-to-render latency
+- number of workspace loads started
+- number of workspace loads cancelled or ignored as stale
+- draw duration by pane
+- conversation cache rebuild time
+- diff generation time
+- logs render time
+- stream patch apply and decode time
+
+### Verification
+
+You should verify these scenarios manually:
+
+1. Hold `j` or `k` in the workspace list for several seconds.
+2. Switch rapidly between sessions in a busy workspace.
+3. Scroll through a long conversation.
+4. Leave the TUI idle on chat, logs, and terminal panes.
+5. Send a prompt while the backend is slow.
+
+## Suggested implementation order
+
+1. Remove blocking network awaits from the UI loop.
+2. Add workspace selection debounce and split highlighted versus loaded workspace state.
+3. Add stale response protection and cancellable load orchestration.
+4. Switch to dirty-driven redraws.
+5. Add conversation render caching and cheaper wrapping.
+6. Cache logs, diffs, and terminal pane output.
+7. Optimise stream materialisation and history bootstrap behaviour.
+
+## Risks and trade-offs
+
+- Debouncing workspace loads adds a small delay before data refresh, but the immediate highlight change keeps navigation feeling fast.
+- Split highlighted versus loaded workspace state increases state complexity, but it cleanly separates cursor movement from data work.
+- More caching reduces CPU cost, but cache invalidation must stay narrow and correct.
+- Moving network work off the UI loop improves responsiveness, but you need clearer in-flight and error states.
+
+## Success criteria
+
+Treat the plan as successful when:
+
+- the UI never freezes during backend requests
+- fast workspace navigation produces little or no throwaway backend work
+- idle redraw cost is negligible
+- large conversations and logs remain smooth to scroll
+- stale data does not overwrite the latest selected view
