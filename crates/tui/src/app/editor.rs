@@ -902,4 +902,13 @@ mod tests {
         assert_eq!(rename.name, "🙂z");
         assert!(rename.name.is_char_boundary(rename.cursor));
     }
+
+    #[test]
+    fn notes_pane_uses_notes_editor_title() {
+        let mut app = test_app();
+        app.selected_pane = Pane::Notes;
+        app.editor_mode = ComposerEditorMode::Vim(VimMode::Normal);
+
+        assert_eq!(app.editor_panel_title(), "Notes Editor [vim normal]");
+    }
 }

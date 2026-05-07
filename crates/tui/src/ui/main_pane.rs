@@ -26,6 +26,11 @@ impl App {
                     Constraint::Length(composer_height),
                 ])
                 .split(area)
+        } else if self.selected_pane == Pane::Notes {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(3), Constraint::Min(10)])
+                .split(area)
         } else {
             Layout::default()
                 .direction(Direction::Vertical)
@@ -67,8 +72,8 @@ impl App {
             Pane::Notes => self.render_notes(frame, chunks[1]),
         }
 
-        let composer_title = self.editor_panel_title();
         if self.selected_pane == Pane::Chat {
+            let composer_title = self.editor_panel_title();
             frame.render_widget(
                 Paragraph::new(Text::from(vec![
                     self.composer_selection_line(),
@@ -84,7 +89,8 @@ impl App {
                     .wrap(Wrap { trim: false }),
                 chunks[3],
             );
-        } else {
+        } else if self.selected_pane != Pane::Notes {
+            let composer_title = self.editor_panel_title();
             frame.render_widget(
                 Paragraph::new(render_editor_buffer(
                     &self.bundle.notes,
