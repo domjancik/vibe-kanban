@@ -60,6 +60,13 @@ pub(crate) struct ActionInFlightState {
     pub(crate) open_editor: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ComposerHeightCache {
+    pub(crate) width: u16,
+    pub(crate) revision: u64,
+    pub(crate) height: u16,
+}
+
 pub struct App {
     pub(crate) api: Api,
     pub(crate) rx: UnboundedReceiver<NetEvent>,
@@ -90,6 +97,7 @@ pub struct App {
     pub(crate) vim_pending_operator: Option<VimOperator>,
     pub(crate) composer_dirty: bool,
     pub(crate) composer_edit_revision: u64,
+    pub(crate) composer_height_cache: Option<ComposerHeightCache>,
     pub(crate) draft_save_in_flight: bool,
     pub(crate) composer_queue_conflict: bool,
     pub(crate) composer_scratch_id: Option<Uuid>,
@@ -158,6 +166,7 @@ impl App {
             vim_pending_operator: None,
             composer_dirty: false,
             composer_edit_revision: 0,
+            composer_height_cache: None,
             draft_save_in_flight: false,
             composer_queue_conflict: false,
             composer_scratch_id: None,

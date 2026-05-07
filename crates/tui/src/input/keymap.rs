@@ -59,9 +59,7 @@ pub fn map_app_key(
             code: KeyCode::Char('w'),
             modifiers,
             ..
-        } if modifiers == KeyModifiers::CONTROL => {
-            Some(AppIntent::ToggleMaximizedPanel)
-        }
+        } if modifiers == KeyModifiers::CONTROL => Some(AppIntent::ToggleMaximizedPanel),
         KeyEvent {
             code: KeyCode::Char('q'),
             ..
@@ -261,10 +259,7 @@ mod tests {
         );
         assert_eq!(
             map_app_key(
-                KeyEvent::new(
-                    KeyCode::Char('w'),
-                    KeyModifiers::CONTROL
-                ),
+                KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
                 false,
                 &Pane::Chat
             ),

@@ -388,7 +388,7 @@ impl App {
         Some(Line::from(spans))
     }
 
-    fn chat_search_metrics(&self, size: Rect) -> Option<(usize, usize)> {
+    fn chat_search_metrics(&mut self, size: Rect) -> Option<(usize, usize)> {
         if self.selected_pane != Pane::Chat {
             return None;
         }

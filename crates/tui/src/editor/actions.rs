@@ -62,18 +62,18 @@ pub fn apply_text_edit_action(
         TextEditAction::MoveRight => move_cursor_with(buffer, cursor, |buffer, cursor| {
             next_char_boundary(buffer, cursor)
         }),
-        TextEditAction::MoveUp => {
-            move_cursor_with(buffer, cursor, |buffer, cursor| move_cursor_vertical(buffer, cursor, -1))
-        }
-        TextEditAction::MoveDown => {
-            move_cursor_with(buffer, cursor, |buffer, cursor| move_cursor_vertical(buffer, cursor, 1))
-        }
-        TextEditAction::MoveLineStart => {
-            move_cursor_with(buffer, cursor, |buffer, cursor| line_start_index(buffer, cursor))
-        }
-        TextEditAction::MoveLineEnd => {
-            move_cursor_with(buffer, cursor, |buffer, cursor| line_end_index(buffer, cursor))
-        }
+        TextEditAction::MoveUp => move_cursor_with(buffer, cursor, |buffer, cursor| {
+            move_cursor_vertical(buffer, cursor, -1)
+        }),
+        TextEditAction::MoveDown => move_cursor_with(buffer, cursor, |buffer, cursor| {
+            move_cursor_vertical(buffer, cursor, 1)
+        }),
+        TextEditAction::MoveLineStart => move_cursor_with(buffer, cursor, |buffer, cursor| {
+            line_start_index(buffer, cursor)
+        }),
+        TextEditAction::MoveLineEnd => move_cursor_with(buffer, cursor, |buffer, cursor| {
+            line_end_index(buffer, cursor)
+        }),
     }
 }
 

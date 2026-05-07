@@ -29,6 +29,7 @@ impl App {
             .parser
             .set_size(terminal_size.1, terminal_size.0);
         self.composer.clear();
+        self.invalidate_composer_layout_cache();
         self.composer_cursor = 0;
         self.composer_dirty = false;
         self.draft_save_in_flight = false;

@@ -169,12 +169,11 @@ mod tests {
     };
     use uuid::Uuid;
 
-    use crate::model::{DiffChangeKind, LocalDiff, PatchType};
-
     use super::{
         diff_title, display_permission, display_variant, format_normalized_entry,
         format_patch_entry, format_relative_time, workspace_title,
     };
+    use crate::model::{DiffChangeKind, LocalDiff, PatchType};
 
     #[test]
     fn diff_and_patch_formatters_cover_primary_variants() {
@@ -261,10 +260,22 @@ mod tests {
     #[test]
     fn relative_and_display_helpers_return_expected_labels() {
         assert_eq!(format_relative_time(None), "never");
-        assert_eq!(format_relative_time(Some(Utc::now() - Duration::seconds(5))), "5s ago");
-        assert_eq!(format_relative_time(Some(Utc::now() - Duration::minutes(2))), "2m ago");
-        assert_eq!(format_relative_time(Some(Utc::now() - Duration::hours(3))), "3h ago");
-        assert_eq!(format_relative_time(Some(Utc::now() - Duration::days(4))), "4d ago");
+        assert_eq!(
+            format_relative_time(Some(Utc::now() - Duration::seconds(5))),
+            "5s ago"
+        );
+        assert_eq!(
+            format_relative_time(Some(Utc::now() - Duration::minutes(2))),
+            "2m ago"
+        );
+        assert_eq!(
+            format_relative_time(Some(Utc::now() - Duration::hours(3))),
+            "3h ago"
+        );
+        assert_eq!(
+            format_relative_time(Some(Utc::now() - Duration::days(4))),
+            "4d ago"
+        );
 
         let workspace = db::models::workspace::Workspace {
             id: Uuid::new_v4(),

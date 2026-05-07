@@ -428,6 +428,7 @@ impl App {
     fn mark_editor_dirty(&mut self, target: EditorTarget) {
         match target {
             EditorTarget::Composer => {
+                self.invalidate_composer_layout_cache();
                 self.composer_dirty = true;
                 self.last_composer_edit = Some(std::time::Instant::now());
                 self.composer_edit_revision = self.composer_edit_revision.saturating_add(1);
@@ -439,6 +440,10 @@ impl App {
             }
             EditorTarget::SessionRename => {}
         }
+    }
+
+    pub(crate) fn invalidate_composer_layout_cache(&mut self) {
+        self.composer_height_cache = None;
     }
 
     pub(crate) fn editor_mode_label(&self) -> &'static str {
@@ -597,9 +602,11 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use crossterm::event::{KeyCode, KeyEvent};
     use db::models::session::Session;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-    use tokio::sync::mpsc::unbounded_channel;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        sync::mpsc::unbounded_channel,
+    };
     use uuid::Uuid;
 
     use super::EditorTarget;
@@ -645,6 +652,7 @@ mod tests {
             vim_pending_operator: None,
             composer_dirty: false,
             composer_edit_revision: 0,
+            composer_height_cache: None,
             draft_save_in_flight: false,
             composer_queue_conflict: false,
             composer_scratch_id: None,
@@ -806,10 +814,7 @@ mod tests {
         app.handle_session_rename_key(KeyEvent::from(KeyCode::Enter))
             .await;
         assert!(app.session_rename.is_none());
-        assert_eq!(
-            app.bundle.sessions[0].name.as_deref(),
-            Some("renamed")
-        );
+        assert_eq!(app.bundle.sessions[0].name.as_deref(), Some("renamed"));
 
         app.session_rename = Some(SessionRenameState {
             session_id,
@@ -846,7 +851,9 @@ mod tests {
             EditorTarget::SessionRename,
         );
         assert_eq!(
-            app.session_rename.as_ref().map(|rename| rename.name.as_str()),
+            app.session_rename
+                .as_ref()
+                .map(|rename| rename.name.as_str()),
             Some("rename ")
         );
     }
@@ -876,11 +883,12 @@ mod tests {
         assert_eq!(app.bundle.notes, "🙂z");
         assert!(app.bundle.notes.is_char_boundary(app.notes_cursor));
 
-        let _ = app.handle_vim_normal_key(
-            KeyEvent::from(KeyCode::Char('x')),
-            EditorTarget::SessionRename,
-        )
-        .await;
+        let _ = app
+            .handle_vim_normal_key(
+                KeyEvent::from(KeyCode::Char('x')),
+                EditorTarget::SessionRename,
+            )
+            .await;
         let rename = app.session_rename.as_ref().unwrap();
         assert_eq!(rename.name, "🙂z");
         assert!(rename.name.is_char_boundary(rename.cursor));

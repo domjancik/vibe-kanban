@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::{
-    app::App,
+    app::{App, state::ComposerHeightCache},
     editor::render_editor_buffer,
     model::{Focus, Pane},
     ui::panel_block,
@@ -99,7 +99,23 @@ impl App {
         }
     }
 
-    pub(crate) fn chat_composer_height(&self, area_width: u16) -> u16 {
+    pub(crate) fn chat_composer_height(&mut self, area_width: u16) -> u16 {
+        if let Some(cache) = self.composer_height_cache
+            && cache.width == area_width
+            && cache.revision == self.composer_edit_revision
+        {
+            return cache.height;
+        }
+        let height = self.compute_chat_composer_height(area_width);
+        self.composer_height_cache = Some(ComposerHeightCache {
+            width: area_width,
+            revision: self.composer_edit_revision,
+            height,
+        });
+        height
+    }
+
+    fn compute_chat_composer_height(&self, area_width: u16) -> u16 {
         let inner_width = area_width.saturating_sub(2).max(12) as usize;
         let wrapped_lines = if self.composer.is_empty() {
             1

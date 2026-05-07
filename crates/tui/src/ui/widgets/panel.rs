@@ -22,10 +22,10 @@ pub fn panel_block<'a>(title: &'a str, active: bool) -> Block<'a> {
 #[cfg(test)]
 mod tests {
     use ratatui::{
+        Terminal,
         backend::TestBackend,
         style::Color,
         widgets::{Paragraph, Widget},
-        Terminal,
     };
 
     use super::panel_block;
@@ -41,7 +41,10 @@ mod tests {
                     .render(frame.area(), frame.buffer_mut());
             })
             .unwrap();
-        assert_eq!(terminal.backend().buffer().cell((0, 0)).unwrap().fg, Color::Cyan);
+        assert_eq!(
+            terminal.backend().buffer().cell((0, 0)).unwrap().fg,
+            Color::Cyan
+        );
 
         terminal
             .draw(|frame| {

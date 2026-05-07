@@ -196,6 +196,7 @@ impl App {
                         .as_ref()
                         .map(|draft| draft.message.trim_end_matches('\n').to_string())
                         .unwrap_or_default();
+                    self.invalidate_composer_layout_cache();
                     self.composer_cursor = self.composer.len();
                     self.composer_scratch_loaded = true;
                     self.composer_dirty = false;
@@ -311,6 +312,7 @@ impl App {
                     self.mark_optimistic_failed(local_id);
                 }
                 self.composer = restored_message;
+                self.invalidate_composer_layout_cache();
                 self.composer_cursor = self.composer.len();
                 self.composer_dirty = true;
                 self.last_composer_edit = Some(std::time::Instant::now());
@@ -324,6 +326,7 @@ impl App {
                     self.queue_status = status;
                     self.queue_pending = false;
                     self.composer.clear();
+                    self.invalidate_composer_layout_cache();
                     self.composer_cursor = 0;
                     self.composer_dirty = false;
                     self.last_composer_edit = None;
@@ -353,6 +356,7 @@ impl App {
                             .map(|config| config.executor != queued.executor_config.executor)
                             .unwrap_or(true);
                         self.composer = queued.message;
+                        self.invalidate_composer_layout_cache();
                         self.composer_cursor = self.composer.len();
                         self.composer_config = Some(queued.executor_config);
                         self.composer_dirty = true;
@@ -522,11 +526,11 @@ mod tests {
         session::Session,
     };
     use executors::{
-        logs::{NormalizedEntry, NormalizedEntryType},
         actions::{
             ExecutorAction, ExecutorActionType,
             script::{ScriptContext, ScriptRequest, ScriptRequestLanguage},
         },
+        logs::{NormalizedEntry, NormalizedEntryType},
         profile::{ExecutorConfig, ExecutorConfigs},
     };
     use ratatui::layout::Rect;
@@ -578,6 +582,7 @@ mod tests {
             vim_pending_operator: None,
             composer_dirty: false,
             composer_edit_revision: 0,
+            composer_height_cache: None,
             draft_save_in_flight: false,
             composer_queue_conflict: false,
             composer_scratch_id: None,
@@ -791,7 +796,9 @@ mod tests {
         let mut app = test_app();
         app.bundle.selected_session_id = Some(session_id);
         app.bundle.selected_process_id = Some(old_process.id);
-        app.bundle.process_map.insert(old_process.id, old_process.clone());
+        app.bundle
+            .process_map
+            .insert(old_process.id, old_process.clone());
         app.bundle.log_entries = vec![PatchType::Stdout("stale".to_string())];
 
         app.handle_net_event(
@@ -862,7 +869,9 @@ mod tests {
         assert_eq!(app.bundle.log_entries.len(), 1);
         assert_eq!(app.chat_end_offset, 0);
         assert_eq!(
-            app.conversation_process_entries.get(&selected_process).map(Vec::len),
+            app.conversation_process_entries
+                .get(&selected_process)
+                .map(Vec::len),
             Some(1)
         );
 
@@ -905,7 +914,9 @@ mod tests {
         .await;
 
         assert_eq!(
-            app.conversation_process_entries.get(&process_id).map(Vec::len),
+            app.conversation_process_entries
+                .get(&process_id)
+                .map(Vec::len),
             Some(1)
         );
         assert_eq!(app.chat_end_offset, 0);

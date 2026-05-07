@@ -445,6 +445,7 @@ mod tests {
             vim_pending_operator: None,
             composer_dirty: false,
             composer_edit_revision: 0,
+            composer_height_cache: None,
             draft_save_in_flight: false,
             composer_queue_conflict: false,
             composer_scratch_id: None,

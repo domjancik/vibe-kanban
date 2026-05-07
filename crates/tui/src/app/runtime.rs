@@ -43,6 +43,7 @@ impl App {
             self.current_session().cloned()
         };
         self.composer.clear();
+        self.invalidate_composer_layout_cache();
         self.composer_cursor = 0;
         self.composer_dirty = false;
         self.last_composer_edit = None;

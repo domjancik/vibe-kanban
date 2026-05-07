@@ -50,7 +50,7 @@ pub fn render_vertical_scrollbar(
 
 #[cfg(test)]
 mod tests {
-    use ratatui::{backend::TestBackend, layout::Rect, Terminal};
+    use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 
     use super::render_vertical_scrollbar;
 
