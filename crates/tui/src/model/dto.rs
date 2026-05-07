@@ -26,7 +26,7 @@ pub struct WorkspaceStreamState {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct WorkspaceSummary {
     pub workspace_id: Uuid,
     pub latest_session_id: Option<Uuid>,
@@ -218,7 +218,7 @@ pub struct PullRequestInfo {
     pub pr_url: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MergeStatus {
     Open,

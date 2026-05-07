@@ -37,10 +37,17 @@ impl App {
                 self.ensure_workspace_selected(size);
             }
             NetEvent::Summaries(data) => {
+                let mut changed = false;
                 for summary in data {
-                    self.summaries.insert(summary.workspace_id, summary);
+                    let workspace_id = summary.workspace_id;
+                    if self.summaries.get(&workspace_id) != Some(&summary) {
+                        self.summaries.insert(workspace_id, summary);
+                        changed = true;
+                    }
                 }
-                self.mark_workspace_list_dirty();
+                if changed {
+                    self.mark_workspace_list_dirty();
+                }
             }
             NetEvent::WorkspaceLoaded(workspace) => {
                 self.bundle.workspace = Some(workspace);
@@ -1024,5 +1031,69 @@ mod tests {
         .await;
         assert!(app.error.is_none());
         assert!(!app.notes_save_in_flight);
+    }
+
+    #[tokio::test]
+    async fn identical_summaries_do_not_invalidate_workspace_list() {
+        use crate::model::WorkspaceSummary;
+
+        let workspace_id = Uuid::new_v4();
+        let summary = WorkspaceSummary {
+            workspace_id,
+            latest_session_id: Some(Uuid::new_v4()),
+            has_pending_approval: true,
+            files_changed: Some(3),
+            lines_added: Some(10),
+            lines_removed: Some(4),
+            latest_process_completed_at: Some(Utc.timestamp_opt(5, 0).unwrap()),
+            latest_process_status: Some(ExecutionProcessStatus::Completed),
+            has_running_dev_server: false,
+            has_unseen_turns: true,
+            pr_status: None,
+            pr_number: None,
+            pr_url: None,
+        };
+        let mut app = test_app();
+        app.summaries.insert(workspace_id, summary.clone());
+        app.workspace_list_revision = 7;
+
+        app.handle_net_event(NetEvent::Summaries(vec![summary]), Rect::new(0, 0, 80, 24))
+            .await;
+
+        assert_eq!(app.workspace_list_revision, 7);
+    }
+
+    #[tokio::test]
+    async fn changed_summaries_invalidate_workspace_list() {
+        use crate::model::WorkspaceSummary;
+
+        let workspace_id = Uuid::new_v4();
+        let existing = WorkspaceSummary {
+            workspace_id,
+            latest_session_id: Some(Uuid::new_v4()),
+            has_pending_approval: false,
+            files_changed: Some(1),
+            lines_added: Some(2),
+            lines_removed: Some(1),
+            latest_process_completed_at: Some(Utc.timestamp_opt(5, 0).unwrap()),
+            latest_process_status: Some(ExecutionProcessStatus::Completed),
+            has_running_dev_server: false,
+            has_unseen_turns: false,
+            pr_status: None,
+            pr_number: None,
+            pr_url: None,
+        };
+        let updated = WorkspaceSummary {
+            has_pending_approval: true,
+            ..existing.clone()
+        };
+        let mut app = test_app();
+        app.summaries.insert(workspace_id, existing);
+        app.workspace_list_revision = 7;
+
+        app.handle_net_event(NetEvent::Summaries(vec![updated]), Rect::new(0, 0, 80, 24))
+            .await;
+
+        assert_eq!(app.workspace_list_revision, 8);
     }
 }

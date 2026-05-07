@@ -255,6 +255,33 @@ This should be treated as an explicit part of phase 4, not just an incidental ou
 
 History bootstrap and backfill can progress with fewer, larger paints instead of many rapid full-screen redraws.
 
+### Phase 4A: P2-SHARED-LOOP-COALESCING
+
+Status: in progress
+
+This is the next highest-ROI improvement for broad UI smoothness because it affects the composer, terminal, session rename, and other interactions that share the same event loop.
+
+#### Scope
+
+- prioritize input over background events
+- coalesce bursty `NetEvent` redraw pressure
+- avoid repainting for provisional or unchanged background state
+- keep background streams responsive without letting them steal typing frames
+
+#### Implementation
+
+1. Make the main loop prefer key input over background work when both are ready.
+2. When the user is actively typing, batch background-driven redraws into a short frame window instead of repainting immediately on every event.
+3. Remove provisional updates that create blank intermediate UI state before the real stream snapshot arrives.
+4. Avoid invalidating panes for unchanged poll results, especially summary refreshes that can arrive on a fixed cadence.
+
+#### Expected result
+
+- typing remains responsive while summaries, logs, or history events arrive
+- terminal input mode and session rename feel less jittery under background activity
+- bursty streams collapse into fewer, more useful paints
+- periodic pollers stop causing avoidable sidebar churn when nothing visible changed
+
 ## Phase 5: Reduce conversation rendering cost
 
 Conversation rendering is likely to dominate CPU and allocation cost as transcripts grow.
