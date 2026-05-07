@@ -26,7 +26,7 @@ impl App {
         for row in 0..screen.size().0 {
             let mut text = String::new();
             for col in 0..screen.size().1 {
-                if let Some(cell) = screen.cell(row + 1, col + 1) {
+                if let Some(cell) = screen.cell(row, col) {
                     text.push(cell.contents().chars().next().unwrap_or(' '));
                 }
             }
