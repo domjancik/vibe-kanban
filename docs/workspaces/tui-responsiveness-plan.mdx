@@ -89,6 +89,17 @@ Phase 1 improved the network side, but it is not sufficient to make typing in th
 
 Phase 1 should be treated as necessary but incomplete. It removes direct request blocking, but it does not solve the main typing-latency path.
 
+#### What phase 1 still misses from the original plan
+
+Phase 1 does not yet cover these planned areas:
+
+- workspace-load debounce after selection changes
+- stale-load cancellation or generation checks
+- dirty-driven redraws
+- event coalescing during bursty update periods
+- render-cost reductions in composer, chat, workspace, and detail panes
+- stream materialisation and history-bootstrap efficiency improvements
+
 #### What should follow phase 1
 
 The next work should focus on local UI cost:
@@ -166,6 +177,23 @@ The TUI should not redraw at a fixed cadence unless there is a clear reason.
 
 Idle CPU usage drops, and heavy panes stop rebuilding repeatedly when nothing changed.
 
+### Additional requirement: coalesce bursty event-driven redraws
+
+The app currently redraws after each received event because the main loop renders once per iteration before blocking again. During chat-history loading or other bursty stream activity, that means a sequence of many small updates can trigger many full redraws in quick succession.
+
+This should be treated as an explicit part of phase 4, not just an incidental outcome.
+
+#### Implementation
+
+1. Mark state dirty when an event arrives, but do not require an immediate full redraw for every single event.
+2. Coalesce redraw requests inside a short frame window, for example `16-33ms`.
+3. Prefer batching history and stream-driven UI updates so multiple `NetEvent`s can collapse into one frame.
+4. Keep completion-state events visible promptly, but avoid repainting after every incremental history fragment.
+
+#### Expected result
+
+History bootstrap and backfill can progress with fewer, larger paints instead of many rapid full-screen redraws.
+
 ## Phase 5: Reduce conversation rendering cost
 
 Conversation rendering is likely to dominate CPU and allocation cost as transcripts grow.
@@ -235,6 +263,7 @@ History loading should not restart from scratch whenever process metadata shifts
 2. Only restart history bootstrap when the process set materially changed.
 3. Preserve useful in-flight results where possible.
 4. Backfill older history at lower priority than rendering recent content.
+5. Batch or coalesce history-loaded UI updates so the renderer does not repaint for every single fragment.
 
 ### Expected result
 
