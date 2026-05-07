@@ -484,3 +484,226 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use executors::{
+        executor_discovery::ExecutorDiscoveredOptions,
+        executors::BaseCodingAgent,
+        model_selector::{AgentInfo, ModelInfo, ModelSelectorConfig, ReasoningOption},
+        profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfile},
+    };
+    use tokio::sync::mpsc::unbounded_channel;
+
+    use crate::{
+        api::{Api, WorkspaceSubscriptions},
+        app::{AgentPickerState, App},
+        editor::ComposerEditorMode,
+        model::{Focus, Pane, QueueStatus, WorkspaceBundle},
+    };
+
+    fn test_app() -> App {
+        let api = Api::new("http://127.0.0.1:9".to_string()).unwrap();
+        let (tx, rx) = unbounded_channel();
+        App {
+            api,
+            rx,
+            tx,
+            workspace_streams: Vec::new(),
+            summary_streams: Vec::new(),
+            subscriptions: WorkspaceSubscriptions::default(),
+            active_workspaces: HashMap::new(),
+            archived_workspaces: HashMap::new(),
+            summaries: HashMap::new(),
+            selected_workspace_id: None,
+            selected_pane: Pane::Chat,
+            focus: Focus::Main,
+            maximized_panel: false,
+            show_archived: false,
+            filter: String::new(),
+            session_filter: String::new(),
+            status: String::new(),
+            error: None,
+            bundle: WorkspaceBundle::default(),
+            executor_profiles: ExecutorConfigs {
+                executors: HashMap::new(),
+            },
+            default_executor_profile: None,
+            composer_config: None,
+            composer_options: None,
+            composer: String::new(),
+            composer_cursor: 0,
+            editor_mode: ComposerEditorMode::Standard,
+            vim_pending_operator: None,
+            composer_dirty: false,
+            composer_edit_revision: 0,
+            draft_save_in_flight: false,
+            composer_queue_conflict: false,
+            composer_scratch_id: None,
+            composer_scratch_loaded: false,
+            queue_session_id: None,
+            queue_status: QueueStatus::Empty,
+            queue_pending: false,
+            last_composer_edit: None,
+            chat_end_offset: 0,
+            chat_render_cache: None,
+            chat_render_cache_dirty: true,
+            last_chat_render_cache_build: None,
+            conversation_loader: None,
+            conversation_process_entries: HashMap::new(),
+            conversation_process_order: Vec::new(),
+            conversation_bootstrapping: false,
+            conversation_backfilling: false,
+            optimistic_entries: Vec::new(),
+            notes_cursor: 0,
+            notes_edit_revision: 0,
+            notes_save_in_flight: false,
+            agent_picker: None,
+            session_rename: None,
+            search_prompt: None,
+            conversation_search: None,
+            actions_in_flight: Default::default(),
+            creating_new_session: false,
+            should_quit: false,
+        }
+    }
+
+    fn sample_agent(executor: BaseCodingAgent) -> executors::executors::CodingAgent {
+        ExecutorConfigs::get_cached()
+            .executors
+            .get(&executor)
+            .and_then(|profile| profile.configurations.values().next())
+            .cloned()
+            .expect("executor profile available for tests")
+    }
+
+    #[test]
+    fn executor_and_variant_options_are_sorted_as_expected() {
+        let mut app = test_app();
+        let codex_agent = sample_agent(BaseCodingAgent::Codex);
+        let claude_agent = sample_agent(BaseCodingAgent::ClaudeCode);
+
+        app.executor_profiles.executors = HashMap::from([
+            (
+                BaseCodingAgent::Codex,
+                ExecutorProfile {
+                    recently_used_models: None,
+                    configurations: HashMap::from([
+                        ("PLAN".to_string(), codex_agent.clone()),
+                        ("DEFAULT".to_string(), codex_agent.clone()),
+                        ("ROUTER".to_string(), codex_agent),
+                    ]),
+                },
+            ),
+            (
+                BaseCodingAgent::ClaudeCode,
+                ExecutorProfile {
+                    recently_used_models: None,
+                    configurations: HashMap::from([("DEFAULT".to_string(), claude_agent)]),
+                },
+            ),
+        ]);
+
+        assert_eq!(
+            app.executor_options(),
+            vec![BaseCodingAgent::ClaudeCode, BaseCodingAgent::Codex]
+        );
+        assert_eq!(
+            app.variant_options(BaseCodingAgent::Codex),
+            vec![
+                "DEFAULT".to_string(),
+                "PLAN".to_string(),
+                "ROUTER".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn model_reasoning_and_agent_picker_helpers_follow_config_fallbacks() {
+        let mut app = test_app();
+        app.composer_config = Some(ExecutorConfig {
+            executor: BaseCodingAgent::Codex,
+            variant: None,
+            model_id: None,
+            agent_id: Some("review".to_string()),
+            reasoning_id: None,
+            permission_policy: None,
+        });
+        app.composer_options = Some(ExecutorDiscoveredOptions {
+            model_selector: ModelSelectorConfig {
+                providers: Vec::new(),
+                models: vec![ModelInfo {
+                    id: "gpt-5".to_string(),
+                    name: "GPT-5".to_string(),
+                    provider_id: Some("openai".to_string()),
+                    reasoning_options: vec![
+                        ReasoningOption {
+                            id: "low".to_string(),
+                            label: "Low".to_string(),
+                            is_default: false,
+                        },
+                        ReasoningOption {
+                            id: "high".to_string(),
+                            label: "High".to_string(),
+                            is_default: true,
+                        },
+                    ],
+                }],
+                default_model: Some("openai/gpt-5".to_string()),
+                agents: vec![
+                    AgentInfo {
+                        id: "review".to_string(),
+                        label: "Review".to_string(),
+                        description: Some("Review code".to_string()),
+                        is_default: false,
+                    },
+                    AgentInfo {
+                        id: "build".to_string(),
+                        label: "Builder".to_string(),
+                        description: Some("Build features".to_string()),
+                        is_default: true,
+                    },
+                ],
+                permissions: Vec::new(),
+            },
+            slash_commands: Vec::new(),
+            loading_models: false,
+            loading_agents: false,
+            loading_slash_commands: false,
+            error: None,
+        });
+
+        assert_eq!(app.selected_model_value().as_deref(), Some("openai/gpt-5"));
+        assert_eq!(app.selected_reasoning_label().as_deref(), Some("high"));
+
+        app.agent_picker = Some(AgentPickerState {
+            query: "rvw".to_string(),
+            selected: 0,
+        });
+        let filtered = app.filtered_agent_mode_options();
+        assert_eq!(filtered.len(), 2);
+        assert!(matches!(
+            filtered[1].as_ref().map(|agent| agent.id.as_str()),
+            Some("review")
+        ));
+
+        let selected = app.selected_agent_mode_index(&[
+            None,
+            Some(AgentInfo {
+                id: "build".to_string(),
+                label: "Builder".to_string(),
+                description: None,
+                is_default: true,
+            }),
+            Some(AgentInfo {
+                id: "review".to_string(),
+                label: "Review".to_string(),
+                description: None,
+                is_default: false,
+            }),
+        ]);
+        assert_eq!(selected, 2);
+    }
+}

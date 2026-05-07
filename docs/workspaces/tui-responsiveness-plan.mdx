@@ -58,6 +58,50 @@ Move all user-triggered network work off the main event loop.
 
 The UI keeps accepting input and drawing while the backend request is running.
 
+### Review
+
+Phase 1 improved the network side, but it is not sufficient to make typing in the composer feel fast.
+
+#### Current assessment
+
+- The obvious backend mutations were moved off the direct input path.
+- The remaining composer slowdown is still mostly local render and allocation work.
+- In practice, this means you can still feel lag while typing even when there is no meaningful backend activity.
+
+#### Remaining issues after phase 1
+
+1. Every keypress still causes a full UI redraw.
+   The app still redraws the full shell, including workspace and detail panes, instead of limiting work to the parts that changed.
+
+2. The composer edit path still does unnecessary buffer work.
+   The current implementation clones the full composer buffer during edit handling just to detect whether anything changed.
+
+3. Composer layout and rendering still rescan the whole draft on each keypress.
+   Height calculation walks the full draft, then composer rendering walks it again and allocates per-character spans.
+
+4. Side panes still rebuild during typing.
+   Workspace list and detail content are still regenerated even when the only change is the composer buffer.
+
+5. Idle churn still exists.
+   The fixed timer remains in place, so the app still wakes regularly even when nothing visible changed.
+
+#### Implication
+
+Phase 1 should be treated as necessary but incomplete. It removes direct request blocking, but it does not solve the main typing-latency path.
+
+#### What should follow phase 1
+
+The next work should focus on local UI cost:
+
+- stop cloning the whole composer buffer to detect edits
+- stop rescanning and rerendering the full composer on every keypress
+- avoid rebuilding workspace and detail panes when only composer state changed
+- move to dirty-driven redraws
+
+<Info>
+If typing still feels slow while the system is otherwise idle, the problem is more likely to be full-screen redraw and per-keystroke allocation cost than network latency.
+</Info>
+
 ## Phase 2: Debounce workspace loads after selection changes
 
 This is the highest-value fix for throwaway work during navigation.

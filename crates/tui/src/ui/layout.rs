@@ -36,3 +36,27 @@ pub fn terminal_content_area(area: Rect) -> Rect {
         horizontal: 1,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use ratatui::{layout::Rect, prelude::Size};
+
+    use super::{centered_rect, rect_from_size, terminal_content_area};
+
+    #[test]
+    fn centered_rect_returns_expected_inner_area() {
+        assert_eq!(
+            centered_rect(50, 40, Rect::new(0, 0, 100, 50)),
+            Rect::new(25, 15, 50, 20)
+        );
+    }
+
+    #[test]
+    fn size_and_terminal_helpers_preserve_expected_insets() {
+        assert_eq!(rect_from_size(Size::new(80, 24)), Rect::new(0, 0, 80, 24));
+        assert_eq!(
+            terminal_content_area(Rect::new(0, 0, 20, 10)),
+            Rect::new(2, 1, 16, 8)
+        );
+    }
+}

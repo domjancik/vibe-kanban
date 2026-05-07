@@ -47,3 +47,28 @@ pub fn render_vertical_scrollbar(
     };
     frame.render_widget(Paragraph::new(lines), scrollbar_area);
 }
+
+#[cfg(test)]
+mod tests {
+    use ratatui::{backend::TestBackend, layout::Rect, Terminal};
+
+    use super::render_vertical_scrollbar;
+
+    #[test]
+    fn scrollbar_renders_thumb_and_track_when_needed() {
+        let backend = TestBackend::new(4, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_vertical_scrollbar(frame, Rect::new(0, 0, 4, 8), 20, 5, 5);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let glyphs = (1..7)
+            .map(|y| buffer.cell((3, y)).unwrap().symbol())
+            .collect::<Vec<_>>();
+        assert!(glyphs.iter().any(|symbol| *symbol == "┃"));
+        assert!(glyphs.iter().any(|symbol| *symbol == "│"));
+    }
+}

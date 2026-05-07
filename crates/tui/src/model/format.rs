@@ -159,3 +159,133 @@ pub fn display_permission(policy: Option<&PermissionPolicy>) -> &str {
         None => "DEFAULT",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use chrono::{Duration, Utc};
+    use executors::logs::{
+        ActionType, AnsweredQuestion, NormalizedEntry, NormalizedEntryError, NormalizedEntryType,
+        TokenUsageInfo, ToolStatus,
+    };
+    use uuid::Uuid;
+
+    use crate::model::{DiffChangeKind, LocalDiff, PatchType};
+
+    use super::{
+        diff_title, display_permission, display_variant, format_normalized_entry,
+        format_patch_entry, format_relative_time, workspace_title,
+    };
+
+    #[test]
+    fn diff_and_patch_formatters_cover_primary_variants() {
+        let diff = LocalDiff {
+            change: DiffChangeKind::Renamed,
+            old_path: Some("old.rs".to_string()),
+            new_path: Some("new.rs".to_string()),
+            old_content: None,
+            new_content: None,
+            content_omitted: false,
+            additions: None,
+            deletions: None,
+            repo_id: Some(Uuid::new_v4()),
+        };
+        assert_eq!(diff_title(&diff), "new.rs");
+        assert_eq!(format_patch_entry(&PatchType::Diff(diff)), "renamed new.rs");
+        assert_eq!(
+            format_patch_entry(&PatchType::Stdout("out".to_string())),
+            "out".to_string()
+        );
+    }
+
+    #[test]
+    fn normalized_entry_formatting_handles_edge_cases() {
+        let empty = NormalizedEntry {
+            timestamp: None,
+            entry_type: NormalizedEntryType::AssistantMessage,
+            content: "   ".to_string(),
+            metadata: None,
+        };
+        assert_eq!(format_normalized_entry(&empty), "assistant");
+
+        let tokens = NormalizedEntry {
+            timestamp: None,
+            entry_type: NormalizedEntryType::TokenUsageInfo(TokenUsageInfo {
+                total_tokens: 12,
+                model_context_window: 100,
+            }),
+            content: String::new(),
+            metadata: None,
+        };
+        assert_eq!(format_normalized_entry(&tokens), "context: 12 / 100");
+
+        let error = NormalizedEntry {
+            timestamp: None,
+            entry_type: NormalizedEntryType::ErrorMessage {
+                error_type: NormalizedEntryError::SetupRequired,
+            },
+            content: "needs setup".to_string(),
+            metadata: None,
+        };
+        assert_eq!(format_normalized_entry(&error), "setup: needs setup");
+
+        let answers = NormalizedEntry {
+            timestamp: None,
+            entry_type: NormalizedEntryType::UserAnsweredQuestions {
+                answers: vec![AnsweredQuestion {
+                    question: "Deploy?".to_string(),
+                    answer: vec!["yes".to_string(), "prod".to_string()],
+                }],
+            },
+            content: String::new(),
+            metadata: None,
+        };
+        assert_eq!(format_normalized_entry(&answers), "Deploy?: yes, prod");
+
+        let tool = NormalizedEntry {
+            timestamp: None,
+            entry_type: NormalizedEntryType::ToolUse {
+                tool_name: "shell".to_string(),
+                action_type: ActionType::CommandRun {
+                    command: "cargo test".to_string(),
+                    result: None,
+                    category: Default::default(),
+                },
+                status: ToolStatus::Success,
+            },
+            content: "done".to_string(),
+            metadata: None,
+        };
+        assert!(format_normalized_entry(&tool).contains("tool shell [success] cmd `cargo test`"));
+    }
+
+    #[test]
+    fn relative_and_display_helpers_return_expected_labels() {
+        assert_eq!(format_relative_time(None), "never");
+        assert_eq!(format_relative_time(Some(Utc::now() - Duration::seconds(5))), "5s ago");
+        assert_eq!(format_relative_time(Some(Utc::now() - Duration::minutes(2))), "2m ago");
+        assert_eq!(format_relative_time(Some(Utc::now() - Duration::hours(3))), "3h ago");
+        assert_eq!(format_relative_time(Some(Utc::now() - Duration::days(4))), "4d ago");
+
+        let workspace = db::models::workspace::Workspace {
+            id: Uuid::new_v4(),
+            task_id: None,
+            container_ref: None,
+            branch: "feature/test".to_string(),
+            setup_completed_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            archived: false,
+            pinned: false,
+            name: Some("Named".to_string()),
+            worktree_deleted: false,
+        };
+        assert_eq!(workspace_title(&workspace), "Named");
+        assert_eq!(display_variant(None), "DEFAULT");
+        assert_eq!(display_variant(Some("PLAN")), "PLAN");
+        assert_eq!(display_permission(None), "DEFAULT");
+        assert_eq!(
+            display_permission(Some(&executors::model_selector::PermissionPolicy::Plan)),
+            "PLAN"
+        );
+    }
+}
