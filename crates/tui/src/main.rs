@@ -20,6 +20,9 @@ mod model_format;
 mod model_wire;
 mod ui;
 mod workspace;
+mod workspace_actions;
+mod workspace_list;
+mod workspace_session;
 
 use anyhow::Result;
 use crossterm::{
