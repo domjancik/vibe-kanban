@@ -177,6 +177,7 @@ impl App {
             SearchTarget::Workspaces => {
                 let previous = self.selected_workspace_id;
                 self.filter = prompt.original_query;
+                self.mark_workspace_list_dirty();
                 self.sync_workspace_selection_to_filter();
                 if self.selected_workspace_id != previous {
                     self.load_selected_workspace(size);
@@ -184,6 +185,7 @@ impl App {
             }
             SearchTarget::Sessions => {
                 self.session_filter = prompt.original_query;
+                self.mark_detail_dirty();
                 self.sync_session_selection_to_filter();
             }
             SearchTarget::Conversation => {
@@ -208,6 +210,7 @@ impl App {
             SearchTarget::Workspaces => {
                 let previous = self.selected_workspace_id;
                 self.filter = query;
+                self.mark_workspace_list_dirty();
                 self.sync_workspace_selection_to_filter();
                 if self.selected_workspace_id != previous {
                     self.load_selected_workspace(size);
@@ -220,6 +223,7 @@ impl App {
             }
             SearchTarget::Sessions => {
                 self.session_filter = query;
+                self.mark_detail_dirty();
                 self.sync_session_selection_to_filter();
                 self.status = if self.session_filter.is_empty() {
                     "Session filter cleared".to_string()

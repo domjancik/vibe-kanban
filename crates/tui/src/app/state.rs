@@ -68,6 +68,7 @@ pub(crate) struct ComposerHeightCache {
     pub(crate) height: u16,
 }
 
+#[derive(Clone)]
 pub(crate) struct WorkspaceListRenderCache {
     pub(crate) revision: u64,
     pub(crate) query: String,
@@ -75,6 +76,7 @@ pub(crate) struct WorkspaceListRenderCache {
     pub(crate) row_ids: Vec<Option<Uuid>>,
 }
 
+#[derive(Clone)]
 pub(crate) struct DetailPaneRenderCache {
     pub(crate) revision: u64,
     pub(crate) session_query: String,
@@ -232,10 +234,5 @@ impl App {
     pub(crate) fn mark_detail_dirty(&mut self) {
         self.detail_revision = self.detail_revision.saturating_add(1);
         self.detail_pane_cache = None;
-    }
-
-    pub(crate) fn mark_sidebar_dirty(&mut self) {
-        self.mark_workspace_list_dirty();
-        self.mark_detail_dirty();
     }
 }

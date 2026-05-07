@@ -8,7 +8,7 @@ use ratatui::{
 };
 
 use crate::{
-    app::{App, DetailPaneRenderCache, SearchTarget, highlight_text_span},
+    app::{App, SearchTarget, highlight_text_span, state::DetailPaneRenderCache},
     editor::render_editor_buffer,
     model::{Focus, format_relative_time, workspace_title},
     ui::{panel_block, render_vertical_scrollbar},
@@ -195,7 +195,7 @@ impl App {
             ])
             .split(area);
 
-        let cache = self.detail_pane_cache();
+        let cache = self.detail_pane_cache().clone();
         frame.render_widget(
             Paragraph::new(cache.workspace_info.clone()).block(panel_block("Workspace", false)),
             chunks[0],
@@ -327,7 +327,6 @@ mod tests {
         app::{App, SessionRenameState},
         editor::ComposerEditorMode,
         model::{Focus, Pane, QueueStatus, WorkspaceBundle},
-        workspace::SessionRow,
     };
 
     fn test_app() -> App {
@@ -350,6 +349,10 @@ mod tests {
             show_archived: false,
             filter: String::new(),
             session_filter: String::new(),
+            workspace_list_revision: 0,
+            detail_revision: 0,
+            workspace_list_cache: None,
+            detail_pane_cache: None,
             status: String::new(),
             error: None,
             bundle: WorkspaceBundle::default(),
@@ -421,9 +424,9 @@ mod tests {
             cursor: 8,
         });
 
-        assert_eq!(app.session_row_height(&SessionRow::NewSession), 2);
-        assert_eq!(app.session_row_height(&SessionRow::Session(&first)), 2);
-        assert_eq!(app.session_row_height(&SessionRow::Session(&second)), 3);
+        assert_eq!(app.session_row_height_for_id(None), 2);
+        assert_eq!(app.session_row_height_for_id(Some(first.id)), 2);
+        assert_eq!(app.session_row_height_for_id(Some(second.id)), 3);
     }
 
     #[test]
@@ -441,14 +444,14 @@ mod tests {
             cursor: 6,
         });
 
-        let rows = vec![
-            SessionRow::NewSession,
-            SessionRow::Session(&sessions[0]),
-            SessionRow::Session(&sessions[1]),
-            SessionRow::Session(&sessions[2]),
+        let session_ids = vec![
+            None,
+            Some(sessions[0].id),
+            Some(sessions[1].id),
+            Some(sessions[2].id),
         ];
 
-        let metrics = app.session_scroll_metrics(&rows, Rect::new(0, 0, 40, 6));
+        let metrics = app.session_scroll_metrics(&session_ids, Rect::new(0, 0, 40, 6));
 
         assert_eq!(metrics, (9, 4, 4));
     }

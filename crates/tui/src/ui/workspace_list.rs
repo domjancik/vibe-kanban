@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::{
-    app::{App, SearchTarget, WorkspaceListRenderCache, highlight_text_span},
+    app::{App, SearchTarget, highlight_text_span, state::WorkspaceListRenderCache},
     model::{Focus, format_relative_time, workspace_title},
     ui::{panel_block, render_vertical_scrollbar},
     workspace::WorkspaceRow,
@@ -175,7 +175,7 @@ impl App {
         }
 
         let list_area = sections[1];
-        let cache = self.workspace_list_cache();
+        let cache = self.workspace_list_cache().clone();
 
         let mut state = ListState::default();
         if let Some(index) = self.selected_workspace_row_index_from_ids(&cache.row_ids) {

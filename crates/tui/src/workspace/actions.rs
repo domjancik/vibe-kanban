@@ -11,6 +11,7 @@ impl App {
             return;
         }
         self.selected_workspace_id = self.visible_workspace_ids().first().copied();
+        self.mark_workspace_list_dirty();
         self.load_selected_workspace(size);
     }
 
@@ -45,6 +46,7 @@ impl App {
         self.search_prompt = None;
         self.conversation_search = None;
         self.reset_conversation_state();
+        self.mark_detail_dirty();
         self.api.load_workspace(workspace_id, self.tx.clone());
         self.api.replace_workspace_subscriptions(
             workspace_id,

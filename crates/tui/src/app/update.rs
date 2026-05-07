@@ -24,6 +24,7 @@ impl App {
                     .into_values()
                     .map(|workspace| (workspace.id, workspace))
                     .collect();
+                self.mark_workspace_list_dirty();
                 self.ensure_workspace_selected(size);
             }
             NetEvent::ArchivedWorkspaces(state) => {
@@ -32,15 +33,18 @@ impl App {
                     .into_values()
                     .map(|workspace| (workspace.id, workspace))
                     .collect();
+                self.mark_workspace_list_dirty();
                 self.ensure_workspace_selected(size);
             }
             NetEvent::Summaries(data) => {
                 for summary in data {
                     self.summaries.insert(summary.workspace_id, summary);
                 }
+                self.mark_workspace_list_dirty();
             }
             NetEvent::WorkspaceLoaded(workspace) => {
                 self.bundle.workspace = Some(workspace);
+                self.mark_detail_dirty();
             }
             NetEvent::SessionsLoaded {
                 workspace_id,
@@ -65,6 +69,7 @@ impl App {
                         self.bundle.selected_process_id = None;
                         self.rebind_session_streams();
                     }
+                    self.mark_detail_dirty();
                     self.rebind_discovery_stream();
                     self.sync_composer_context();
                 }
@@ -160,6 +165,7 @@ impl App {
                     {
                         self.refresh_queue_status();
                     }
+                    self.mark_detail_dirty();
                     self.mark_chat_render_cache_dirty();
                     self.refresh_conversation_history();
                 }
@@ -282,6 +288,7 @@ impl App {
                     if matches!(self.queue_status, QueueStatus::Empty) {
                         self.composer_queue_conflict = false;
                     }
+                    self.mark_detail_dirty();
                     self.mark_chat_render_cache_dirty();
                 }
             }
@@ -296,6 +303,7 @@ impl App {
                 }
                 self.creating_new_session = false;
                 self.bundle.selected_session_id = Some(session_id);
+                self.mark_detail_dirty();
                 if Some(workspace_id) == self.selected_workspace_id {
                     self.api.load_workspace(workspace_id, self.tx.clone());
                 }
@@ -325,6 +333,7 @@ impl App {
                 if Some(session_id) == self.current_queue_session_id() {
                     self.queue_status = status;
                     self.queue_pending = false;
+                    self.mark_detail_dirty();
                     self.composer.clear();
                     self.invalidate_composer_layout_cache();
                     self.composer_cursor = 0;
@@ -349,6 +358,7 @@ impl App {
                 if Some(session_id) == self.current_queue_session_id() {
                     self.queue_status = status;
                     self.queue_pending = false;
+                    self.mark_detail_dirty();
                     if let Some(queued) = restored {
                         let executor_changed = self
                             .composer_config
@@ -466,7 +476,10 @@ impl App {
             }
             AppIntent::OpenSearch => self.open_search(size),
             AppIntent::SelectPane(pane) => self.selected_pane = pane,
-            AppIntent::ToggleShowArchived => self.show_archived = !self.show_archived,
+            AppIntent::ToggleShowArchived => {
+                self.show_archived = !self.show_archived;
+                self.mark_workspace_list_dirty();
+            }
             AppIntent::EnterEditMode => {
                 if matches!(self.selected_pane, Pane::Chat | Pane::Notes) {
                     self.focus = Focus::Composer;
@@ -565,6 +578,10 @@ mod tests {
             show_archived: false,
             filter: String::new(),
             session_filter: String::new(),
+            workspace_list_revision: 0,
+            detail_revision: 0,
+            workspace_list_cache: None,
+            detail_pane_cache: None,
             status: String::new(),
             error: None,
             bundle: WorkspaceBundle::default(),

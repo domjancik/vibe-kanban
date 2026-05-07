@@ -438,7 +438,7 @@ impl App {
                 self.bundle.last_notes_edit = Some(std::time::Instant::now());
                 self.notes_edit_revision = self.notes_edit_revision.saturating_add(1);
             }
-            EditorTarget::SessionRename => {}
+            EditorTarget::SessionRename => self.mark_detail_dirty(),
         }
     }
 
@@ -497,6 +497,7 @@ impl App {
             cursor: name.len(),
             name,
         });
+        self.mark_detail_dirty();
         self.status = "Rename session".to_string();
         self.error = None;
     }
@@ -521,6 +522,7 @@ impl App {
                     code: KeyCode::Esc, ..
                 } => {
                     self.session_rename = None;
+                    self.mark_detail_dirty();
                     self.status = "Cancelled session rename".to_string();
                 }
                 _ => {
@@ -546,6 +548,7 @@ impl App {
                 }
                 if key.code == KeyCode::Esc {
                     self.session_rename = None;
+                    self.mark_detail_dirty();
                     self.status = "Cancelled session rename".to_string();
                 }
             }
@@ -578,6 +581,7 @@ impl App {
                 {
                     *session = updated;
                 }
+                self.mark_detail_dirty();
                 self.status = format!("Renamed session to {trimmed}");
                 self.error = None;
             }
@@ -588,6 +592,7 @@ impl App {
                     cursor,
                     name: rename.name,
                 });
+                self.mark_detail_dirty();
                 self.error = Some(error.to_string());
                 self.status = error.to_string();
             }
@@ -637,6 +642,10 @@ mod tests {
             show_archived: false,
             filter: String::new(),
             session_filter: String::new(),
+            workspace_list_revision: 0,
+            detail_revision: 0,
+            workspace_list_cache: None,
+            detail_pane_cache: None,
             status: String::new(),
             error: None,
             bundle: WorkspaceBundle::default(),
