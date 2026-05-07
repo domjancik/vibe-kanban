@@ -8,8 +8,7 @@ use ratatui::{
 };
 
 use crate::{
-    app::App,
-    app::{SearchTarget, highlight_text_span},
+    app::{App, SearchTarget, highlight_text_span},
     editor::render_editor_buffer,
     model::{Focus, format_relative_time, workspace_title},
     ui::{panel_block, render_vertical_scrollbar},
@@ -131,7 +130,9 @@ impl App {
         }
 
         let session_rows = self.session_rows();
-        let session_query = self.active_search_query_for(SearchTarget::Sessions).unwrap_or("");
+        let session_query = self
+            .active_search_query_for(SearchTarget::Sessions)
+            .unwrap_or("");
         let sessions = session_rows
             .iter()
             .map(|row| match row {

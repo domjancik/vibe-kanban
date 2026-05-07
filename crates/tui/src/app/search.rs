@@ -296,7 +296,10 @@ impl App {
             .as_ref()
             .is_some_and(|prompt| prompt.target == target)
         {
-            return self.search_prompt.as_ref().map(|prompt| prompt.query.as_str());
+            return self
+                .search_prompt
+                .as_ref()
+                .map(|prompt| prompt.query.as_str());
         }
         match target {
             SearchTarget::Workspaces => (!self.filter.is_empty()).then_some(self.filter.as_str()),
@@ -403,12 +406,18 @@ impl App {
             vertical: 1,
             horizontal: 1,
         });
-        let inner = if self.inline_search_prompt(SearchTarget::Conversation).is_some()
+        let inner = if self
+            .inline_search_prompt(SearchTarget::Conversation)
+            .is_some()
             && panel_inner.height > 3
         {
             Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(1)])
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Min(1),
+                    Constraint::Length(1),
+                ])
                 .split(panel_inner)[1]
         } else {
             panel_inner
@@ -434,7 +443,8 @@ fn matching_line_indexes(lines: &[Line<'_>], query: &str) -> Vec<usize> {
         .iter()
         .enumerate()
         .filter_map(|(index, line)| {
-            (!find_case_insensitive_match_ranges(&line_text(line), query).is_empty()).then_some(index)
+            (!find_case_insensitive_match_ranges(&line_text(line), query).is_empty())
+                .then_some(index)
         })
         .collect()
 }
@@ -587,11 +597,7 @@ mod tests {
         find_case_insensitive_match_ranges, highlight_line_matches, highlight_text_span, line_text,
         matching_line_indexes,
     };
-    use crate::{
-        api::Api,
-        app::App,
-        model::Focus,
-    };
+    use crate::{api::Api, app::App, model::Focus};
 
     #[test]
     fn line_text_concatenates_spans() {

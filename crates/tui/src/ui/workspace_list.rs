@@ -7,8 +7,7 @@ use ratatui::{
 };
 
 use crate::{
-    app::App,
-    app::{SearchTarget, highlight_text_span},
+    app::{App, SearchTarget, highlight_text_span},
     model::{Focus, format_relative_time, workspace_title},
     ui::{panel_block, render_vertical_scrollbar},
     workspace::WorkspaceRow,
@@ -16,7 +15,10 @@ use crate::{
 
 impl App {
     pub(crate) fn render_workspace_list(&self, frame: &mut Frame, area: Rect) {
-        let sections = if self.inline_search_prompt(SearchTarget::Workspaces).is_some() {
+        let sections = if self
+            .inline_search_prompt(SearchTarget::Workspaces)
+            .is_some()
+        {
             ratatui::layout::Layout::default()
                 .direction(ratatui::layout::Direction::Vertical)
                 .constraints([
@@ -36,7 +38,10 @@ impl App {
         if let Some(prompt) = self.inline_search_prompt(SearchTarget::Workspaces) {
             frame.render_widget(
                 Paragraph::new(prompt)
-                    .block(panel_block("Workspace Filter", self.focus == Focus::WorkspaceList))
+                    .block(panel_block(
+                        "Workspace Filter",
+                        self.focus == Focus::WorkspaceList,
+                    ))
                     .wrap(Wrap { trim: false }),
                 sections[0],
             );
@@ -44,7 +49,9 @@ impl App {
 
         let list_area = sections[1];
         let rows = self.workspace_rows();
-        let query = self.active_search_query_for(SearchTarget::Workspaces).unwrap_or("");
+        let query = self
+            .active_search_query_for(SearchTarget::Workspaces)
+            .unwrap_or("");
         let items = rows
             .iter()
             .map(|row| match row {

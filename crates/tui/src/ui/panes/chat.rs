@@ -7,8 +7,7 @@ use ratatui::{
 };
 
 use crate::{
-    app::App,
-    app::{SearchTarget, highlight_line_matches},
+    app::{App, SearchTarget, highlight_line_matches},
     conversation::chat_window_bounds,
     model::Focus,
     ui::{panel_block, render_vertical_scrollbar},
@@ -28,7 +27,9 @@ impl App {
             return;
         }
 
-        let search_active = self.inline_search_prompt(SearchTarget::Conversation).is_some();
+        let search_active = self
+            .inline_search_prompt(SearchTarget::Conversation)
+            .is_some();
         let vertical_constraints = if search_active && inner.height > 3 {
             vec![
                 Constraint::Length(3),
