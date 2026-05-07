@@ -17,17 +17,23 @@ use crate::editor::{
     next_char_boundary, prev_char_boundary,
 };
 
-pub fn apply_text_edit_action(buffer: &mut String, cursor: &mut usize, action: TextEditAction) {
+pub fn apply_text_edit_action(
+    buffer: &mut String,
+    cursor: &mut usize,
+    action: TextEditAction,
+) -> bool {
     match action {
         TextEditAction::InsertChar(ch) => {
             *cursor = clamp_char_boundary(buffer, *cursor);
             buffer.insert(*cursor, ch);
             *cursor += ch.len_utf8();
+            true
         }
         TextEditAction::InsertNewline => {
             *cursor = clamp_char_boundary(buffer, *cursor);
             buffer.insert(*cursor, '\n');
             *cursor += 1;
+            true
         }
         TextEditAction::Backspace => {
             *cursor = clamp_char_boundary(buffer, *cursor);
@@ -35,6 +41,9 @@ pub fn apply_text_edit_action(buffer: &mut String, cursor: &mut usize, action: T
                 let start = prev_char_boundary(buffer, *cursor);
                 buffer.drain(start..*cursor);
                 *cursor = start;
+                true
+            } else {
+                false
             }
         }
         TextEditAction::Delete => {
@@ -42,15 +51,39 @@ pub fn apply_text_edit_action(buffer: &mut String, cursor: &mut usize, action: T
             if *cursor < buffer.len() {
                 let end = next_char_boundary(buffer, *cursor);
                 buffer.drain(*cursor..end);
+                true
+            } else {
+                false
             }
         }
-        TextEditAction::MoveLeft => *cursor = prev_char_boundary(buffer, *cursor),
-        TextEditAction::MoveRight => *cursor = next_char_boundary(buffer, *cursor),
-        TextEditAction::MoveUp => *cursor = move_cursor_vertical(buffer, *cursor, -1),
-        TextEditAction::MoveDown => *cursor = move_cursor_vertical(buffer, *cursor, 1),
-        TextEditAction::MoveLineStart => *cursor = line_start_index(buffer, *cursor),
-        TextEditAction::MoveLineEnd => *cursor = line_end_index(buffer, *cursor),
+        TextEditAction::MoveLeft => move_cursor_with(buffer, cursor, |buffer, cursor| {
+            prev_char_boundary(buffer, cursor)
+        }),
+        TextEditAction::MoveRight => move_cursor_with(buffer, cursor, |buffer, cursor| {
+            next_char_boundary(buffer, cursor)
+        }),
+        TextEditAction::MoveUp => {
+            move_cursor_with(buffer, cursor, |buffer, cursor| move_cursor_vertical(buffer, cursor, -1))
+        }
+        TextEditAction::MoveDown => {
+            move_cursor_with(buffer, cursor, |buffer, cursor| move_cursor_vertical(buffer, cursor, 1))
+        }
+        TextEditAction::MoveLineStart => {
+            move_cursor_with(buffer, cursor, |buffer, cursor| line_start_index(buffer, cursor))
+        }
+        TextEditAction::MoveLineEnd => {
+            move_cursor_with(buffer, cursor, |buffer, cursor| line_end_index(buffer, cursor))
+        }
     }
+}
+
+fn move_cursor_with<F>(buffer: &str, cursor: &mut usize, next: F) -> bool
+where
+    F: FnOnce(&str, usize) -> usize,
+{
+    let previous = *cursor;
+    *cursor = next(buffer, *cursor);
+    *cursor != previous
 }
 
 #[cfg(test)]
@@ -62,15 +95,27 @@ mod tests {
         let mut buffer = String::from("ab");
         let mut cursor = 1;
 
-        apply_text_edit_action(&mut buffer, &mut cursor, TextEditAction::InsertChar('X'));
+        assert!(apply_text_edit_action(
+            &mut buffer,
+            &mut cursor,
+            TextEditAction::InsertChar('X')
+        ));
         assert_eq!(buffer, "aXb");
         assert_eq!(cursor, 2);
 
-        apply_text_edit_action(&mut buffer, &mut cursor, TextEditAction::Backspace);
+        assert!(apply_text_edit_action(
+            &mut buffer,
+            &mut cursor,
+            TextEditAction::Backspace
+        ));
         assert_eq!(buffer, "ab");
         assert_eq!(cursor, 1);
 
-        apply_text_edit_action(&mut buffer, &mut cursor, TextEditAction::Delete);
+        assert!(apply_text_edit_action(
+            &mut buffer,
+            &mut cursor,
+            TextEditAction::Delete
+        ));
         assert_eq!(buffer, "a");
         assert_eq!(cursor, 1);
     }
@@ -80,10 +125,18 @@ mod tests {
         let mut buffer = String::from("abc\ndef");
         let mut cursor = 5;
 
-        apply_text_edit_action(&mut buffer, &mut cursor, TextEditAction::MoveLineStart);
+        assert!(apply_text_edit_action(
+            &mut buffer,
+            &mut cursor,
+            TextEditAction::MoveLineStart
+        ));
         assert_eq!(cursor, 4);
 
-        apply_text_edit_action(&mut buffer, &mut cursor, TextEditAction::MoveLineEnd);
+        assert!(apply_text_edit_action(
+            &mut buffer,
+            &mut cursor,
+            TextEditAction::MoveLineEnd
+        ));
         assert_eq!(cursor, 7);
     }
 
@@ -92,19 +145,54 @@ mod tests {
         let mut buffer = String::from("a§b");
         let mut cursor = 3;
 
-        apply_text_edit_action(&mut buffer, &mut cursor, TextEditAction::Backspace);
+        assert!(apply_text_edit_action(
+            &mut buffer,
+            &mut cursor,
+            TextEditAction::Backspace
+        ));
         assert_eq!(buffer, "ab");
         assert_eq!(cursor, 1);
 
-        apply_text_edit_action(&mut buffer, &mut cursor, TextEditAction::InsertChar('§'));
+        assert!(apply_text_edit_action(
+            &mut buffer,
+            &mut cursor,
+            TextEditAction::InsertChar('§')
+        ));
         assert_eq!(buffer, "a§b");
         assert_eq!(cursor, 3);
 
-        apply_text_edit_action(&mut buffer, &mut cursor, TextEditAction::MoveLeft);
+        assert!(apply_text_edit_action(
+            &mut buffer,
+            &mut cursor,
+            TextEditAction::MoveLeft
+        ));
         assert_eq!(cursor, 1);
 
-        apply_text_edit_action(&mut buffer, &mut cursor, TextEditAction::Delete);
+        assert!(apply_text_edit_action(
+            &mut buffer,
+            &mut cursor,
+            TextEditAction::Delete
+        ));
         assert_eq!(buffer, "ab");
         assert_eq!(cursor, 1);
+    }
+
+    #[test]
+    fn reports_no_change_for_boundary_navigation_and_empty_deletes() {
+        let mut buffer = String::from("ab");
+        let mut cursor = 0;
+
+        assert!(!apply_text_edit_action(
+            &mut buffer,
+            &mut cursor,
+            TextEditAction::MoveLeft
+        ));
+        assert!(!apply_text_edit_action(
+            &mut buffer,
+            &mut cursor,
+            TextEditAction::Backspace
+        ));
+        assert_eq!(buffer, "ab");
+        assert_eq!(cursor, 0);
     }
 }

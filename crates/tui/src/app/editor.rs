@@ -50,10 +50,7 @@ impl App {
                 let changed = {
                     let (buffer, cursor): (&mut String, &mut usize) =
                         self.editor_buffer_cursor_mut(target);
-                    let before = (buffer.clone(), *cursor);
-                    apply_text_edit_action(buffer, cursor, action);
-                    *cursor = clamp_char_boundary(buffer, *cursor);
-                    before.0 != *buffer || before.1 != *cursor
+                    apply_text_edit_action(buffer, cursor, action)
                 };
                 if changed {
                     self.mark_editor_dirty(target);
