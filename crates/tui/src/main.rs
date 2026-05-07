@@ -11,6 +11,7 @@ mod composer;
 mod composer_config;
 mod composer_state;
 mod conversation;
+mod conversation_state;
 mod editor;
 mod input;
 mod model;
