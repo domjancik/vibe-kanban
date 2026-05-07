@@ -143,6 +143,37 @@ For a clear composer-perf improvement, you still need:
 - narrower redraw scope when only composer state changed
 - lower-cost composer rendering and layout work
 
+### Note P1-15S-SLOWDOWN
+
+If you still observe intermittent slowdowns while typing that appear to last around 15 seconds, phase 1 should not be considered complete from a user-experience perspective.
+
+#### Current assessment
+
+- There is no remaining obvious 15-second synchronous wait in the direct typing path.
+- The more likely cause is background event activity still driving full redraws while you type.
+- The reported duration is suspicious because two background behaviours still align with a `15s` cadence.
+
+#### Likely contributors
+
+1. The shared HTTP client timeout is `15s`.
+   Hanging background requests such as draft saves can complete on that cadence and feed completion or failure events back into the UI loop.
+
+2. Workspace summaries are still polled every `15s`.
+   Those updates also enter the same event loop and can trigger redraw work even when the user is focused on typing.
+
+#### Implication
+
+The most likely explanation is no longer direct blocking in the editor input handler. It is redraw and event-loop contention caused by background updates sharing the same full-screen paint path.
+
+#### Required follow-up
+
+To address this class of slowdown, the plan still needs:
+
+- dirty-driven redraws
+- event coalescing across bursty background updates
+- lower-priority or batched handling for non-critical background events while the composer has focus
+- narrower repaint scope when only local composer state changed
+
 ## Phase 2: Debounce workspace loads after selection changes
 
 This is the highest-value fix for throwaway work during navigation.
