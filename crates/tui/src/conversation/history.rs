@@ -64,7 +64,8 @@ mod tests {
         actions::{
             ExecutorAction, ExecutorActionType,
             coding_agent_follow_up::CodingAgentFollowUpRequest,
-            coding_agent_initial::CodingAgentInitialRequest, review::ReviewRequest,
+            coding_agent_initial::CodingAgentInitialRequest,
+            review::ReviewRequest,
             script::{ScriptContext, ScriptRequest, ScriptRequestLanguage},
         },
         profile::ExecutorConfig,
@@ -158,7 +159,12 @@ mod tests {
         );
         process_map.insert(
             ids[2],
-            process_with_action(ids[2], 3, ExecutionProcessStatus::Running, initial_request("run")),
+            process_with_action(
+                ids[2],
+                3,
+                ExecutionProcessStatus::Running,
+                initial_request("run"),
+            ),
         );
 
         let selected = initial_conversation_process_ids(&ids, &process_map);

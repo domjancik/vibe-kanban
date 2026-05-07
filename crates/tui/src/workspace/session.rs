@@ -17,7 +17,11 @@ impl App {
                     return true;
                 }
                 let name = session.name.as_deref().unwrap_or_default().to_lowercase();
-                let executor = session.executor.as_deref().unwrap_or_default().to_lowercase();
+                let executor = session
+                    .executor
+                    .as_deref()
+                    .unwrap_or_default()
+                    .to_lowercase();
                 let id = session.id.to_string();
                 name.contains(&filter) || executor.contains(&filter) || id.contains(&filter)
             })

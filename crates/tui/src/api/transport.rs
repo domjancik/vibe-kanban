@@ -196,11 +196,7 @@ mod tests {
         let old_port = env::var("PORT").ok();
         let old_dir = env::current_dir().unwrap();
         let temp = tempfile::tempdir().unwrap();
-        fs::write(
-            temp.path().join(".dev-ports.json"),
-            r#"{"backend":4567}"#,
-        )
-        .unwrap();
+        fs::write(temp.path().join(".dev-ports.json"), r#"{"backend":4567}"#).unwrap();
 
         unsafe {
             env::remove_var("VK_TUI_BASE_URL");

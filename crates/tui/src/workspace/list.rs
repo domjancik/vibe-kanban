@@ -278,10 +278,12 @@ mod tests {
         let idle_id = idle.id;
         let archived_id = archived.id;
 
-        app.active_workspaces.insert(attention_id, attention.clone());
+        app.active_workspaces
+            .insert(attention_id, attention.clone());
         app.active_workspaces.insert(running_id, running.clone());
         app.active_workspaces.insert(idle_id, idle.clone());
-        app.archived_workspaces.insert(archived_id, archived.clone());
+        app.archived_workspaces
+            .insert(archived_id, archived.clone());
         app.summaries
             .insert(attention_id, summary(attention_id, true, false, false));
         app.summaries
@@ -296,7 +298,10 @@ mod tests {
                 WorkspaceRow::Workspace(_) => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(headers, vec!["Needs Attention", "Running", "Idle", "Archived"]);
+        assert_eq!(
+            headers,
+            vec!["Needs Attention", "Running", "Idle", "Archived"]
+        );
         assert_eq!(
             app.visible_workspace_ids(),
             vec![attention_id, running_id, idle_id, archived_id]

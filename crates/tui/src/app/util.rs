@@ -64,8 +64,7 @@ mod tests {
     use ratatui::layout::Rect;
 
     use super::{
-        default_variant_to_none, fuzzy_contains, model_key, selected_list_offset,
-        viewport_capacity,
+        default_variant_to_none, fuzzy_contains, model_key, selected_list_offset, viewport_capacity,
     };
 
     #[test]

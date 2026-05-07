@@ -601,6 +601,7 @@ mod tests {
     use tokio::sync::mpsc::unbounded_channel;
     use uuid::Uuid;
 
+    use super::EditorTarget;
     use crate::{
         api::{Api, WorkspaceSubscriptions},
         app::{App, SessionRenameState},
@@ -731,15 +732,23 @@ mod tests {
         });
         app.editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
 
-        app.handle_session_rename_key(KeyEvent::from(KeyCode::Esc)).await;
+        app.handle_session_rename_key(KeyEvent::from(KeyCode::Esc))
+            .await;
         assert!(app.session_rename.is_some());
-        assert_eq!(app.editor_mode, ComposerEditorMode::Vim(VimMode::Normal));
+        assert!(matches!(
+            app.editor_mode,
+            ComposerEditorMode::Vim(VimMode::Normal)
+        ));
 
         app.handle_session_rename_key(KeyEvent::from(KeyCode::Char('h')))
             .await;
-        assert_eq!(app.session_rename.as_ref().map(|rename| rename.cursor), Some(3));
+        assert_eq!(
+            app.session_rename.as_ref().map(|rename| rename.cursor),
+            Some(3)
+        );
 
-        app.handle_session_rename_key(KeyEvent::from(KeyCode::Esc)).await;
+        app.handle_session_rename_key(KeyEvent::from(KeyCode::Esc))
+            .await;
         assert!(app.session_rename.is_none());
     }
 }

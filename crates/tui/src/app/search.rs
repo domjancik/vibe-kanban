@@ -14,7 +14,8 @@ use crate::{
 impl App {
     pub(crate) fn open_search(&mut self, size: Rect) {
         let Some(target) = self.search_target() else {
-            self.status = "Search is available in workspaces, sessions, and conversation".to_string();
+            self.status =
+                "Search is available in workspaces, sessions, and conversation".to_string();
             return;
         };
 
@@ -87,7 +88,8 @@ impl App {
             return;
         }
 
-        let Some((matches, total_lines, visible_lines)) = self.conversation_search_snapshot(&query, size)
+        let Some((matches, total_lines, visible_lines)) =
+            self.conversation_search_snapshot(&query, size)
         else {
             self.status = "Conversation search unavailable".to_string();
             return;
@@ -110,7 +112,9 @@ impl App {
         let next_match = if forward {
             (current_match + 1) % matches.len()
         } else {
-            current_match.checked_sub(1).unwrap_or(matches.len().saturating_sub(1))
+            current_match
+                .checked_sub(1)
+                .unwrap_or(matches.len().saturating_sub(1))
         };
         self.conversation_search = Some(ConversationSearchState {
             query: query.clone(),
@@ -186,7 +190,8 @@ impl App {
             return;
         }
 
-        let Some((matches, total_lines, visible_lines)) = self.conversation_search_snapshot(&query, size)
+        let Some((matches, total_lines, visible_lines)) =
+            self.conversation_search_snapshot(&query, size)
         else {
             return;
         };
@@ -309,7 +314,10 @@ impl App {
 }
 
 fn line_text(line: &Line<'_>) -> String {
-    line.spans.iter().map(|span| span.content.as_ref()).collect()
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
 }
 
 fn matching_line_indexes(lines: &[Line<'_>], query: &str) -> Vec<usize> {
@@ -317,7 +325,8 @@ fn matching_line_indexes(lines: &[Line<'_>], query: &str) -> Vec<usize> {
     if query.is_empty() {
         return Vec::new();
     }
-    lines.iter()
+    lines
+        .iter()
         .enumerate()
         .filter_map(|(index, line)| {
             let text = line_text(line).to_lowercase();

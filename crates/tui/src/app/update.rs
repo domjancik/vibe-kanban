@@ -325,7 +325,7 @@ impl App {
             AppIntent::FocusNext => self.focus = next_focus(&self.focus),
             AppIntent::FocusPrev => self.focus = prev_focus(&self.focus),
             AppIntent::ShowHelp => {
-                self.status = "Keys: Tab focus, Ctrl+Space maximize active panel, / search or filter, n/N next/prev chat match, j/k nav, 1-6 panes, i edit, Enter open/send, r rename session, E executor, V variant, M model, R reasoning, A agent menu, P permission, p pin, x archive, n new session, s start dev, c cleanup, e editor, Esc/C-]/C-g leave terminal".to_string();
+                self.status = "Keys: Tab focus, Ctrl+Shift+Space maximize active panel, / search or filter, n/N next/prev chat match, j/k nav, 1-6 panes, i edit, Enter open/send, r rename session, E executor, V variant, M model, R reasoning, A agent menu, P permission, p pin, x archive, n new session, s start dev, c cleanup, e editor, Esc/C-]/C-g leave terminal".to_string();
             }
             AppIntent::OpenSearch => self.open_search(size),
             AppIntent::SelectPane(pane) => self.selected_pane = pane,
@@ -505,7 +505,7 @@ mod tests {
             status: ExecutionProcessStatus::Completed,
             exit_code: Some(0),
             dropped: false,
-            started_at: Some(created_at),
+            started_at: created_at,
             completed_at: Some(created_at),
             created_at,
             updated_at: created_at,
@@ -521,7 +521,9 @@ mod tests {
         let mut app = test_app();
         app.selected_workspace_id = Some(workspace_id);
         app.bundle.selected_session_id = Some(second.id);
-        app.bundle.process_map.insert(process_id, process(process_id, 1));
+        app.bundle
+            .process_map
+            .insert(process_id, process(process_id, 1));
         app.bundle.log_entries = vec![PatchType::Stdout("keep".to_string())];
 
         app.handle_net_event(
@@ -548,7 +550,9 @@ mod tests {
         app.selected_workspace_id = Some(workspace_id);
         app.bundle.selected_session_id = Some(missing.id);
         app.bundle.selected_process_id = Some(process_id);
-        app.bundle.process_map.insert(process_id, process(process_id, 1));
+        app.bundle
+            .process_map
+            .insert(process_id, process(process_id, 1));
         app.bundle.log_entries = vec![PatchType::Stdout("clear".to_string())];
 
         app.handle_net_event(

@@ -118,8 +118,9 @@ mod tests {
     use db::models::execution_process::{
         ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus, ExecutorActionField,
     };
-    use executors::{
-        actions::{ExecutorAction, ExecutorActionType, script::{ScriptContext, ScriptRequest, ScriptRequestLanguage}},
+    use executors::actions::{
+        ExecutorAction, ExecutorActionType,
+        script::{ScriptContext, ScriptRequest, ScriptRequestLanguage},
     };
     use sqlx::types::Json;
     use uuid::Uuid;
@@ -165,27 +166,18 @@ mod tests {
 
     #[test]
     fn active_process_ignores_dev_servers_and_prefers_latest_process() {
-        let latest = process(
-            Uuid::new_v4(),
-            30,
-            ExecutionProcessRunReason::CodingAgent,
-        );
-        let ignored = process(
-            Uuid::new_v4(),
-            40,
-            ExecutionProcessRunReason::DevServer,
-        );
-        let older = process(
-            Uuid::new_v4(),
-            10,
-            ExecutionProcessRunReason::CodingAgent,
-        );
+        let latest = process(Uuid::new_v4(), 30, ExecutionProcessRunReason::CodingAgent);
+        let ignored = process(Uuid::new_v4(), 40, ExecutionProcessRunReason::DevServer);
+        let older = process(Uuid::new_v4(), 10, ExecutionProcessRunReason::CodingAgent);
         let processes = HashMap::from([
             (ignored.id, ignored),
             (older.id, older.clone()),
             (latest.id, latest.clone()),
         ]);
 
-        assert_eq!(active_process(&processes).map(|process| process.id), Some(latest.id));
+        assert_eq!(
+            active_process(&processes).map(|process| process.id),
+            Some(latest.id)
+        );
     }
 }

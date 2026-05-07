@@ -389,8 +389,7 @@ mod tests {
     };
     use executors::{
         actions::{
-            ExecutorAction, ExecutorActionType,
-            coding_agent_initial::CodingAgentInitialRequest,
+            ExecutorAction, ExecutorActionType, coding_agent_initial::CodingAgentInitialRequest,
         },
         executor_discovery::ExecutorDiscoveredOptions,
         logs::{NormalizedEntry, NormalizedEntryType, TokenUsageInfo},
@@ -400,6 +399,7 @@ mod tests {
     use tokio::sync::mpsc::unbounded_channel;
     use uuid::Uuid;
 
+    use super::{OptimisticConversationEntry, OptimisticState};
     use crate::{
         api::{Api, WorkspaceSubscriptions},
         app::App,
@@ -407,8 +407,6 @@ mod tests {
         editor::ComposerEditorMode,
         model::{Focus, Pane, PatchType, QueueStatus, WorkspaceBundle},
     };
-
-    use super::{OptimisticState, OptimisticConversationEntry};
 
     fn test_app() -> App {
         let api = Api::new("http://127.0.0.1:9".to_string()).unwrap();
@@ -607,7 +605,9 @@ mod tests {
         let session_id = Uuid::new_v4();
         let process_id = Uuid::new_v4();
         app.bundle.selected_session_id = Some(session_id);
-        app.bundle.process_map.insert(process_id, process(process_id, "hello there", 10));
+        app.bundle
+            .process_map
+            .insert(process_id, process(process_id, "hello there", 10));
         app.conversation_process_order.push(process_id);
         app.conversation_process_entries.insert(
             process_id,
@@ -654,7 +654,9 @@ mod tests {
     fn chat_cache_and_loading_banners_reflect_canonical_state() {
         let mut app = test_app();
         let process_id = Uuid::new_v4();
-        app.bundle.process_map.insert(process_id, process(process_id, "hi", 10));
+        app.bundle
+            .process_map
+            .insert(process_id, process(process_id, "hi", 10));
         app.conversation_process_order.push(process_id);
         app.conversation_process_entries.insert(
             process_id,
@@ -675,17 +677,21 @@ mod tests {
         app.conversation_bootstrapping = true;
         app.conversation_process_entries.clear();
         let bootstrap_lines = app.chat_lines();
-        assert!(bootstrap_lines[0]
-            .spans
-            .iter()
-            .any(|span| span.content.contains("Loading recent conversation")));
+        assert!(
+            bootstrap_lines[0]
+                .spans
+                .iter()
+                .any(|span| span.content.contains("Loading recent conversation"))
+        );
 
         app.conversation_bootstrapping = false;
         app.conversation_backfilling = true;
         let backfill_lines = app.chat_lines();
-        assert!(backfill_lines[0]
-            .spans
-            .iter()
-            .any(|span| span.content.contains("Loading older messages")));
+        assert!(
+            backfill_lines[0]
+                .spans
+                .iter()
+                .any(|span| span.content.contains("Loading older messages"))
+        );
     }
 }
