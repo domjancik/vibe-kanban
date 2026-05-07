@@ -113,6 +113,36 @@ The next work should focus on local UI cost:
 If typing still feels slow while the system is otherwise idle, the problem is more likely to be full-screen redraw and per-keystroke allocation cost than network latency.
 </Info>
 
+### Note P1-COMPOSER-EXPECTATION
+
+Do not expect phase 1 alone to produce a dramatic improvement in raw composer typing performance.
+
+#### Reason
+
+Phase 1 primarily removes blocking backend work from the direct input path. That improves submit, queue, and workspace-action responsiveness, but the main typing path is still dominated by local redraw and rendering cost.
+
+#### What may improve already
+
+- prompt submission responsiveness
+- queue and cancel-queue responsiveness
+- workspace action responsiveness
+- modest reductions in composer edit overhead where local hot-path work has already been simplified
+
+#### What should not be expected yet
+
+- a large improvement in per-keystroke composer smoothness
+- consistently fast typing for long drafts
+- smooth history-loading behaviour during bursty event streams
+
+#### Required follow-up
+
+For a clear composer-perf improvement, you still need:
+
+- dirty-driven redraws
+- event coalescing during bursty updates
+- narrower redraw scope when only composer state changed
+- lower-cost composer rendering and layout work
+
 ## Phase 2: Debounce workspace loads after selection changes
 
 This is the highest-value fix for throwaway work during navigation.
