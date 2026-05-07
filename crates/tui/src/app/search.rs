@@ -71,7 +71,7 @@ impl App {
                         if let Some(prompt) = self.search_prompt.as_mut() {
                             apply_text_edit_action(&mut prompt.query, &mut prompt.cursor, action);
                         }
-                        self.apply_search_prompt(size);
+                        self.preview_search_prompt(size);
                     }
                     None => {}
                 }
@@ -138,6 +138,34 @@ impl App {
     fn submit_search_prompt(&mut self, size: Rect) {
         self.apply_search_prompt(size);
         self.search_prompt = None;
+    }
+
+    fn preview_search_prompt(&mut self, size: Rect) {
+        let Some((target, query)) = self
+            .search_prompt
+            .as_ref()
+            .map(|prompt| (prompt.target, prompt.query.clone()))
+        else {
+            return;
+        };
+
+        match target {
+            SearchTarget::Workspaces => {
+                self.status = if query.is_empty() {
+                    "Workspace filter preview cleared".to_string()
+                } else {
+                    format!("Workspace filter preview: {query}")
+                };
+            }
+            SearchTarget::Sessions => {
+                self.status = if query.is_empty() {
+                    "Session filter preview cleared".to_string()
+                } else {
+                    format!("Session filter preview: {query}")
+                };
+            }
+            SearchTarget::Conversation => self.update_conversation_search(size, true),
+        }
     }
 
     fn cancel_search_prompt(&mut self, size: Rect) {

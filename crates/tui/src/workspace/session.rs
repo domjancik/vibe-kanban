@@ -2,13 +2,17 @@ use db::models::session::Session;
 use ratatui::layout::Rect;
 
 use crate::{
-    app::App,
+    app::{App, SearchTarget},
     workspace::{SessionRow, session_target},
 };
 
 impl App {
     fn filtered_sessions(&self) -> Vec<&Session> {
-        let filter = self.session_filter.trim().to_lowercase();
+        let filter = self
+            .active_search_query_for(SearchTarget::Sessions)
+            .unwrap_or("")
+            .trim()
+            .to_lowercase();
         self.bundle
             .sessions
             .iter()
@@ -102,7 +106,7 @@ mod tests {
 
     use crate::{
         api::{Api, WorkspaceSubscriptions},
-        app::App,
+        app::{App, SearchPromptState, SearchTarget},
         editor::ComposerEditorMode,
         model::{Focus, Pane, QueueStatus, WorkspaceBundle},
         workspace::SessionRow,
@@ -203,5 +207,32 @@ mod tests {
         app.creating_new_session = false;
         app.bundle.selected_session_id = Some(second.id);
         assert_eq!(app.selected_session_row_index(&rows), Some(2));
+    }
+
+    #[test]
+    fn session_rows_preview_inline_filter_without_switching_active_session() {
+        let first = session(Uuid::new_v4(), "alpha");
+        let second = session(Uuid::new_v4(), "beta");
+
+        let mut app = test_app();
+        app.bundle.sessions = vec![first.clone(), second.clone()];
+        app.bundle.selected_session_id = Some(first.id);
+        app.search_prompt = Some(SearchPromptState {
+            target: SearchTarget::Sessions,
+            query: "beta".to_string(),
+            cursor: 4,
+            original_query: String::new(),
+            original_conversation_search: None,
+            original_chat_end_offset: 0,
+        });
+
+        let rows = app.session_rows();
+
+        assert!(app.session_filter.is_empty());
+        assert_eq!(rows.len(), 2);
+        assert!(matches!(rows[0], SessionRow::NewSession));
+        assert!(matches!(rows[1], SessionRow::Session(session) if session.id == second.id));
+        assert_eq!(app.bundle.selected_session_id, Some(first.id));
+        assert!(app.selected_session_row_index(&rows).is_none());
     }
 }

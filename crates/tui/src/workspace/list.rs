@@ -1,9 +1,20 @@
 use db::models::workspace::WorkspaceWithStatus;
 use uuid::Uuid;
 
-use crate::{app::App, model::workspace_title, workspace::WorkspaceRow};
+use crate::{
+    app::{App, SearchTarget},
+    model::workspace_title,
+    workspace::WorkspaceRow,
+};
 
 impl App {
+    fn workspace_filter_query(&self) -> String {
+        self.active_search_query_for(SearchTarget::Workspaces)
+            .unwrap_or("")
+            .trim()
+            .to_lowercase()
+    }
+
     fn all_workspaces(&self) -> Vec<&WorkspaceWithStatus> {
         let mut workspaces = self.active_workspaces.values().collect::<Vec<_>>();
         workspaces.sort_by(|left, right| {
@@ -16,31 +27,31 @@ impl App {
     }
 
     fn filtered_workspaces(&self) -> Vec<&WorkspaceWithStatus> {
+        let filter = self.workspace_filter_query();
         self.all_workspaces()
             .into_iter()
             .filter(|workspace| {
-                if self.filter.is_empty() {
+                if filter.is_empty() {
                     return true;
                 }
                 let title = workspace_title(&workspace.workspace).to_lowercase();
                 let branch = workspace.branch.to_lowercase();
-                let filter = self.filter.to_lowercase();
                 title.contains(&filter) || branch.contains(&filter)
             })
             .collect()
     }
 
     fn filtered_archived_workspaces(&self) -> Vec<&WorkspaceWithStatus> {
+        let filter = self.workspace_filter_query();
         let mut workspaces = self
             .archived_workspaces
             .values()
             .filter(|workspace| {
-                if self.filter.is_empty() {
+                if filter.is_empty() {
                     return true;
                 }
                 let title = workspace_title(&workspace.workspace).to_lowercase();
                 let branch = workspace.branch.to_lowercase();
-                let filter = self.filter.to_lowercase();
                 title.contains(&filter) || branch.contains(&filter)
             })
             .collect::<Vec<_>>();
@@ -150,7 +161,7 @@ mod tests {
 
     use crate::{
         api::{Api, WorkspaceSubscriptions},
-        app::App,
+        app::{App, SearchPromptState, SearchTarget},
         editor::ComposerEditorMode,
         model::{Focus, Pane, QueueStatus, WorkspaceBundle, WorkspaceSummary},
         workspace::WorkspaceRow,
@@ -341,5 +352,30 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(visible, vec![older_pinned.id, newer_unpinned.id]);
+    }
+
+    #[test]
+    fn workspace_rows_preview_inline_filter_without_changing_selection() {
+        let mut app = test_app();
+        let alpha = workspace("alpha", false, false, 1);
+        let beta = workspace("beta", false, false, 2);
+        app.active_workspaces.insert(alpha.id, alpha.clone());
+        app.active_workspaces.insert(beta.id, beta.clone());
+        app.selected_workspace_id = Some(alpha.id);
+        app.search_prompt = Some(SearchPromptState {
+            target: SearchTarget::Workspaces,
+            query: "beta".to_string(),
+            cursor: 4,
+            original_query: String::new(),
+            original_conversation_search: None,
+            original_chat_end_offset: 0,
+        });
+
+        let rows = app.workspace_rows();
+
+        assert!(app.filter.is_empty());
+        assert_eq!(app.visible_workspace_ids(), vec![beta.id]);
+        assert_eq!(app.selected_workspace_id, Some(alpha.id));
+        assert!(app.selected_workspace_row_index(&rows).is_none());
     }
 }
