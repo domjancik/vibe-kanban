@@ -3,6 +3,7 @@ mod app;
 mod app_editor;
 mod app_state;
 mod app_update;
+mod composer;
 mod conversation;
 mod editor;
 mod input;
