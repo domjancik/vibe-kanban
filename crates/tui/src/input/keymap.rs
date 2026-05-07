@@ -56,10 +56,10 @@ pub fn map_app_key(
             ..
         } => Some(AppIntent::ToggleComposerEditorMode),
         KeyEvent {
-            code: KeyCode::Char(' '),
+            code: KeyCode::Char('w'),
             modifiers,
             ..
-        } if modifiers == (KeyModifiers::CONTROL | KeyModifiers::SHIFT) => {
+        } if modifiers == KeyModifiers::CONTROL => {
             Some(AppIntent::ToggleMaximizedPanel)
         }
         KeyEvent {
@@ -262,8 +262,8 @@ mod tests {
         assert_eq!(
             map_app_key(
                 KeyEvent::new(
-                    KeyCode::Char(' '),
-                    KeyModifiers::CONTROL | KeyModifiers::SHIFT
+                    KeyCode::Char('w'),
+                    KeyModifiers::CONTROL
                 ),
                 false,
                 &Pane::Chat
