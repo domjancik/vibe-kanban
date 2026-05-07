@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use super::transport::{run_patch_stream, ws_base};
 use crate::{
-    api::{Api, SCRATCH_TYPE_DRAFT_FOLLOW_UP, WorkspaceSubscriptions},
+    api::{Api, SCRATCH_TYPE_DRAFT_FOLLOW_UP, WorkspaceSubscriptions, net_error},
     model::{
         CreateSessionRequest, FollowUpRequest, LogEntriesState, NetEvent, PatchType, QueueStatus,
         ScratchPayload, ScratchRecord, ScratchStreamState, UpdateScratchPayload,
@@ -53,7 +53,10 @@ impl Api {
                     let _ = tx.send(NetEvent::QueueLoaded { session_id, status });
                 }
                 Err(error) => {
-                    let _ = tx.send(NetEvent::Error(error.to_string()));
+                    let _ = tx.send(net_error(
+                        format!("load queue status for session {session_id}"),
+                        error,
+                    ));
                 }
             }
         });
@@ -197,7 +200,10 @@ fn spawn_draft_stream(api: Api, scratch_id: Uuid, tx: UnboundedSender<NetEvent>)
         )
         .await;
         if let Err(error) = result {
-            let _ = tx.send(NetEvent::Error(error.to_string()));
+            let _ = tx.send(net_error(
+                format!("draft stream for scratch {scratch_id}"),
+                error,
+            ));
         }
     })
 }

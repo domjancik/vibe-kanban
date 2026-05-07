@@ -15,7 +15,7 @@ use super::{
     transport::{run_patch_stream, ws_base},
 };
 use crate::{
-    api::{Api, SCRATCH_TYPE_WORKSPACE_NOTES, WorkspaceSubscriptions},
+    api::{Api, SCRATCH_TYPE_WORKSPACE_NOTES, WorkspaceSubscriptions, net_error},
     model::{
         DiffStreamState, ExecutionProcessesState, ExecutorDiscoveryStreamState, LogEntriesState,
         NetEvent, PatchType, RepoBranchStatus, ScratchPayload, ScratchRecord, ScratchStreamState,
@@ -51,7 +51,8 @@ impl Api {
                     let _ = tx_workspace.send(NetEvent::WorkspaceLoaded(workspace));
                 }
                 Err(error) => {
-                    let _ = tx_workspace.send(NetEvent::Error(error.to_string()));
+                    let _ = tx_workspace
+                        .send(net_error(format!("load workspace {workspace_id}"), error));
                 }
             }
         });
@@ -70,7 +71,10 @@ impl Api {
                     });
                 }
                 Err(error) => {
-                    let _ = tx_sessions.send(NetEvent::Error(error.to_string()));
+                    let _ = tx_sessions.send(net_error(
+                        format!("load sessions for workspace {workspace_id}"),
+                        error,
+                    ));
                 }
             }
         });
@@ -91,7 +95,10 @@ impl Api {
                     });
                 }
                 Err(error) => {
-                    let _ = tx_repos.send(NetEvent::Error(error.to_string()));
+                    let _ = tx_repos.send(net_error(
+                        format!("load repos for workspace {workspace_id}"),
+                        error,
+                    ));
                 }
             }
         });
@@ -110,7 +117,10 @@ impl Api {
                     });
                 }
                 Err(error) => {
-                    let _ = tx_git.send(NetEvent::Error(error.to_string()));
+                    let _ = tx_git.send(net_error(
+                        format!("load git status for workspace {workspace_id}"),
+                        error,
+                    ));
                 }
             }
         });
@@ -294,7 +304,10 @@ fn spawn_workspace_stream(
         )
         .await;
         if let Err(error) = result {
-            let _ = tx.send(NetEvent::Error(error.to_string()));
+            let _ = tx.send(net_error(
+                format!("workspace stream (archived={archived})"),
+                error,
+            ));
         }
     })
 }
@@ -313,7 +326,10 @@ fn spawn_summary_poller(api: Api, archived: bool, tx: UnboundedSender<NetEvent>)
                     let _ = tx.send(NetEvent::Summaries(response.summaries));
                 }
                 Err(error) => {
-                    let _ = tx.send(NetEvent::Error(error.to_string()));
+                    let _ = tx.send(net_error(
+                        format!("workspace summaries poller (archived={archived})"),
+                        error,
+                    ));
                 }
             }
             sleep(std::time::Duration::from_secs(15)).await;
@@ -353,7 +369,10 @@ fn spawn_diff_stream(
         )
         .await;
         if let Err(error) = result {
-            let _ = tx.send(NetEvent::Error(error.to_string()));
+            let _ = tx.send(net_error(
+                format!("diff stream for workspace {workspace_id}"),
+                error,
+            ));
         }
     })
 }
@@ -389,7 +408,10 @@ fn spawn_notes_stream(
         )
         .await;
         if let Err(error) = result {
-            let _ = tx.send(NetEvent::Error(error.to_string()));
+            let _ = tx.send(net_error(
+                format!("notes stream for workspace {workspace_id}"),
+                error,
+            ));
         }
     })
 }
@@ -422,7 +444,10 @@ fn spawn_process_stream(
         )
         .await;
         if let Err(error) = result {
-            let _ = tx.send(NetEvent::Error(error.to_string()));
+            let _ = tx.send(net_error(
+                format!("process stream for session {session_id}"),
+                error,
+            ));
         }
     })
 }
@@ -444,7 +469,10 @@ fn spawn_logs_stream(api: Api, process_id: Uuid, tx: UnboundedSender<NetEvent>) 
         )
         .await;
         if let Err(error) = result {
-            let _ = tx.send(NetEvent::Error(error.to_string()));
+            let _ = tx.send(net_error(
+                format!("logs stream for process {process_id}"),
+                error,
+            ));
         }
     })
 }
@@ -494,7 +522,12 @@ fn spawn_discovery_stream(
         )
         .await;
         if let Err(error) = result {
-            let _ = tx.send(NetEvent::Error(error.to_string()));
+            let _ = tx.send(net_error(
+                format!(
+                    "executor discovery stream for {executor} workspace={workspace_id:?} session={session_id:?}"
+                ),
+                error,
+            ));
         }
     })
 }

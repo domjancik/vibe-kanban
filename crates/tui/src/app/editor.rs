@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Text;
 
 use crate::{
@@ -20,6 +20,14 @@ enum EditorTarget {
 }
 
 impl App {
+    fn notes_text_input_options() -> TextInputOptions {
+        TextInputOptions {
+            submit_on_enter: false,
+            enter_inserts_newline: true,
+            shift_enter_inserts_newline: false,
+        }
+    }
+
     async fn handle_target_text_input(&mut self, key: KeyEvent, target: EditorTarget) {
         let options = match target {
             EditorTarget::Composer => TextInputOptions {
@@ -27,11 +35,7 @@ impl App {
                 enter_inserts_newline: false,
                 shift_enter_inserts_newline: true,
             },
-            EditorTarget::Notes => TextInputOptions {
-                submit_on_enter: false,
-                enter_inserts_newline: true,
-                shift_enter_inserts_newline: false,
-            },
+            EditorTarget::Notes => Self::notes_text_input_options(),
             EditorTarget::SessionRename => TextInputOptions {
                 submit_on_enter: true,
                 enter_inserts_newline: false,
@@ -57,6 +61,47 @@ impl App {
                 }
             }
             None => {}
+        }
+    }
+
+    pub(crate) fn should_activate_notes_editor_from_main(&self, key: KeyEvent) -> bool {
+        if matches!(key.code, KeyCode::F(2)) {
+            return true;
+        }
+        if matches!(key.code, KeyCode::Char('1'..='6'))
+            && matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT)
+        {
+            return false;
+        }
+
+        match self.editor_mode {
+            ComposerEditorMode::Standard | ComposerEditorMode::Vim(VimMode::Insert) => {
+                map_text_input_key(key, Self::notes_text_input_options()).is_some()
+            }
+            ComposerEditorMode::Vim(VimMode::Normal) => matches!(
+                key.code,
+                KeyCode::Enter
+                    | KeyCode::Left
+                    | KeyCode::Right
+                    | KeyCode::Up
+                    | KeyCode::Down
+                    | KeyCode::Home
+                    | KeyCode::End
+                    | KeyCode::Char('i')
+                    | KeyCode::Char('a')
+                    | KeyCode::Char('I')
+                    | KeyCode::Char('A')
+                    | KeyCode::Char('h')
+                    | KeyCode::Char('j')
+                    | KeyCode::Char('k')
+                    | KeyCode::Char('l')
+                    | KeyCode::Char('o')
+                    | KeyCode::Char('O')
+                    | KeyCode::Char('x')
+                    | KeyCode::Char('d')
+                    | KeyCode::Char('0')
+                    | KeyCode::Char('$')
+            ),
         }
     }
 
@@ -910,5 +955,19 @@ mod tests {
         app.editor_mode = ComposerEditorMode::Vim(VimMode::Normal);
 
         assert_eq!(app.editor_panel_title(), "Notes Editor [vim normal]");
+    }
+
+    #[test]
+    fn notes_main_focus_activation_respects_editor_mode() {
+        let mut app = test_app();
+        app.selected_pane = Pane::Notes;
+
+        app.editor_mode = ComposerEditorMode::Standard;
+        assert!(app.should_activate_notes_editor_from_main(KeyEvent::from(KeyCode::Char('a'))));
+        assert!(!app.should_activate_notes_editor_from_main(KeyEvent::from(KeyCode::Char('1'))));
+
+        app.editor_mode = ComposerEditorMode::Vim(VimMode::Normal);
+        assert!(app.should_activate_notes_editor_from_main(KeyEvent::from(KeyCode::Char('h'))));
+        assert!(!app.should_activate_notes_editor_from_main(KeyEvent::from(KeyCode::Char('1'))));
     }
 }

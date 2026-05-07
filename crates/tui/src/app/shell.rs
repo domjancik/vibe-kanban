@@ -125,6 +125,15 @@ impl App {
             return;
         }
 
+        if self.focus == Focus::Main
+            && self.selected_pane == Pane::Notes
+            && self.should_activate_notes_editor_from_main(key)
+        {
+            self.focus = Focus::Composer;
+            self.handle_editor_key(key, true).await;
+            return;
+        }
+
         if self.focus == Focus::Composer {
             match self.selected_pane {
                 Pane::Chat => {

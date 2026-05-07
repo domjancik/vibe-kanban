@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Error, Result};
 use reqwest::Client;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -39,6 +39,10 @@ pub struct WorkspaceSubscriptions {
 pub enum TerminalCommand {
     Input(Vec<u8>),
     Resize(u16, u16),
+}
+
+pub(crate) fn net_error(source: impl AsRef<str>, error: Error) -> NetEvent {
+    NetEvent::Error(format!("{}: {error:#}", source.as_ref()))
 }
 
 impl Api {
@@ -121,7 +125,7 @@ impl Api {
                     let _ = tx.send(NetEvent::UserSystemLoaded(info));
                 }
                 Err(error) => {
-                    let _ = tx.send(NetEvent::Error(error.to_string()));
+                    let _ = tx.send(net_error("load user system info", error));
                 }
             }
         });

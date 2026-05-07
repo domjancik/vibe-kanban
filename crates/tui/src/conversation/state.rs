@@ -11,6 +11,7 @@ use ratatui::{
 use uuid::Uuid;
 
 use crate::{
+    api::net_error,
     app::App,
     conversation::{
         initial_conversation_process_ids, process_prompt, render_chat_entry,
@@ -177,7 +178,10 @@ impl App {
                         });
                     }
                     Err(error) => {
-                        let _ = tx.send(crate::model::NetEvent::Error(error.to_string()));
+                        let _ = tx.send(net_error(
+                            format!("conversation bootstrap snapshot for process {process_id}"),
+                            error,
+                        ));
                     }
                 }
             }
@@ -192,7 +196,10 @@ impl App {
                         });
                     }
                     Err(error) => {
-                        let _ = tx.send(crate::model::NetEvent::Error(error.to_string()));
+                        let _ = tx.send(net_error(
+                            format!("conversation backfill snapshot for process {process_id}"),
+                            error,
+                        ));
                     }
                 }
             }
