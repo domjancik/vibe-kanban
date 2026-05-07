@@ -2,7 +2,7 @@ use std::{fs, io::Write, path::PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use futures_util::StreamExt;
-use json_patch::Patch;
+use json_patch::{AddOperation, Patch, PatchOperation};
 use reqwest::Response;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -113,7 +113,7 @@ where
         let payload: Value = serde_json::from_str(&text)?;
         if let Some(patch_value) = payload.get("JsonPatch") {
             let patch: Patch = serde_json::from_value(patch_value.clone())?;
-            json_patch::patch(&mut state, &patch)?;
+            patch_state_with_missing_replace_fallback(&mut state, &patch)?;
             let typed: T = serde_json::from_value(state.clone())?;
             let _ = tx.send(make_event(typed));
         }
@@ -152,11 +152,41 @@ fn tui_log_path() -> PathBuf {
         .unwrap_or_else(|_| std::env::temp_dir().join("vibe-kanban-tui.log"))
 }
 
+fn patch_state_with_missing_replace_fallback(state: &mut Value, patch: &Patch) -> Result<()> {
+    match json_patch::patch(state, patch) {
+        Ok(()) => Ok(()),
+        Err(original_error) => {
+            let fallback_patch = Patch(
+                patch
+                    .0
+                    .iter()
+                    .cloned()
+                    .map(|operation| match operation {
+                        PatchOperation::Replace(replace) => PatchOperation::Add(AddOperation {
+                            path: replace.path,
+                            value: replace.value,
+                        }),
+                        other => other,
+                    })
+                    .collect(),
+            );
+            json_patch::patch(state, &fallback_patch)
+                .map_err(|_| original_error)
+                .map_err(Into::into)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{env, fs};
 
-    use super::{detect_base_url, truncate_for_log, ws_base};
+    use json_patch::Patch;
+    use serde_json::json;
+
+    use super::{
+        detect_base_url, patch_state_with_missing_replace_fallback, truncate_for_log, ws_base,
+    };
 
     #[test]
     fn detect_base_url_prefers_explicit_env_then_backend_port() {
@@ -235,5 +265,40 @@ mod tests {
         let truncated = truncate_for_log(&long);
         assert_eq!(truncated.len(), 403);
         assert!(truncated.ends_with("..."));
+    }
+
+    #[test]
+    fn missing_repo_namespace_replace_falls_back_to_add() {
+        let mut state = json!({ "entries": {} });
+        let patch: Patch = serde_json::from_value(json!([
+            {
+                "op": "replace",
+                "path": "/entries/vibe-kanban",
+                "value": {
+                    "docs/spec.mdx": {
+                        "type": "DIFF",
+                        "content": {
+                            "change": "added",
+                            "oldPath": null,
+                            "newPath": "vibe-kanban/docs/spec.mdx",
+                            "oldContent": null,
+                            "newContent": "body",
+                            "contentOmitted": false,
+                            "additions": 1,
+                            "deletions": 0,
+                            "repoId": null
+                        }
+                    }
+                }
+            }
+        ]))
+        .unwrap();
+
+        patch_state_with_missing_replace_fallback(&mut state, &patch).unwrap();
+
+        assert_eq!(
+            state["entries"]["vibe-kanban"]["docs/spec.mdx"]["type"],
+            json!("DIFF")
+        );
     }
 }
