@@ -139,12 +139,20 @@ The future extension should add:
 
 The TUI should be keyboard-first. Mouse support is optional and should not drive the architecture.
 
+The maximize shortcut should behave like a panel zoom, not a mode switch to a different screen:
+
+- it should temporarily render only the currently active focus region
+- `WorkspaceList`, `Main`, and `Detail` are the zoomable regions
+- `Composer` counts as part of `Main`
+- pressing `Ctrl+Space` again should restore the normal multi-panel layout
+
 ### Global keys
 
 - `q`: quit current modal or exit app from root
 - `Ctrl+c`: force quit
 - `?`: show keymap help
 - `:` or `Ctrl+p`: open command palette
+- `Ctrl+Space`: maximize or restore the currently active panel region
 - `Tab` and `Shift+Tab`: cycle focus regions
 - `1` `2` `3` `4`: jump to main regions
 - `/`: search within the currently focused list or log buffer

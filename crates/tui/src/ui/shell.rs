@@ -21,7 +21,13 @@ impl App {
 
         frame.render_widget(self.header(), outer[0]);
 
-        if frame.area().width >= 140 {
+        if self.maximized_panel {
+            match self.focused_region() {
+                FocusedRegion::WorkspaceList => self.render_workspace_list(frame, outer[1]),
+                FocusedRegion::Main => self.render_main(frame, outer[1]),
+                FocusedRegion::Detail => self.render_detail(frame, outer[1]),
+            }
+        } else if frame.area().width >= 140 {
             let body = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
@@ -73,4 +79,27 @@ impl App {
         let status = self.error.as_deref().unwrap_or(&self.status);
         Paragraph::new(status.to_string()).block(Block::default().borders(Borders::TOP))
     }
+
+    fn focused_region(&self) -> FocusedRegion {
+        match self.focus {
+            crate::model::Focus::WorkspaceList => FocusedRegion::WorkspaceList,
+            crate::model::Focus::Main | crate::model::Focus::Composer => FocusedRegion::Main,
+            crate::model::Focus::Detail => FocusedRegion::Detail,
+        }
+    }
+
+    pub(crate) fn active_region_label(&self) -> &'static str {
+        match self.focused_region() {
+            FocusedRegion::WorkspaceList => "workspace list",
+            FocusedRegion::Main => "main pane",
+            FocusedRegion::Detail => "detail pane",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FocusedRegion {
+    WorkspaceList,
+    Main,
+    Detail,
 }

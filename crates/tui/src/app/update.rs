@@ -313,11 +313,19 @@ impl App {
         match intent {
             AppIntent::CancelNewSession => self.cancel_new_session_flow(),
             AppIntent::ToggleComposerEditorMode => self.toggle_editor_mode(),
+            AppIntent::ToggleMaximizedPanel => {
+                self.maximized_panel = !self.maximized_panel;
+                self.status = if self.maximized_panel {
+                    format!("Maximized {}", self.active_region_label())
+                } else {
+                    "Restored multi-panel layout".to_string()
+                };
+            }
             AppIntent::Quit => self.should_quit = true,
             AppIntent::FocusNext => self.focus = next_focus(&self.focus),
             AppIntent::FocusPrev => self.focus = prev_focus(&self.focus),
             AppIntent::ShowHelp => {
-                self.status = "Keys: Tab focus, j/k nav, 1-6 panes, i edit, Enter open/send, r rename session, E executor, V variant, M model, R reasoning, A agent menu, P permission, p pin, x archive, n new session, s start dev, c cleanup, e editor, Esc/C-]/C-g leave terminal".to_string();
+                self.status = "Keys: Tab focus, Ctrl+Space maximize active panel, j/k nav, 1-6 panes, i edit, Enter open/send, r rename session, E executor, V variant, M model, R reasoning, A agent menu, P permission, p pin, x archive, n new session, s start dev, c cleanup, e editor, Esc/C-]/C-g leave terminal".to_string();
             }
             AppIntent::SelectPane(pane) => self.selected_pane = pane,
             AppIntent::ToggleShowArchived => self.show_archived = !self.show_archived,

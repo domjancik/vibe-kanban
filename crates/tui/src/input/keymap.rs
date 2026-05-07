@@ -6,6 +6,7 @@ use crate::model::Pane;
 pub enum AppIntent {
     CancelNewSession,
     ToggleComposerEditorMode,
+    ToggleMaximizedPanel,
     Quit,
     FocusNext,
     FocusPrev,
@@ -53,6 +54,11 @@ pub fn map_app_key(
             code: KeyCode::F(2),
             ..
         } => Some(AppIntent::ToggleComposerEditorMode),
+        KeyEvent {
+            code: KeyCode::Char(' '),
+            modifiers,
+            ..
+        } if modifiers == KeyModifiers::CONTROL => Some(AppIntent::ToggleMaximizedPanel),
         KeyEvent {
             code: KeyCode::Char('q'),
             ..
@@ -241,6 +247,14 @@ mod tests {
         assert_eq!(
             map_app_key(key(KeyCode::Tab), false, &Pane::Chat),
             Some(AppIntent::FocusNext)
+        );
+        assert_eq!(
+            map_app_key(
+                KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL),
+                false,
+                &Pane::Chat
+            ),
+            Some(AppIntent::ToggleMaximizedPanel)
         );
         assert_eq!(
             map_app_key(key(KeyCode::PageDown), false, &Pane::Chat),
