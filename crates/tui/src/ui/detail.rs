@@ -3,12 +3,13 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Text},
-    widgets::{List, ListItem, ListState, Paragraph},
+    text::{Line, Span, Text},
+    widgets::{List, ListItem, ListState, Paragraph, Wrap},
 };
 
 use crate::{
     app::App,
+    app::{SearchTarget, highlight_text_span},
     editor::render_editor_buffer,
     model::{Focus, format_relative_time, workspace_title},
     ui::{panel_block, render_vertical_scrollbar},
@@ -109,7 +110,28 @@ impl App {
             chunks[0],
         );
 
+        let session_sections = if self.inline_search_prompt(SearchTarget::Sessions).is_some() {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(3), Constraint::Min(3)])
+                .split(chunks[1])
+        } else {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(0), Constraint::Min(3)])
+                .split(chunks[1])
+        };
+        if let Some(prompt) = self.inline_search_prompt(SearchTarget::Sessions) {
+            frame.render_widget(
+                Paragraph::new(prompt)
+                    .block(panel_block("Session Filter", self.focus == Focus::Detail))
+                    .wrap(Wrap { trim: false }),
+                session_sections[0],
+            );
+        }
+
         let session_rows = self.session_rows();
+        let session_query = self.active_search_query_for(SearchTarget::Sessions).unwrap_or("");
         let sessions = session_rows
             .iter()
             .map(|row| match row {
@@ -125,28 +147,29 @@ impl App {
                         Style::default().fg(Color::DarkGray),
                     ),
                 ])),
-                SessionRow::Session(session) => self.render_session_row(session),
+                SessionRow::Session(session) => self.render_session_row(session, session_query),
             })
             .collect::<Vec<_>>();
         let mut state = ListState::default();
         if let Some(index) = self.selected_session_row_index(&session_rows) {
             state.select(Some(index));
         }
-        let sessions_title = if self.session_filter.is_empty() {
-            "Sessions".to_string()
-        } else {
-            format!("Sessions / {}", self.session_filter)
-        };
         frame.render_stateful_widget(
             List::new(sessions)
-                .block(panel_block(&sessions_title, self.focus == Focus::Detail))
+                .block(panel_block("Sessions", self.focus == Focus::Detail))
                 .highlight_style(Style::default().fg(Color::Cyan).bg(Color::Rgb(28, 38, 48))),
-            chunks[1],
+            session_sections[1],
             &mut state,
         );
         let (total_lines, viewport_lines, offset_lines) =
-            self.session_scroll_metrics(&session_rows, chunks[1]);
-        render_vertical_scrollbar(frame, chunks[1], total_lines, viewport_lines, offset_lines);
+            self.session_scroll_metrics(&session_rows, session_sections[1]);
+        render_vertical_scrollbar(
+            frame,
+            session_sections[1],
+            total_lines,
+            viewport_lines,
+            offset_lines,
+        );
 
         let mut processes = self
             .bundle
@@ -178,7 +201,7 @@ impl App {
         );
     }
 
-    fn render_session_row(&self, session: &Session) -> ListItem<'static> {
+    fn render_session_row(&self, session: &Session, query: &str) -> ListItem<'static> {
         let is_renaming = self
             .session_rename
             .as_ref()
@@ -212,8 +235,32 @@ impl App {
             .clone()
             .unwrap_or_else(|| "unknown".to_string());
         ListItem::new(Text::from(vec![
-            Line::raw(name),
-            Line::styled(executor, Style::default().fg(Color::DarkGray)),
+            Line::from(highlight_text_span(
+                &name,
+                Style::default(),
+                query,
+                Style::default()
+                    .bg(Color::Rgb(64, 56, 0))
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from({
+                let mut spans = Vec::new();
+                spans.extend(highlight_text_span(
+                    &executor,
+                    Style::default().fg(Color::DarkGray),
+                    query,
+                    Style::default()
+                        .bg(Color::Rgb(64, 56, 0))
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::styled(
+                    format!("  {}", session.id),
+                    Style::default().fg(Color::DarkGray),
+                ));
+                spans
+            }),
         ]))
     }
 }

@@ -1,6 +1,6 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Margin, Rect},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Clear, List, ListItem, ListState, Paragraph, Wrap},
@@ -8,40 +8,10 @@ use ratatui::{
 
 use crate::{
     app::App,
-    editor::render_editor_buffer,
     ui::{centered_rect, panel_block},
 };
 
 impl App {
-    pub(crate) fn render_search_prompt(&self, frame: &mut Frame, area: Rect) {
-        let Some(prompt) = self.search_prompt.as_ref() else {
-            return;
-        };
-        let popup = centered_rect(60, 18, area);
-        let label = match prompt.target {
-            crate::app::SearchTarget::Workspaces => "Workspace Filter",
-            crate::app::SearchTarget::Sessions => "Session Filter",
-            crate::app::SearchTarget::Conversation => "Conversation Search",
-        };
-
-        frame.render_widget(Clear, popup);
-        frame.render_widget(panel_block(label, true), popup);
-        frame.render_widget(
-            Paragraph::new(render_editor_buffer(
-                &prompt.query,
-                prompt.cursor,
-                true,
-                self.editor_mode,
-            ))
-            .block(panel_block("/", false))
-            .wrap(Wrap { trim: false }),
-            popup.inner(Margin {
-                vertical: 1,
-                horizontal: 2,
-            }),
-        );
-    }
-
     pub(crate) fn render_agent_picker(&self, frame: &mut Frame, area: Rect) {
         let Some(picker) = self.agent_picker.as_ref() else {
             return;

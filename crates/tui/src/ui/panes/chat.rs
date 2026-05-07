@@ -8,6 +8,7 @@ use ratatui::{
 
 use crate::{
     app::App,
+    app::{SearchTarget, highlight_line_matches},
     conversation::chat_window_bounds,
     model::Focus,
     ui::{panel_block, render_vertical_scrollbar},
@@ -27,12 +28,32 @@ impl App {
             return;
         }
 
-        let (messages_area, status_area) = if inner.height > 1 {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(1), Constraint::Length(1)])
-                .split(inner);
-            (chunks[0], Some(chunks[1]))
+        let search_active = self.inline_search_prompt(SearchTarget::Conversation).is_some();
+        let vertical_constraints = if search_active && inner.height > 3 {
+            vec![
+                Constraint::Length(3),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ]
+        } else if inner.height > 1 {
+            vec![Constraint::Min(1), Constraint::Length(1)]
+        } else {
+            vec![Constraint::Min(1)]
+        };
+        let chat_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(vertical_constraints)
+            .split(inner);
+        let (messages_area, status_area) = if search_active && chat_chunks.len() >= 3 {
+            if let Some(prompt) = self.inline_search_prompt(SearchTarget::Conversation) {
+                frame.render_widget(
+                    Paragraph::new(prompt).wrap(Wrap { trim: false }),
+                    chat_chunks[0],
+                );
+            }
+            (chat_chunks[1], Some(chat_chunks[2]))
+        } else if inner.height > 1 {
+            (chat_chunks[0], chat_chunks.get(1).copied())
         } else {
             (inner, None)
         };
@@ -64,8 +85,15 @@ impl App {
             self.chat_end_offset = clamped_end_offset.min(u16::MAX as usize) as u16;
         }
         let lines = {
+            let query = self
+                .active_search_query_for(SearchTarget::Conversation)
+                .unwrap_or("")
+                .to_string();
             let cache = self.chat_render_cache(content_area.width.max(1) as usize);
-            cache.lines[start..end].to_vec()
+            cache.lines[start..end]
+                .iter()
+                .map(|line| highlight_line_matches(line, &query))
+                .collect::<Vec<_>>()
         };
         frame.render_widget(
             Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),

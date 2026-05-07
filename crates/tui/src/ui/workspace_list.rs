@@ -3,11 +3,12 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Text},
-    widgets::{List, ListItem, ListState},
+    widgets::{List, ListItem, ListState, Paragraph, Wrap},
 };
 
 use crate::{
     app::App,
+    app::{SearchTarget, highlight_text_span},
     model::{Focus, format_relative_time, workspace_title},
     ui::{panel_block, render_vertical_scrollbar},
     workspace::WorkspaceRow,
@@ -15,7 +16,35 @@ use crate::{
 
 impl App {
     pub(crate) fn render_workspace_list(&self, frame: &mut Frame, area: Rect) {
+        let sections = if self.inline_search_prompt(SearchTarget::Workspaces).is_some() {
+            ratatui::layout::Layout::default()
+                .direction(ratatui::layout::Direction::Vertical)
+                .constraints([
+                    ratatui::layout::Constraint::Length(3),
+                    ratatui::layout::Constraint::Min(3),
+                ])
+                .split(area)
+        } else {
+            ratatui::layout::Layout::default()
+                .direction(ratatui::layout::Direction::Vertical)
+                .constraints([
+                    ratatui::layout::Constraint::Length(0),
+                    ratatui::layout::Constraint::Min(3),
+                ])
+                .split(area)
+        };
+        if let Some(prompt) = self.inline_search_prompt(SearchTarget::Workspaces) {
+            frame.render_widget(
+                Paragraph::new(prompt)
+                    .block(panel_block("Workspace Filter", self.focus == Focus::WorkspaceList))
+                    .wrap(Wrap { trim: false }),
+                sections[0],
+            );
+        }
+
+        let list_area = sections[1];
         let rows = self.workspace_rows();
+        let query = self.active_search_query_for(SearchTarget::Workspaces).unwrap_or("");
         let items = rows
             .iter()
             .map(|row| match row {
@@ -66,8 +95,38 @@ impl App {
                         Color::White
                     };
                     ListItem::new(Text::from(vec![
-                        Line::styled(format!(" {line}"), Style::default().fg(status_color)),
-                        Line::styled(format!(" {meta}"), Style::default().fg(Color::DarkGray)),
+                        Line::from({
+                            let mut spans = vec![ratatui::text::Span::styled(
+                                " ".to_string(),
+                                Style::default().fg(status_color),
+                            )];
+                            spans.extend(highlight_text_span(
+                                &line,
+                                Style::default().fg(status_color),
+                                query,
+                                Style::default()
+                                    .bg(Color::Rgb(64, 56, 0))
+                                    .fg(Color::Yellow)
+                                    .add_modifier(Modifier::BOLD),
+                            ));
+                            spans
+                        }),
+                        Line::from({
+                            let mut spans = vec![ratatui::text::Span::styled(
+                                " ".to_string(),
+                                Style::default().fg(Color::DarkGray),
+                            )];
+                            spans.extend(highlight_text_span(
+                                &meta,
+                                Style::default().fg(Color::DarkGray),
+                                query,
+                                Style::default()
+                                    .bg(Color::Rgb(64, 56, 0))
+                                    .fg(Color::Yellow)
+                                    .add_modifier(Modifier::BOLD),
+                            ));
+                            spans
+                        }),
                         Line::raw(""),
                     ]))
                 }
@@ -79,28 +138,23 @@ impl App {
             state.select(Some(index));
         }
 
-        let title = if self.filter.is_empty() {
-            "Workspaces".to_string()
-        } else {
-            format!("Workspaces / {}", self.filter)
-        };
-        let block = panel_block(&title, self.focus == Focus::WorkspaceList);
+        let block = panel_block("Workspaces", self.focus == Focus::WorkspaceList);
         let list = List::new(items).block(block).highlight_style(
             Style::default()
                 .bg(Color::Rgb(28, 38, 48))
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         );
-        frame.render_stateful_widget(list, area, &mut state);
+        frame.render_stateful_widget(list, list_area, &mut state);
         render_vertical_scrollbar(
             frame,
-            area,
+            list_area,
             rows.len(),
-            crate::app::viewport_capacity(area, 3),
+            crate::app::viewport_capacity(list_area, 3),
             crate::app::selected_list_offset(
                 self.selected_workspace_row_index(&rows).unwrap_or(0),
                 rows.len(),
-                crate::app::viewport_capacity(area, 3),
+                crate::app::viewport_capacity(list_area, 3),
             ),
         );
     }
