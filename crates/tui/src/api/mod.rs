@@ -6,6 +6,13 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio::{sync::mpsc::UnboundedSender, task::JoinHandle};
 
+pub mod client;
+pub mod session;
+pub mod streams;
+pub mod terminal;
+pub mod transport;
+pub mod workspace;
+
 pub use crate::api_transport::detect_base_url;
 use crate::{
     api_transport::{log_api, parse_api_response},
