@@ -72,7 +72,7 @@ pub fn chat_window_bounds(
 
 #[cfg(test)]
 mod tests {
-    use crate::conversation::chat_window_bounds;
+    use super::chat_window_bounds;
 
     #[test]
     fn chat_window_bounds_clamp_end_offset_to_last_full_page() {

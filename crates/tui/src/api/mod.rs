@@ -6,9 +6,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio::{sync::mpsc::UnboundedSender, task::JoinHandle};
 
-pub mod client;
 pub mod session;
-pub mod streams;
 pub mod terminal;
 pub mod transport;
 pub mod workspace;

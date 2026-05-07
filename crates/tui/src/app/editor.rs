@@ -16,48 +16,60 @@ use crate::{
 enum EditorTarget {
     Composer,
     Notes,
+    SessionRename,
 }
 
 impl App {
-    pub(crate) async fn handle_text_input(&mut self, key: KeyEvent, notes: bool) {
-        let (buffer, cursor): (&mut String, &mut usize) = if notes {
-            (&mut self.bundle.notes, &mut self.notes_cursor)
-        } else {
-            (&mut self.composer, &mut self.composer_cursor)
-        };
-        let mut changed = false;
-        let options = if notes {
-            TextInputOptions {
-                submit_on_enter: false,
-                enter_inserts_newline: true,
-                shift_enter_inserts_newline: false,
-            }
-        } else {
-            TextInputOptions {
+    async fn handle_target_text_input(&mut self, key: KeyEvent, target: EditorTarget) {
+        let options = match target {
+            EditorTarget::Composer => TextInputOptions {
                 submit_on_enter: true,
                 enter_inserts_newline: false,
                 shift_enter_inserts_newline: true,
-            }
+            },
+            EditorTarget::Notes => TextInputOptions {
+                submit_on_enter: false,
+                enter_inserts_newline: true,
+                shift_enter_inserts_newline: false,
+            },
+            EditorTarget::SessionRename => TextInputOptions {
+                submit_on_enter: true,
+                enter_inserts_newline: false,
+                shift_enter_inserts_newline: false,
+            },
         };
 
-        match map_text_input_key(key, options) {
-            Some(TextInputEvent::Submit) => self.submit_prompt().await,
+        let event = map_text_input_key(key, options);
+        match event {
+            Some(TextInputEvent::Submit) => match target {
+                EditorTarget::Composer => self.submit_prompt().await,
+                EditorTarget::SessionRename => self.submit_session_rename().await,
+                EditorTarget::Notes => {}
+            },
             Some(TextInputEvent::Edit(action)) => {
-                let before = (buffer.clone(), *cursor);
-                apply_text_edit_action(buffer, cursor, action);
-                changed = before.0 != *buffer || before.1 != *cursor;
+                let changed = {
+                    let (buffer, cursor): (&mut String, &mut usize) =
+                        self.editor_buffer_cursor_mut(target);
+                    let before = (buffer.clone(), *cursor);
+                    apply_text_edit_action(buffer, cursor, action);
+                    *cursor = clamp_char_boundary(buffer, *cursor);
+                    before.0 != *buffer || before.1 != *cursor
+                };
+                if changed {
+                    self.mark_editor_dirty(target);
+                }
             }
             None => {}
         }
-        if notes && changed {
-            self.bundle.notes_dirty = true;
-            self.bundle.last_notes_edit = Some(std::time::Instant::now());
-            self.notes_edit_revision = self.notes_edit_revision.saturating_add(1);
-        } else if changed {
-            self.composer_dirty = true;
-            self.last_composer_edit = Some(std::time::Instant::now());
-            self.composer_edit_revision = self.composer_edit_revision.saturating_add(1);
-        }
+    }
+
+    pub(crate) async fn handle_text_input(&mut self, key: KeyEvent, notes: bool) {
+        let target = if notes {
+            EditorTarget::Notes
+        } else {
+            EditorTarget::Composer
+        };
+        self.handle_target_text_input(key, target).await;
     }
 
     pub(crate) async fn handle_editor_key(&mut self, key: KeyEvent, notes: bool) {
@@ -406,6 +418,13 @@ impl App {
         match target {
             EditorTarget::Composer => (&mut self.composer, &mut self.composer_cursor),
             EditorTarget::Notes => (&mut self.bundle.notes, &mut self.notes_cursor),
+            EditorTarget::SessionRename => {
+                let rename = self
+                    .session_rename
+                    .as_mut()
+                    .expect("session rename target requires active state");
+                (&mut rename.name, &mut rename.cursor)
+            }
         }
     }
 
@@ -421,6 +440,7 @@ impl App {
                 self.bundle.last_notes_edit = Some(std::time::Instant::now());
                 self.notes_edit_revision = self.notes_edit_revision.saturating_add(1);
             }
+            EditorTarget::SessionRename => {}
         }
     }
 
@@ -480,32 +500,53 @@ impl App {
     }
 
     pub(crate) async fn handle_session_rename_key(&mut self, key: KeyEvent) {
-        let Some(rename) = self.session_rename.as_mut() else {
+        if self.session_rename.is_none() {
             return;
-        };
+        }
 
-        match key {
-            KeyEvent {
-                code: KeyCode::Esc, ..
-            } => {
-                self.session_rename = None;
-                self.status = "Cancelled session rename".to_string();
-            }
-            _ => match map_text_input_key(
-                key,
-                TextInputOptions {
-                    submit_on_enter: true,
-                    enter_inserts_newline: false,
-                    shift_enter_inserts_newline: false,
-                },
-            ) {
-                Some(TextInputEvent::Submit) => self.submit_session_rename().await,
-                Some(TextInputEvent::Edit(action)) => {
-                    apply_text_edit_action(&mut rename.name, &mut rename.cursor, action);
-                    rename.cursor = clamp_char_boundary(&rename.name, rename.cursor);
+        if let KeyEvent {
+            code: KeyCode::F(2),
+            ..
+        } = key
+        {
+            self.toggle_editor_mode();
+            return;
+        }
+
+        match self.editor_mode {
+            ComposerEditorMode::Standard => match key {
+                KeyEvent {
+                    code: KeyCode::Esc, ..
+                } => {
+                    self.session_rename = None;
+                    self.status = "Cancelled session rename".to_string();
                 }
-                None => {}
+                _ => {
+                    self.handle_target_text_input(key, EditorTarget::SessionRename)
+                        .await
+                }
             },
+            ComposerEditorMode::Vim(VimMode::Insert) => {
+                if key.code == KeyCode::Esc {
+                    self.editor_mode = ComposerEditorMode::Vim(VimMode::Normal);
+                    self.status = "Editor mode: Vim Normal".to_string();
+                } else {
+                    self.handle_target_text_input(key, EditorTarget::SessionRename)
+                        .await;
+                }
+            }
+            ComposerEditorMode::Vim(VimMode::Normal) => {
+                if self
+                    .handle_vim_normal_key(key, EditorTarget::SessionRename)
+                    .await
+                {
+                    return;
+                }
+                if key.code == KeyCode::Esc {
+                    self.session_rename = None;
+                    self.status = "Cancelled session rename".to_string();
+                }
+            }
         }
     }
 

@@ -16,6 +16,52 @@ use crate::{
 };
 
 impl App {
+    fn session_row_height(&self, row: &SessionRow<'_>) -> usize {
+        match row {
+            SessionRow::NewSession => 2,
+            SessionRow::Session(session)
+                if self
+                    .session_rename
+                    .as_ref()
+                    .is_some_and(|rename| rename.session_id == session.id) =>
+            {
+                3
+            }
+            SessionRow::Session(_) => 2,
+        }
+    }
+
+    fn session_scroll_metrics(&self, rows: &[SessionRow<'_>], area: Rect) -> (usize, usize, usize) {
+        let viewport_lines = area.height.saturating_sub(2).max(1) as usize;
+        let total_lines = rows
+            .iter()
+            .map(|row| self.session_row_height(row))
+            .sum::<usize>();
+        let selected_index = self.selected_session_row_index(rows).unwrap_or(0);
+
+        let mut top_index = selected_index.min(rows.len().saturating_sub(1));
+        let mut used_lines = rows
+            .get(top_index)
+            .map(|row| self.session_row_height(row))
+            .unwrap_or(0);
+
+        while top_index > 0 {
+            let next_height = self.session_row_height(&rows[top_index - 1]);
+            if used_lines + next_height > viewport_lines {
+                break;
+            }
+            top_index -= 1;
+            used_lines += next_height;
+        }
+
+        let offset_lines = rows[..top_index]
+            .iter()
+            .map(|row| self.session_row_height(row))
+            .sum::<usize>();
+
+        (total_lines, viewport_lines, offset_lines)
+    }
+
     pub(crate) fn render_detail(&self, frame: &mut Frame, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -93,17 +139,9 @@ impl App {
             chunks[1],
             &mut state,
         );
-        render_vertical_scrollbar(
-            frame,
-            chunks[1],
-            session_rows.len(),
-            crate::app::viewport_capacity(chunks[1], 2),
-            crate::app::selected_list_offset(
-                self.selected_session_row_index(&session_rows).unwrap_or(0),
-                session_rows.len(),
-                crate::app::viewport_capacity(chunks[1], 2),
-            ),
-        );
+        let (total_lines, viewport_lines, offset_lines) =
+            self.session_scroll_metrics(&session_rows, chunks[1]);
+        render_vertical_scrollbar(frame, chunks[1], total_lines, viewport_lines, offset_lines);
 
         let mut processes = self
             .bundle

@@ -307,7 +307,8 @@ mod tests {
     use executors::logs::{ActionType, NormalizedEntry, NormalizedEntryType, ToolStatus};
     use ratatui::style::{Color, Modifier, Style};
 
-    use crate::conversation::{render_normalized_chat_entry, wrap_line};
+    use super::render_normalized_chat_entry;
+    use crate::conversation::wrap::wrap_line;
 
     fn entry(entry_type: NormalizedEntryType, content: &str) -> NormalizedEntry {
         NormalizedEntry {

@@ -6,8 +6,8 @@ pub fn clamp_char_boundary(buffer: &str, cursor: usize) -> usize {
     buffer
         .char_indices()
         .map(|(index, _)| index)
-        .take_while(|index| *index < cursor)
-        .last()
+        .rev()
+        .find(|index| *index < cursor)
         .unwrap_or(0)
 }
 
@@ -19,7 +19,7 @@ pub fn prev_char_boundary(buffer: &str, cursor: usize) -> usize {
     buffer[..cursor]
         .char_indices()
         .map(|(index, _)| index)
-        .last()
+        .next_back()
         .unwrap_or(0)
 }
 

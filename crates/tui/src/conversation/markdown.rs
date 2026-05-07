@@ -216,7 +216,7 @@ fn is_italic_delimiter(chars: &[char], index: usize) -> bool {
 mod tests {
     use ratatui::style::{Modifier, Style};
 
-    use crate::conversation::parse_inline_markdown;
+    use super::parse_inline_markdown;
 
     #[test]
     fn underscores_inside_identifiers_do_not_trigger_italics() {
