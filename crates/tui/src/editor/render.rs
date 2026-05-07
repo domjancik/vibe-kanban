@@ -3,7 +3,7 @@ use ratatui::{
     text::{Line, Span, Text},
 };
 
-use crate::editor::{ComposerEditorMode, VimMode};
+use crate::editor::{ComposerEditorMode, VimMode, clamp_char_boundary};
 
 pub fn render_editor_buffer(
     buffer: &str,
@@ -11,7 +11,7 @@ pub fn render_editor_buffer(
     show_cursor: bool,
     mode: ComposerEditorMode,
 ) -> Text<'static> {
-    let cursor = cursor.min(buffer.len());
+    let cursor = clamp_char_boundary(buffer, cursor);
     let cursor_style = match mode {
         ComposerEditorMode::Standard | ComposerEditorMode::Vim(VimMode::Insert) => {
             Style::default().bg(Color::Cyan).fg(Color::Black)

@@ -1,3 +1,5 @@
+use crate::editor::clamp_char_boundary;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ComposerEditorMode {
     Standard,
@@ -20,7 +22,7 @@ fn is_word_char(c: char) -> bool {
 }
 
 pub fn next_word_start(buffer: &str, cursor: usize) -> usize {
-    let cursor = cursor.min(buffer.len());
+    let cursor = clamp_char_boundary(buffer, cursor);
     let chars: Vec<(usize, char)> = buffer[cursor..].char_indices().collect();
     if chars.is_empty() {
         return cursor;
@@ -51,7 +53,7 @@ pub fn next_word_start(buffer: &str, cursor: usize) -> usize {
 }
 
 pub fn prev_word_start(buffer: &str, cursor: usize) -> usize {
-    let cursor = cursor.min(buffer.len());
+    let cursor = clamp_char_boundary(buffer, cursor);
     if cursor == 0 {
         return 0;
     }

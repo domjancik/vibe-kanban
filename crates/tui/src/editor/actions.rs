@@ -12,31 +12,40 @@ pub enum TextEditAction {
     MoveLineEnd,
 }
 
-use crate::editor::{line_end_index, line_start_index, move_cursor_vertical};
+use crate::editor::{
+    clamp_char_boundary, line_end_index, line_start_index, move_cursor_vertical,
+    next_char_boundary, prev_char_boundary,
+};
 
 pub fn apply_text_edit_action(buffer: &mut String, cursor: &mut usize, action: TextEditAction) {
     match action {
         TextEditAction::InsertChar(ch) => {
+            *cursor = clamp_char_boundary(buffer, *cursor);
             buffer.insert(*cursor, ch);
-            *cursor += 1;
+            *cursor += ch.len_utf8();
         }
         TextEditAction::InsertNewline => {
+            *cursor = clamp_char_boundary(buffer, *cursor);
             buffer.insert(*cursor, '\n');
             *cursor += 1;
         }
         TextEditAction::Backspace => {
+            *cursor = clamp_char_boundary(buffer, *cursor);
             if *cursor > 0 {
-                buffer.remove(*cursor - 1);
-                *cursor -= 1;
+                let start = prev_char_boundary(buffer, *cursor);
+                buffer.drain(start..*cursor);
+                *cursor = start;
             }
         }
         TextEditAction::Delete => {
+            *cursor = clamp_char_boundary(buffer, *cursor);
             if *cursor < buffer.len() {
-                buffer.remove(*cursor);
+                let end = next_char_boundary(buffer, *cursor);
+                buffer.drain(*cursor..end);
             }
         }
-        TextEditAction::MoveLeft => *cursor = cursor.saturating_sub(1),
-        TextEditAction::MoveRight => *cursor = (*cursor + 1).min(buffer.len()),
+        TextEditAction::MoveLeft => *cursor = prev_char_boundary(buffer, *cursor),
+        TextEditAction::MoveRight => *cursor = next_char_boundary(buffer, *cursor),
         TextEditAction::MoveUp => *cursor = move_cursor_vertical(buffer, *cursor, -1),
         TextEditAction::MoveDown => *cursor = move_cursor_vertical(buffer, *cursor, 1),
         TextEditAction::MoveLineStart => *cursor = line_start_index(buffer, *cursor),
@@ -76,5 +85,26 @@ mod tests {
 
         apply_text_edit_action(&mut buffer, &mut cursor, TextEditAction::MoveLineEnd);
         assert_eq!(cursor, 7);
+    }
+
+    #[test]
+    fn applies_multibyte_character_edits_without_panicking() {
+        let mut buffer = String::from("a§b");
+        let mut cursor = 3;
+
+        apply_text_edit_action(&mut buffer, &mut cursor, TextEditAction::Backspace);
+        assert_eq!(buffer, "ab");
+        assert_eq!(cursor, 1);
+
+        apply_text_edit_action(&mut buffer, &mut cursor, TextEditAction::InsertChar('§'));
+        assert_eq!(buffer, "a§b");
+        assert_eq!(cursor, 3);
+
+        apply_text_edit_action(&mut buffer, &mut cursor, TextEditAction::MoveLeft);
+        assert_eq!(cursor, 1);
+
+        apply_text_edit_action(&mut buffer, &mut cursor, TextEditAction::Delete);
+        assert_eq!(buffer, "ab");
+        assert_eq!(cursor, 1);
     }
 }

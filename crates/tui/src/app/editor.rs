@@ -4,9 +4,9 @@ use ratatui::text::Text;
 use crate::{
     app::{App, SessionRenameState},
     editor::{
-        ComposerEditorMode, VimMode, VimOperator, apply_text_edit_action, line_end_index,
-        line_start_index, move_cursor_vertical, next_word_start, prev_word_start,
-        render_editor_buffer,
+        ComposerEditorMode, VimMode, VimOperator, apply_text_edit_action, clamp_char_boundary,
+        line_end_index, line_start_index, move_cursor_vertical, next_char_boundary,
+        next_word_start, prev_char_boundary, prev_word_start, render_editor_buffer,
     },
     input::{TextInputEvent, TextInputOptions, map_text_input_key},
     model::{Focus, Pane},
@@ -154,7 +154,7 @@ impl App {
                 {
                     let (buffer, cursor): (&mut String, &mut usize) =
                         self.editor_buffer_cursor_mut(target);
-                    *cursor = (*cursor + 1).min(buffer.len());
+                    *cursor = next_char_boundary(buffer, *cursor);
                 }
                 self.editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
                 self.status = "Editor mode: Vim Insert".to_string();
@@ -190,8 +190,9 @@ impl App {
                 code: KeyCode::Char('h') | KeyCode::Left,
                 ..
             } => {
-                let (_, cursor): (&mut String, &mut usize) = self.editor_buffer_cursor_mut(target);
-                *cursor = cursor.saturating_sub(1);
+                let (buffer, cursor): (&mut String, &mut usize) =
+                    self.editor_buffer_cursor_mut(target);
+                *cursor = prev_char_boundary(buffer, *cursor);
                 true
             }
             KeyEvent {
@@ -200,7 +201,7 @@ impl App {
             } => {
                 let (buffer, cursor): (&mut String, &mut usize) =
                     self.editor_buffer_cursor_mut(target);
-                *cursor = (*cursor + 1).min(buffer.len());
+                *cursor = next_char_boundary(buffer, *cursor);
                 true
             }
             KeyEvent {
@@ -272,8 +273,10 @@ impl App {
                 let changed = {
                     let (buffer, cursor): (&mut String, &mut usize) =
                         self.editor_buffer_cursor_mut(target);
+                    *cursor = clamp_char_boundary(buffer, *cursor);
                     if *cursor < buffer.len() {
-                        buffer.remove(*cursor);
+                        let end = next_char_boundary(buffer, *cursor);
+                        buffer.drain(*cursor..end);
                         true
                     } else {
                         false
@@ -291,6 +294,7 @@ impl App {
                 {
                     let (buffer, cursor): (&mut String, &mut usize) =
                         self.editor_buffer_cursor_mut(target);
+                    *cursor = clamp_char_boundary(buffer, *cursor);
                     *cursor = line_end_index(buffer, *cursor);
                     buffer.insert(*cursor, '\n');
                     *cursor += 1;
@@ -307,6 +311,7 @@ impl App {
                 {
                     let (buffer, cursor): (&mut String, &mut usize) =
                         self.editor_buffer_cursor_mut(target);
+                    *cursor = clamp_char_boundary(buffer, *cursor);
                     *cursor = line_start_index(buffer, *cursor);
                     buffer.insert(*cursor, '\n');
                 }
@@ -333,7 +338,7 @@ impl App {
     fn execute_vim_delete(&mut self, key: KeyEvent, target: EditorTarget) -> bool {
         let range = {
             let (buffer, cursor): (&mut String, &mut usize) = self.editor_buffer_cursor_mut(target);
-            let cursor_value = *cursor;
+            let cursor_value = clamp_char_boundary(buffer, *cursor);
             match key {
                 KeyEvent {
                     code: KeyCode::Char('d'),
@@ -378,7 +383,10 @@ impl App {
             let changed = {
                 let (buffer, cursor_ref): (&mut String, &mut usize) =
                     self.editor_buffer_cursor_mut(target);
-                if end <= buffer.len() {
+                if end <= buffer.len()
+                    && buffer.is_char_boundary(start)
+                    && buffer.is_char_boundary(end)
+                {
                     buffer.drain(start..end);
                     *cursor_ref = start.min(buffer.len());
                     true
@@ -444,7 +452,7 @@ impl App {
         let show_cursor = self.focus == Focus::Composer && self.selected_pane == Pane::Chat;
         render_editor_buffer(
             &self.composer,
-            self.composer_cursor.min(self.composer.len()),
+            clamp_char_boundary(&self.composer, self.composer_cursor),
             show_cursor,
             self.editor_mode,
         )
@@ -494,7 +502,7 @@ impl App {
                 Some(TextInputEvent::Submit) => self.submit_session_rename().await,
                 Some(TextInputEvent::Edit(action)) => {
                     apply_text_edit_action(&mut rename.name, &mut rename.cursor, action);
-                    rename.cursor = rename.cursor.min(rename.name.len());
+                    rename.cursor = clamp_char_boundary(&rename.name, rename.cursor);
                 }
                 None => {}
             },
@@ -531,9 +539,10 @@ impl App {
                 self.error = None;
             }
             Err(error) => {
+                let cursor = clamp_char_boundary(&rename.name, rename.cursor);
                 self.session_rename = Some(SessionRenameState {
                     session_id: rename.session_id,
-                    cursor: rename.cursor.min(rename.name.len()),
+                    cursor,
                     name: rename.name,
                 });
                 self.error = Some(error.to_string());
