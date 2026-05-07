@@ -85,18 +85,18 @@ impl App {
         });
     }
 
-    pub(crate) async fn flush_notes_if_needed(&mut self) {
+    pub(crate) async fn flush_notes_if_needed(&mut self) -> bool {
         let Some(workspace_id) = self.selected_workspace_id else {
-            return;
+            return false;
         };
         if !self.bundle.notes_dirty || self.notes_save_in_flight {
-            return;
+            return false;
         }
         let Some(last_edit) = self.bundle.last_notes_edit else {
-            return;
+            return false;
         };
         if last_edit.elapsed() < Duration::from_millis(900) {
-            return;
+            return false;
         }
         self.notes_save_in_flight = true;
         let api = self.api.clone();
@@ -120,6 +120,7 @@ impl App {
                 }
             }
         });
+        true
     }
 
     pub(crate) fn handle_terminal_resize(&mut self, size: Rect) {

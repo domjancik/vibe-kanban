@@ -11,29 +11,34 @@ use crate::{
 };
 
 impl App {
-    pub(crate) async fn flush_draft_if_needed(&mut self) {
+    pub(crate) async fn flush_draft_if_needed(&mut self) -> bool {
         let Some(scratch_id) = self.current_composer_scratch_id() else {
+            let changed = self.composer_dirty
+                || self.draft_save_in_flight
+                || self.last_composer_edit.is_some()
+                || !self.composer_scratch_loaded;
             self.composer_dirty = false;
             self.draft_save_in_flight = false;
             self.last_composer_edit = None;
             self.composer_scratch_loaded = true;
-            return;
+            return changed;
         };
         if !self.composer_dirty || self.draft_save_in_flight {
-            return;
+            return false;
         }
         let Some(last_edit) = self.last_composer_edit else {
-            return;
+            return false;
         };
         if last_edit.elapsed() < std::time::Duration::from_millis(500) {
-            return;
+            return false;
         }
         if self.is_queue_present() {
+            let changed = !self.composer_queue_conflict;
             self.composer_queue_conflict = true;
-            return;
+            return changed;
         }
         let Some(executor_config) = self.composer_config.clone() else {
-            return;
+            return false;
         };
         self.draft_save_in_flight = true;
         let api = self.api.clone();
@@ -60,6 +65,7 @@ impl App {
                 }
             }
         });
+        true
     }
 
     pub(crate) fn current_composer_scratch_id(&self) -> Option<Uuid> {
@@ -268,5 +274,60 @@ impl App {
                 }
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use db::models::scratch::DraftFollowUpData;
+    use executors::{executors::BaseCodingAgent, profile::ExecutorConfig};
+    use uuid::Uuid;
+
+    use crate::{
+        api::Api,
+        app::App,
+        model::{QueueStatus, QueuedMessage},
+    };
+
+    #[tokio::test]
+    async fn flush_draft_if_needed_clears_impossible_state_without_scratch() {
+        let mut app = App::new(Api::new("http://127.0.0.1:9".to_string()).unwrap());
+        app.composer_dirty = true;
+        app.draft_save_in_flight = true;
+        app.last_composer_edit = Some(std::time::Instant::now());
+        app.composer_scratch_loaded = false;
+
+        assert!(app.flush_draft_if_needed().await);
+        assert!(!app.composer_dirty);
+        assert!(!app.draft_save_in_flight);
+        assert!(app.last_composer_edit.is_none());
+        assert!(app.composer_scratch_loaded);
+        assert!(!app.flush_draft_if_needed().await);
+    }
+
+    #[tokio::test]
+    async fn flush_draft_if_needed_marks_queue_conflict_once() {
+        let mut app = App::new(Api::new("http://127.0.0.1:9".to_string()).unwrap());
+        let session_id = Uuid::new_v4();
+        app.bundle.selected_session_id = Some(session_id);
+        app.composer_dirty = true;
+        app.last_composer_edit =
+            Some(std::time::Instant::now() - std::time::Duration::from_millis(600));
+        app.composer_config = Some(ExecutorConfig::new(BaseCodingAgent::Codex));
+        app.queue_status = QueueStatus::Queued {
+            message: QueuedMessage {
+                session_id,
+                data: DraftFollowUpData {
+                    message: "queued".to_string(),
+                    executor_config: ExecutorConfig::new(BaseCodingAgent::Codex),
+                },
+                queued_at: Utc::now(),
+            },
+        };
+
+        assert!(app.flush_draft_if_needed().await);
+        assert!(app.composer_queue_conflict);
+        assert!(!app.flush_draft_if_needed().await);
     }
 }

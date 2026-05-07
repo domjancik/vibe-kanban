@@ -4,7 +4,7 @@ use anyhow::Result;
 use crossterm::event::{Event as CrosstermEvent, EventStream, KeyEvent};
 use futures_util::StreamExt;
 use ratatui::{DefaultTerminal, layout::Rect};
-use tokio::{select, time::interval};
+use tokio::{select, sync::mpsc::error::TryRecvError, time::interval};
 
 use crate::{
     app::App,
@@ -18,22 +18,36 @@ impl App {
         let mut events = EventStream::new();
         let mut ticker = interval(Duration::from_millis(150));
         self.status = format!("Connected to {}", self.api.base_url);
+        let mut ui_dirty = true;
 
         self.ensure_workspace_selected(rect_from_size(terminal.size()?));
 
         while !self.should_quit {
-            terminal.draw(|frame| self.render(frame))?;
+            if ui_dirty {
+                terminal.draw(|frame| self.render(frame))?;
+                ui_dirty = false;
+            }
             select! {
                 _ = ticker.tick() => {
-                    self.flush_notes_if_needed().await;
-                    self.flush_draft_if_needed().await;
+                    let notes_changed = self.flush_notes_if_needed().await;
+                    let draft_changed = self.flush_draft_if_needed().await;
+                    ui_dirty |= notes_changed || draft_changed;
                 }
                 Some(event) = self.rx.recv() => {
-                    self.handle_net_event(event, rect_from_size(terminal.size()?)).await;
+                    let size = rect_from_size(terminal.size()?);
+                    self.handle_net_event(event, size).await;
+                    loop {
+                        match self.rx.try_recv() {
+                            Ok(next_event) => self.handle_net_event(next_event, size).await,
+                            Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+                        }
+                    }
+                    ui_dirty = true;
                 }
                 Some(Ok(event)) = events.next() => {
                     if let CrosstermEvent::Key(key) = event {
                         self.handle_key(key, rect_from_size(terminal.size()?)).await;
+                        ui_dirty = true;
                     }
                 }
             }
