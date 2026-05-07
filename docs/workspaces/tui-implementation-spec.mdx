@@ -155,7 +155,7 @@ The maximize shortcut should behave like a panel zoom, not a mode switch to a di
 - `Ctrl+Space`: maximize or restore the currently active panel region
 - `Tab` and `Shift+Tab`: cycle focus regions
 - `1` `2` `3` `4`: jump to main regions
-- `/`: search within the currently focused list or log buffer
+- `/`: open search or filter for the currently focused supported region
 - `PageUp` and `PageDown`: page-scroll or page-jump within the focused scrollable container
 - `Home` and `End`: jump to the beginning or end of the focused scrollable container
 
@@ -168,6 +168,7 @@ On macOS terminals, the TUI should also support the common equivalents when the 
 ### Workspace list keys
 
 - `j` `k` or arrows: move selection
+- `/`: open a live workspace filter prompt
 - `PageUp` and `PageDown`: jump by a page of workspace rows
 - `Home` and `End`: jump to the first or last visible workspace
 - `Enter`: open workspace
@@ -184,6 +185,8 @@ On macOS terminals, the TUI should also support the common equivalents when the 
 - `i`: focus composer
 - `Esc`: leave composer focus
 - `Enter`: submit prompt
+- `/`: open conversation search
+- `n` and `N`: jump to the next or previous conversation search match
 - `E`: cycle executor when the selection strip is focused
 - `V`: cycle executor variant or preset when the selection strip is focused
 - `M`: cycle model when the selection strip is focused
@@ -203,6 +206,7 @@ On macOS terminals, the TUI should also support the common equivalents when the 
 - `l`: logs pane
 - `t`: terminal pane
 - `o`: notes pane
+- `/`: open a live sessions filter prompt when the Sessions list is focused
 - `v`: dev server controls
 - `Space`: expand or collapse current section
 - `PageUp` and `PageDown`: page-scroll logs and git output, or page-jump list selections
@@ -250,6 +254,12 @@ The first implementation should support:
 - text filter by workspace name or branch
 - archived toggle
 - PR filter: all, has PR, no PR
+
+The workspace filter should be live:
+
+- `/` in the focused workspace list opens an inline filter prompt
+- typing should update the visible workspace rows immediately
+- the active filter should remain visible in the workspace panel title after the prompt closes
 
 Project filtering can wait until the Projects extension or until project metadata is exposed locally in a simpler way.
 
@@ -531,6 +541,13 @@ Use the existing session ordering contract:
 - allow renaming an existing selected session inline from the Sessions panel
 - do not allow renaming the synthetic `new session` row
 
+Sessions filtering:
+
+- `/` in the focused Sessions region opens a live sessions filter prompt
+- matching should include session name, executor, and session id
+- the synthetic `new session` row should remain visible even while filtering
+- the active session filter should remain visible in the Sessions panel title after the prompt closes
+
 ### Sending a prompt
 
 Existing sessions:
@@ -595,6 +612,14 @@ The conversation viewport should be end-anchored rather than top-anchored:
 - opening a session should land on the newest visible interaction
 - prepending older history must not jump the viewport to the top
 - rendering should be virtualised around the visible tail so long sessions remain responsive
+
+Conversation search should follow a terminal-vim style model:
+
+- `/` opens a search prompt scoped to the current conversation
+- search operates over the currently rendered wrapped transcript lines
+- `Enter` accepts the current search
+- `n` and `N` move forward or backward through matches
+- jumping to a match should move the end-anchored viewport without changing the selected pane
 
 ## Changes pane specification
 
