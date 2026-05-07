@@ -114,11 +114,6 @@ impl Api {
                 }
             }
         });
-
-        let _ = tx.send(NetEvent::NotesLoaded {
-            workspace_id,
-            notes: String::new(),
-        });
     }
 
     pub fn replace_workspace_subscriptions(
