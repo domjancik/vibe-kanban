@@ -159,6 +159,14 @@ impl App {
 
         if self.focus == Focus::Main && self.selected_pane == Pane::Chat {
             match key.code {
+                crossterm::event::KeyCode::Char('[') => {
+                    self.jump_to_user_message(false, self.page_step(size).max(1) as usize);
+                    return;
+                }
+                crossterm::event::KeyCode::Char(']') => {
+                    self.jump_to_user_message(true, self.page_step(size).max(1) as usize);
+                    return;
+                }
                 crossterm::event::KeyCode::Char('n') if self.conversation_search.is_some() => {
                     self.advance_conversation_search(true, size);
                     return;

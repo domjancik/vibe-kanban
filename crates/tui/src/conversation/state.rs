@@ -44,6 +44,7 @@ pub struct OptimisticConversationEntry {
 pub struct ChatRenderCache {
     pub width: usize,
     pub lines: Vec<Line<'static>>,
+    pub user_message_offsets: Vec<usize>,
     pub latest_token_usage: Option<(u32, u32)>,
 }
 
@@ -302,7 +303,7 @@ impl App {
     }
 
     fn build_chat_render_cache(&self, width: usize) -> ChatRenderCache {
-        let lines = wrap_lines(self.chat_lines(), width);
+        let (lines, user_message_offsets) = self.rendered_chat_lines(width);
         let latest_token_usage = self
             .canonical_chat_entries()
             .iter()
@@ -319,7 +320,57 @@ impl App {
         ChatRenderCache {
             width,
             lines,
+            user_message_offsets,
             latest_token_usage,
+        }
+    }
+
+    pub(crate) fn jump_to_user_message(&mut self, forward: bool, visible_lines: usize) {
+        let width = self
+            .chat_render_cache
+            .as_ref()
+            .map(|cache| cache.width)
+            .unwrap_or(80);
+        let visible_lines = visible_lines.max(1);
+        let requested_end_offset = self.chat_end_offset as usize;
+        let (total_lines, top_offset, user_message_offsets) = {
+            let cache = self.chat_render_cache(width);
+            let (_, _, _, top_offset) = crate::conversation::chat_window_bounds(
+                cache.lines.len(),
+                visible_lines,
+                requested_end_offset,
+            );
+            (
+                cache.lines.len(),
+                top_offset,
+                cache.user_message_offsets.clone(),
+            )
+        };
+        if user_message_offsets.is_empty() {
+            return;
+        }
+
+        let target_top = if forward {
+            user_message_offsets
+                .iter()
+                .copied()
+                .find(|offset| *offset > top_offset)
+                .or_else(|| {
+                    (requested_end_offset != 0).then_some(total_lines.saturating_sub(visible_lines))
+                })
+        } else {
+            user_message_offsets
+                .iter()
+                .copied()
+                .rev()
+                .find(|offset| *offset < top_offset)
+                .or_else(|| user_message_offsets.first().copied())
+        };
+
+        if let Some(target_top) = target_top {
+            self.chat_end_offset = total_lines
+                .saturating_sub(visible_lines.saturating_add(target_top))
+                .min(u16::MAX as usize) as u16;
         }
     }
 
@@ -334,55 +385,75 @@ impl App {
     }
 
     fn chat_lines(&self) -> Vec<Line<'static>> {
+        self.rendered_chat_lines(usize::MAX).0
+    }
+
+    fn rendered_chat_lines(&self, width: usize) -> (Vec<Line<'static>>, Vec<usize>) {
         let mut lines = Vec::new();
+        let mut user_message_offsets = Vec::new();
         if self.conversation_bootstrapping && self.conversation_process_entries.is_empty() {
-            lines.push(Line::styled(
-                "Loading recent conversation...",
-                Style::default().fg(Color::DarkGray),
+            lines.extend(wrap_lines(
+                vec![Line::styled(
+                    "Loading recent conversation...",
+                    Style::default().fg(Color::DarkGray),
+                )],
+                width,
             ));
-            lines.push(Line::raw(""));
+            lines.extend(wrap_lines(vec![Line::raw("")], width));
+            return (lines, user_message_offsets);
         } else if self.conversation_backfilling {
-            lines.push(Line::styled(
-                "Loading older messages...",
-                Style::default().fg(Color::DarkGray),
+            lines.extend(wrap_lines(
+                vec![Line::styled(
+                    "Loading older messages...",
+                    Style::default().fg(Color::DarkGray),
+                )],
+                width,
             ));
-            lines.push(Line::raw(""));
+            lines.extend(wrap_lines(vec![Line::raw("")], width));
         }
         if let QueueStatus::Queued { message } = &self.queue_status {
-            lines.push(Line::styled(
+            let mut queue_lines = vec![Line::styled(
                 "queued follow-up",
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
-            ));
+            )];
             for line in message.data.message.lines() {
-                lines.push(Line::styled(
+                queue_lines.push(Line::styled(
                     format!("  {line}"),
                     Style::default().fg(Color::LightYellow),
                 ));
             }
-            lines.push(Line::styled(
+            queue_lines.push(Line::styled(
                 format!("  executor {}", message.data.executor_config.executor),
                 Style::default().fg(Color::DarkGray),
             ));
-            lines.push(Line::raw(""));
+            queue_lines.push(Line::raw(""));
+            lines.extend(wrap_lines(queue_lines, width));
         }
-        lines.extend(
-            self.canonical_chat_entries()
-                .iter()
-                .flat_map(render_chat_entry)
-                .collect::<Vec<_>>(),
-        );
+        for entry in self.canonical_chat_entries() {
+            let is_user_message = matches!(
+                &entry,
+                PatchType::NormalizedEntry(entry)
+                    if matches!(entry.entry_type, NormalizedEntryType::UserMessage)
+            );
+            let rendered = render_chat_entry(&entry);
+            if is_user_message {
+                user_message_offsets.push(lines.len());
+            }
+            lines.extend(wrap_lines(rendered, width));
+        }
         if let Some(scope) = self.current_conversation_scope() {
             for entry in self
                 .optimistic_entries
                 .iter()
                 .filter(|entry| entry.scope == scope)
             {
-                lines.extend(render_optimistic_chat_entry(entry));
+                user_message_offsets.push(lines.len());
+                lines.extend(wrap_lines(render_optimistic_chat_entry(entry), width));
             }
         }
-        lines
+        (lines, user_message_offsets)
     }
 }
 
@@ -524,6 +595,86 @@ mod tests {
     }
 
     #[test]
+    fn chat_render_cache_tracks_user_message_offsets() {
+        let mut app = test_app();
+        let session_id = Uuid::new_v4();
+        let process_id = Uuid::new_v4();
+        app.bundle.selected_session_id = Some(session_id);
+        app.conversation_process_order = vec![process_id];
+        app.conversation_process_entries.insert(
+            process_id,
+            vec![
+                user_message("first"),
+                PatchType::NormalizedEntry(NormalizedEntry {
+                    timestamp: None,
+                    entry_type: NormalizedEntryType::AssistantMessage,
+                    content: "reply".to_string(),
+                    metadata: None,
+                }),
+                user_message("second"),
+            ],
+        );
+
+        let cache = app.chat_render_cache(40);
+        assert_eq!(cache.user_message_offsets.len(), 2);
+        assert_eq!(cache.user_message_offsets[0], 0);
+        assert!(cache.user_message_offsets[1] > cache.user_message_offsets[0]);
+
+        let first_label = cache.lines[cache.user_message_offsets[0]]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        let second_label = cache.lines[cache.user_message_offsets[1]]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(first_label.contains("user"));
+        assert!(second_label.contains("user"));
+    }
+
+    #[test]
+    fn jump_to_user_message_moves_between_user_turns() {
+        let mut app = test_app();
+        let session_id = Uuid::new_v4();
+        let process_id = Uuid::new_v4();
+        app.bundle.selected_session_id = Some(session_id);
+        app.conversation_process_order = vec![process_id];
+        app.conversation_process_entries.insert(
+            process_id,
+            vec![
+                user_message("first"),
+                PatchType::NormalizedEntry(NormalizedEntry {
+                    timestamp: None,
+                    entry_type: NormalizedEntryType::AssistantMessage,
+                    content: "reply".to_string(),
+                    metadata: None,
+                }),
+                user_message("second"),
+            ],
+        );
+        let _ = app.chat_render_cache(40);
+
+        app.chat_end_offset = 0;
+        app.jump_to_user_message(false, 2);
+        let (line_count, second_offset, end_offset) = {
+            let cache = app.chat_render_cache(40);
+            (
+                cache.lines.len(),
+                cache.user_message_offsets[1],
+                app.chat_end_offset as usize,
+            )
+        };
+        let (_, _, _, top_offset) =
+            crate::conversation::chat_window_bounds(line_count, 2, end_offset);
+        assert_eq!(top_offset, second_offset);
+
+        app.jump_to_user_message(true, 2);
+        assert_eq!(app.chat_end_offset, 0);
+    }
+
+    #[test]
     fn current_conversation_scope_covers_new_existing_and_none() {
         let mut app = test_app();
         assert_eq!(app.current_conversation_scope(), None);
@@ -595,6 +746,7 @@ mod tests {
         app.chat_render_cache = Some(super::ChatRenderCache {
             width: 80,
             lines: Vec::new(),
+            user_message_offsets: Vec::new(),
             latest_token_usage: None,
         });
         app.last_chat_render_cache_build = Some(std::time::Instant::now());
@@ -690,21 +842,21 @@ mod tests {
         app.conversation_bootstrapping = true;
         app.conversation_process_entries.clear();
         let bootstrap_lines = app.chat_lines();
-        assert!(
-            bootstrap_lines[0]
-                .spans
-                .iter()
-                .any(|span| span.content.contains("Loading recent conversation"))
-        );
+        let bootstrap_text = bootstrap_lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(bootstrap_text.contains("Loading recent conversation"));
 
         app.conversation_bootstrapping = false;
         app.conversation_backfilling = true;
         let backfill_lines = app.chat_lines();
-        assert!(
-            backfill_lines[0]
-                .spans
-                .iter()
-                .any(|span| span.content.contains("Loading older messages"))
-        );
+        let backfill_text = backfill_lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(backfill_text.contains("Loading older messages"));
     }
 }

@@ -33,6 +33,8 @@ pub enum AppIntent {
     CancelQueuedPrompt,
     DiscardDraft,
     ToggleDiffViewMode,
+    PrevUserMessage,
+    NextUserMessage,
     Enter,
     JumpToStart,
     JumpToEnd,
@@ -184,6 +186,14 @@ pub fn map_app_key(
             code: KeyCode::Char('b'),
             ..
         } => Some(AppIntent::ToggleDiffViewMode),
+        KeyEvent {
+            code: KeyCode::Char('['),
+            ..
+        } => Some(AppIntent::PrevUserMessage),
+        KeyEvent {
+            code: KeyCode::Char(']'),
+            ..
+        } => Some(AppIntent::NextUserMessage),
         KeyEvent {
             code: KeyCode::Enter,
             ..

@@ -544,6 +544,7 @@ impl App {
                     };
                 }
             }
+            AppIntent::PrevUserMessage | AppIntent::NextUserMessage => {}
             AppIntent::Enter => self.handle_enter(size).await,
             AppIntent::JumpToStart => self.jump_to_boundary(false, size),
             AppIntent::JumpToEnd => self.jump_to_boundary(true, size),
