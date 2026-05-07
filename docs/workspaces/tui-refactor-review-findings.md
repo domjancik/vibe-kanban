@@ -99,3 +99,24 @@ Suggested fix:
 ## Summary
 
 The refactor is broadly sound and `cargo test -p tui` passes, but there are still integration issues around the new in-place rename flow and one lint regression that should be cleaned up before treating the refactor as finished.
+
+## Structural completeness
+
+The refactor is close to complete, but it is not fully cleaned up yet.
+
+There does not appear to be much direct function-level duplication left in `crates/tui`, but there are still structural leftovers that suggest the final consolidation pass has not happened yet.
+
+### Remaining leftovers
+
+- `crates/tui/src/conversation_state.rs` still exists as a top-level module even though there is now a `crates/tui/src/conversation/` directory. This is not direct duplicate logic, but it is a leftover split point with an ambiguous final home.
+- `crates/tui/src/api/client.rs` is only a re-export shim.
+- `crates/tui/src/api/streams.rs` is only a re-export shim.
+- `crates/tui/src/api/client.rs`, `crates/tui/src/api/streams.rs`, and `crates/tui/src/model/mod.rs` use `#[allow(unused_imports)]`, which indicates the final module surface is still carrying compatibility or transitional exports.
+
+### Assessment
+
+- major decomposition work is in place
+- obvious business-logic duplication appears low
+- final module cleanup and lint cleanup are still pending
+
+The practical conclusion is that the refactor is mostly done structurally, but not fully complete.
