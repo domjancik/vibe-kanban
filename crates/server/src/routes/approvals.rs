@@ -103,6 +103,7 @@ async fn handle_approvals_ws(
         }
     }
 
+    let _ = socket.close().await;
     Ok(())
 }
 

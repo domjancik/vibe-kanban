@@ -672,5 +672,6 @@ async fn handle_executor_discovered_options_ws(
     let _ = socket
         .send(LogMsg::Finished.to_ws_message_unchecked())
         .await;
+    let _ = socket.close().await;
     Ok(())
 }
