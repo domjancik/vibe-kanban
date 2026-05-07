@@ -1,10 +1,12 @@
 use std::time::Duration;
 
 use anyhow::{Context, Error, Result};
+use executors::executors::BaseCodingAgent;
 use reqwest::Client;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio::{sync::mpsc::UnboundedSender, task::JoinHandle};
+use uuid::Uuid;
 
 pub mod session;
 pub mod terminal;
@@ -32,8 +34,16 @@ pub struct WorkspaceSubscriptions {
     pub processes: Option<JoinHandle<()>>,
     pub logs: Option<JoinHandle<()>>,
     pub discovery: Option<JoinHandle<()>>,
+    pub discovery_key: Option<DiscoverySubscriptionKey>,
     pub terminal: Option<JoinHandle<()>>,
     pub terminal_tx: Option<UnboundedSender<TerminalCommand>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiscoverySubscriptionKey {
+    pub executor: BaseCodingAgent,
+    pub workspace_id: Option<Uuid>,
+    pub session_id: Option<Uuid>,
 }
 
 pub enum TerminalCommand {
@@ -149,5 +159,6 @@ impl WorkspaceSubscriptions {
             handle.abort();
         }
         self.terminal_tx = None;
+        self.discovery_key = None;
     }
 }

@@ -129,6 +129,7 @@ impl App {
         if self.bundle.terminal.size != (cols, rows) {
             self.bundle.terminal.size = (cols, rows);
             self.bundle.terminal.parser.set_size(rows, cols);
+            self.mark_terminal_dirty();
             if let Some(tx) = &self.subscriptions.terminal_tx {
                 let _ = tx.send(TerminalCommand::Resize(cols, rows));
             }
@@ -194,7 +195,10 @@ impl App {
                     let next = (self.bundle.selected_diff_index as i32 + delta)
                         .clamp(0, self.bundle.diffs.len().saturating_sub(1) as i32)
                         as usize;
-                    self.bundle.selected_diff_index = next;
+                    if self.bundle.selected_diff_index != next {
+                        self.bundle.selected_diff_index = next;
+                        self.mark_changes_dirty();
+                    }
                 }
                 Pane::Chat => self.adjust_chat_scroll(delta),
                 Pane::Logs => {
@@ -257,11 +261,15 @@ impl App {
                     if self.bundle.diffs.is_empty() {
                         return;
                     }
-                    self.bundle.selected_diff_index = if to_end {
+                    let next = if to_end {
                         self.bundle.diffs.len().saturating_sub(1)
                     } else {
                         0
                     };
+                    if self.bundle.selected_diff_index != next {
+                        self.bundle.selected_diff_index = next;
+                        self.mark_changes_dirty();
+                    }
                 }
                 Pane::Chat => self.chat_end_offset = if to_end { 0 } else { u16::MAX },
                 Pane::Logs | Pane::Git => {

@@ -6,6 +6,10 @@ use db::models::{
     workspace::Workspace,
     workspace_repo::RepoWithTargetBranch,
 };
+use ratatui::{
+    text::{Line, Text},
+    widgets::ListItem,
+};
 use uuid::Uuid;
 
 use crate::model::{LocalDiff, PatchType, RepoBranchStatus};
@@ -76,7 +80,46 @@ pub struct WorkspaceBundle {
     pub selected_diff_index: usize,
     pub diff_view_mode: DiffViewMode,
     pub log_scroll: u16,
+    pub changes_revision: u64,
+    pub git_revision: u64,
+    pub logs_revision: u64,
+    pub terminal_revision: u64,
+    pub changes_cache: Option<ChangesPaneRenderCache>,
+    pub git_cache: Option<GitPaneRenderCache>,
+    pub logs_cache: Option<LogsPaneRenderCache>,
+    pub terminal_cache: Option<TerminalPaneRenderCache>,
     pub terminal: TerminalState,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChangesPaneRenderCache {
+    pub revision: u64,
+    pub diff_index: usize,
+    pub diff_view_mode: DiffViewMode,
+    pub file_items: Vec<ListItem<'static>>,
+    pub unified_text: Text<'static>,
+    pub side_by_side_left: Text<'static>,
+    pub side_by_side_right: Text<'static>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GitPaneRenderCache {
+    pub revision: u64,
+    pub text: Text<'static>,
+    pub total_lines: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct LogsPaneRenderCache {
+    pub revision: u64,
+    pub lines: Vec<Line<'static>>,
+    pub total_lines: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct TerminalPaneRenderCache {
+    pub revision: u64,
+    pub lines: Vec<Line<'static>>,
 }
 
 pub struct TerminalState {

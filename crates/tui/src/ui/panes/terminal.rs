@@ -8,11 +8,43 @@ use ratatui::{
 
 use crate::{
     app::App,
-    model::Focus,
+    model::{Focus, TerminalPaneRenderCache},
     ui::{centered_rect, panel_block, terminal_content_area},
 };
 
 impl App {
+    fn terminal_pane_cache(&mut self) -> &TerminalPaneRenderCache {
+        if self
+            .bundle
+            .terminal_cache
+            .as_ref()
+            .is_none_or(|cache| cache.revision != self.bundle.terminal_revision)
+        {
+            let screen = self.bundle.terminal.parser.screen();
+            let mut lines = Vec::new();
+            for row in 0..screen.size().0 {
+                let mut spans = Vec::new();
+                for col in 0..screen.size().1 {
+                    if let Some(cell) = screen.cell(row, col) {
+                        spans.push(Span::styled(
+                            cell.contents().chars().next().unwrap_or(' ').to_string(),
+                            terminal_cell_style(cell),
+                        ));
+                    }
+                }
+                lines.push(Line::from(spans));
+            }
+            self.bundle.terminal_cache = Some(TerminalPaneRenderCache {
+                revision: self.bundle.terminal_revision,
+                lines,
+            });
+        }
+        self.bundle
+            .terminal_cache
+            .as_ref()
+            .expect("terminal pane cache should be populated")
+    }
+
     pub(crate) fn render_terminal(&mut self, frame: &mut Frame, area: Rect) {
         let title = if self.bundle.terminal.input_mode {
             "Terminal *"
@@ -22,22 +54,9 @@ impl App {
         let block = panel_block(title, self.focus == Focus::Main);
         let content_area = terminal_content_area(area);
         self.handle_terminal_resize(content_area);
-        let screen = self.bundle.terminal.parser.screen();
-        let mut lines = Vec::new();
-        for row in 0..screen.size().0 {
-            let mut spans = Vec::new();
-            for col in 0..screen.size().1 {
-                if let Some(cell) = screen.cell(row, col) {
-                    spans.push(Span::styled(
-                        cell.contents().chars().next().unwrap_or(' ').to_string(),
-                        terminal_cell_style(cell),
-                    ));
-                }
-            }
-            lines.push(Line::from(spans));
-        }
+        let cache = self.terminal_pane_cache().clone();
         frame.render_widget(block, area);
-        frame.render_widget(Paragraph::new(Text::from(lines)), content_area);
+        frame.render_widget(Paragraph::new(Text::from(cache.lines)), content_area);
         if let Some(error) = &self.bundle.terminal.error {
             let popup = centered_rect(70, 20, area);
             frame.render_widget(Clear, popup);

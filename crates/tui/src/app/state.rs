@@ -235,4 +235,24 @@ impl App {
         self.detail_revision = self.detail_revision.saturating_add(1);
         self.detail_pane_cache = None;
     }
+
+    pub(crate) fn mark_changes_dirty(&mut self) {
+        self.bundle.changes_revision = self.bundle.changes_revision.saturating_add(1);
+        self.bundle.changes_cache = None;
+    }
+
+    pub(crate) fn mark_git_dirty(&mut self) {
+        self.bundle.git_revision = self.bundle.git_revision.saturating_add(1);
+        self.bundle.git_cache = None;
+    }
+
+    pub(crate) fn mark_logs_dirty(&mut self) {
+        self.bundle.logs_revision = self.bundle.logs_revision.saturating_add(1);
+        self.bundle.logs_cache = None;
+    }
+
+    pub(crate) fn mark_terminal_dirty(&mut self) {
+        self.bundle.terminal_revision = self.bundle.terminal_revision.saturating_add(1);
+        self.bundle.terminal_cache = None;
+    }
 }

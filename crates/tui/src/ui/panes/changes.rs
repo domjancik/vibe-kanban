@@ -8,39 +8,74 @@ use ratatui::{
 
 use crate::{
     app::App,
-    model::{DiffViewMode, Focus, LocalDiff, diff_title},
+    model::{ChangesPaneRenderCache, DiffViewMode, Focus, LocalDiff, diff_title},
     ui::{panel_block, render_vertical_scrollbar},
 };
 
 impl App {
-    pub(crate) fn render_changes(&self, frame: &mut Frame, area: Rect) {
+    fn changes_pane_cache(&mut self) -> &ChangesPaneRenderCache {
+        let needs_rebuild = self.bundle.changes_cache.as_ref().is_none_or(|cache| {
+            cache.revision != self.bundle.changes_revision
+                || cache.diff_index != self.bundle.selected_diff_index
+                || cache.diff_view_mode != self.bundle.diff_view_mode
+        });
+        if needs_rebuild {
+            let file_items = self
+                .bundle
+                .diffs
+                .iter()
+                .map(|diff| {
+                    let counts = format!(
+                        "+{} -{}",
+                        diff.additions.unwrap_or_default(),
+                        diff.deletions.unwrap_or_default()
+                    );
+                    ListItem::new(Text::from(vec![
+                        Line::raw(diff_title(diff)),
+                        Line::styled(counts, Style::default().fg(Color::DarkGray)),
+                    ]))
+                })
+                .collect::<Vec<_>>();
+            let selected = self.bundle.diffs.get(self.bundle.selected_diff_index);
+            let unified_text = selected
+                .map(render_unified_diff_text)
+                .unwrap_or_else(|| Text::from("No diff selected"));
+            let (side_by_side_left, side_by_side_right) =
+                selected.map(render_side_by_side_text).unwrap_or_else(|| {
+                    (
+                        Text::from("No diff selected"),
+                        Text::from("No diff selected"),
+                    )
+                });
+            self.bundle.changes_cache = Some(ChangesPaneRenderCache {
+                revision: self.bundle.changes_revision,
+                diff_index: self.bundle.selected_diff_index,
+                diff_view_mode: self.bundle.diff_view_mode,
+                file_items,
+                unified_text,
+                side_by_side_left,
+                side_by_side_right,
+            });
+        }
+        self.bundle
+            .changes_cache
+            .as_ref()
+            .expect("changes pane cache should be populated")
+    }
+
+    pub(crate) fn render_changes(&mut self, frame: &mut Frame, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(28), Constraint::Min(20)])
             .split(area);
 
-        let items = self
-            .bundle
-            .diffs
-            .iter()
-            .map(|diff| {
-                let counts = format!(
-                    "+{} -{}",
-                    diff.additions.unwrap_or_default(),
-                    diff.deletions.unwrap_or_default()
-                );
-                ListItem::new(Text::from(vec![
-                    Line::raw(diff_title(diff)),
-                    Line::styled(counts, Style::default().fg(Color::DarkGray)),
-                ]))
-            })
-            .collect::<Vec<_>>();
+        let cache = self.changes_pane_cache().clone();
         let mut state = ListState::default();
         if !self.bundle.diffs.is_empty() {
             state.select(Some(self.bundle.selected_diff_index));
         }
         frame.render_stateful_widget(
-            List::new(items)
+            List::new(cache.file_items.clone())
                 .block(panel_block("Files", self.focus == Focus::Main))
                 .highlight_style(Style::default().fg(Color::Cyan).bg(Color::Rgb(28, 38, 48))),
             chunks[0],
@@ -59,29 +94,39 @@ impl App {
         );
 
         match self.bundle.diff_view_mode {
-            DiffViewMode::Unified => self.render_unified_diff(frame, chunks[1]),
-            DiffViewMode::SideBySide => self.render_side_by_side_diff(frame, chunks[1]),
+            DiffViewMode::Unified => {
+                self.render_unified_diff(frame, chunks[1], &cache.unified_text)
+            }
+            DiffViewMode::SideBySide => self.render_side_by_side_diff(
+                frame,
+                chunks[1],
+                &cache.side_by_side_left,
+                &cache.side_by_side_right,
+            ),
         }
     }
 
-    fn render_unified_diff(&self, frame: &mut Frame, area: Rect) {
+    fn render_unified_diff(&self, frame: &mut Frame, area: Rect, diff_text: &Text<'static>) {
         let title = "Diff [unified | b side-by-side]";
-        let diff_text = self
-            .bundle
-            .diffs
-            .get(self.bundle.selected_diff_index)
-            .map(render_unified_diff_text)
-            .unwrap_or_else(|| Text::from("No diff selected"));
         frame.render_widget(
-            Paragraph::new(diff_text)
+            Paragraph::new(diff_text.clone())
                 .block(panel_block(title, self.focus == Focus::Detail))
                 .wrap(Wrap { trim: false }),
             area,
         );
     }
 
-    fn render_side_by_side_diff(&self, frame: &mut Frame, area: Rect) {
-        let outer = panel_block("Diff [side-by-side | b unified]", self.focus == Focus::Detail);
+    fn render_side_by_side_diff(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        left_text: &Text<'static>,
+        right_text: &Text<'static>,
+    ) {
+        let outer = panel_block(
+            "Diff [side-by-side | b unified]",
+            self.focus == Focus::Detail,
+        );
         let inner = outer.inner(area);
         frame.render_widget(outer, area);
 
@@ -90,26 +135,14 @@ impl App {
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(inner);
 
-        let (left_text, right_text) = self
-            .bundle
-            .diffs
-            .get(self.bundle.selected_diff_index)
-            .map(render_side_by_side_text)
-            .unwrap_or_else(|| {
-                (
-                    Text::from("No diff selected"),
-                    Text::from("No diff selected"),
-                )
-            });
-
         frame.render_widget(
-            Paragraph::new(left_text)
+            Paragraph::new(left_text.clone())
                 .block(Block::bordered().title("Old"))
                 .wrap(Wrap { trim: false }),
             columns[0],
         );
         frame.render_widget(
-            Paragraph::new(right_text)
+            Paragraph::new(right_text.clone())
                 .block(Block::bordered().title("New"))
                 .wrap(Wrap { trim: false }),
             columns[1],

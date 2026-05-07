@@ -95,6 +95,7 @@ impl App {
             } => {
                 if Some(workspace_id) == self.selected_workspace_id {
                     self.bundle.git_status = statuses;
+                    self.mark_git_dirty();
                 }
             }
             NetEvent::NotesLoaded {
@@ -143,6 +144,7 @@ impl App {
                     if self.bundle.selected_diff_index >= self.bundle.diffs.len() {
                         self.bundle.selected_diff_index = self.bundle.diffs.len().saturating_sub(1);
                     }
+                    self.mark_changes_dirty();
                 }
             }
             NetEvent::ProcessesUpdated {
@@ -184,6 +186,7 @@ impl App {
                 if Some(process_id) == self.bundle.selected_process_id {
                     self.bundle.log_entries = entries.clone();
                     self.chat_end_offset = 0;
+                    self.mark_logs_dirty();
                 }
                 if self.conversation_process_order.contains(&process_id) {
                     self.conversation_process_entries
@@ -445,17 +448,20 @@ impl App {
                 if Some(workspace_id) == self.selected_workspace_id {
                     self.bundle.terminal.connected = true;
                     self.bundle.terminal.error = None;
+                    self.mark_terminal_dirty();
                 }
             }
             NetEvent::TerminalOutput(workspace_id, bytes) => {
                 if Some(workspace_id) == self.selected_workspace_id {
                     self.bundle.terminal.parser.process(&bytes);
+                    self.mark_terminal_dirty();
                 }
             }
             NetEvent::TerminalError(workspace_id, error) => {
                 if Some(workspace_id) == self.selected_workspace_id {
                     self.bundle.terminal.error = Some(error);
                     self.bundle.terminal.connected = false;
+                    self.mark_terminal_dirty();
                 }
             }
             NetEvent::Error(message) => {
@@ -529,6 +535,7 @@ impl App {
                             crate::model::DiffViewMode::Unified
                         }
                     };
+                    self.mark_changes_dirty();
                     self.status = match self.bundle.diff_view_mode {
                         crate::model::DiffViewMode::Unified => "Diff view: unified".to_string(),
                         crate::model::DiffViewMode::SideBySide => {

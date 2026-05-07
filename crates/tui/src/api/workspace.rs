@@ -15,7 +15,10 @@ use super::{
     transport::{run_patch_stream, ws_base},
 };
 use crate::{
-    api::{Api, SCRATCH_TYPE_WORKSPACE_NOTES, WorkspaceSubscriptions, net_error},
+    api::{
+        Api, DiscoverySubscriptionKey, SCRATCH_TYPE_WORKSPACE_NOTES, WorkspaceSubscriptions,
+        net_error,
+    },
     model::{
         DiffStreamState, ExecutionProcessesState, ExecutorDiscoveryStreamState, LogEntriesState,
         NetEvent, PatchType, RepoBranchStatus, ScratchPayload, ScratchRecord, ScratchStreamState,
@@ -197,9 +200,23 @@ impl Api {
         tx: UnboundedSender<NetEvent>,
         subscriptions: &mut WorkspaceSubscriptions,
     ) {
+        let next_key = DiscoverySubscriptionKey {
+            executor,
+            workspace_id,
+            session_id,
+        };
+        if subscriptions.discovery_key == Some(next_key)
+            && subscriptions
+                .discovery
+                .as_ref()
+                .is_some_and(|handle| !handle.is_finished())
+        {
+            return;
+        }
         if let Some(handle) = subscriptions.discovery.take() {
             handle.abort();
         }
+        subscriptions.discovery_key = Some(next_key);
         subscriptions.discovery = Some(spawn_discovery_stream(
             self.clone(),
             executor,
