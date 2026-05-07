@@ -26,6 +26,25 @@ pub(crate) struct SessionRenameState {
     pub(crate) cursor: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SearchTarget {
+    Workspaces,
+    Sessions,
+    Conversation,
+}
+
+pub(crate) struct SearchPromptState {
+    pub(crate) target: SearchTarget,
+    pub(crate) query: String,
+    pub(crate) cursor: usize,
+}
+
+pub(crate) struct ConversationSearchState {
+    pub(crate) query: String,
+    pub(crate) matches: Vec<usize>,
+    pub(crate) current_match: usize,
+}
+
 pub struct App {
     pub(crate) api: Api,
     pub(crate) rx: UnboundedReceiver<NetEvent>,
@@ -42,6 +61,7 @@ pub struct App {
     pub(crate) maximized_panel: bool,
     pub(crate) show_archived: bool,
     pub(crate) filter: String,
+    pub(crate) session_filter: String,
     pub(crate) status: String,
     pub(crate) error: Option<String>,
     pub(crate) bundle: WorkspaceBundle,
@@ -78,6 +98,8 @@ pub struct App {
     pub(crate) notes_save_in_flight: bool,
     pub(crate) agent_picker: Option<AgentPickerState>,
     pub(crate) session_rename: Option<SessionRenameState>,
+    pub(crate) search_prompt: Option<SearchPromptState>,
+    pub(crate) conversation_search: Option<ConversationSearchState>,
     pub(crate) creating_new_session: bool,
     pub(crate) should_quit: bool,
 }
@@ -104,6 +126,7 @@ impl App {
             maximized_panel: false,
             show_archived: false,
             filter: String::new(),
+            session_filter: String::new(),
             status: String::new(),
             error: None,
             bundle: WorkspaceBundle::default(),
@@ -142,6 +165,8 @@ impl App {
             notes_save_in_flight: false,
             agent_picker: None,
             session_rename: None,
+            search_prompt: None,
+            conversation_search: None,
             creating_new_session: false,
             should_quit: false,
         }

@@ -79,7 +79,12 @@ impl App {
             state.select(Some(index));
         }
 
-        let block = panel_block("Workspaces", self.focus == Focus::WorkspaceList);
+        let title = if self.filter.is_empty() {
+            "Workspaces".to_string()
+        } else {
+            format!("Workspaces / {}", self.filter)
+        };
+        let block = panel_block(&title, self.focus == Focus::WorkspaceList);
         let list = List::new(items).block(block).highlight_style(
             Style::default()
                 .bg(Color::Rgb(28, 38, 48))

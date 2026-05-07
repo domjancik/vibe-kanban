@@ -11,6 +11,7 @@ pub enum AppIntent {
     FocusNext,
     FocusPrev,
     ShowHelp,
+    OpenSearch,
     SelectPane(Pane),
     ToggleShowArchived,
     EnterEditMode,
@@ -74,6 +75,10 @@ pub fn map_app_key(
             code: KeyCode::Char('?'),
             ..
         } => Some(AppIntent::ShowHelp),
+        KeyEvent {
+            code: KeyCode::Char('/'),
+            ..
+        } => Some(AppIntent::OpenSearch),
         KeyEvent {
             code: KeyCode::Char('1'),
             ..
@@ -244,6 +249,10 @@ mod tests {
 
     #[test]
     fn maps_navigation_keys_to_intents() {
+        assert_eq!(
+            map_app_key(key(KeyCode::Char('/')), false, &Pane::Chat),
+            Some(AppIntent::OpenSearch)
+        );
         assert_eq!(
             map_app_key(key(KeyCode::Tab), false, &Pane::Chat),
             Some(AppIntent::FocusNext)

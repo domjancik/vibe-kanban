@@ -57,3 +57,48 @@ pub(crate) fn selected_list_offset(selected: usize, total: usize, viewport: usiz
             .min(total.saturating_sub(viewport))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use executors::model_selector::ModelInfo;
+    use ratatui::layout::Rect;
+
+    use super::{
+        default_variant_to_none, fuzzy_contains, model_key, selected_list_offset,
+        viewport_capacity,
+    };
+
+    #[test]
+    fn fuzzy_contains_supports_substring_and_sparse_matching() {
+        assert!(fuzzy_contains("agent", "Coding Agent"));
+        assert!(fuzzy_contains("cda", "Codex Default Agent"));
+        assert!(!fuzzy_contains("azc", "Codex Default Agent"));
+    }
+
+    #[test]
+    fn variant_and_model_helpers_normalize_expected_values() {
+        assert_eq!(default_variant_to_none("DEFAULT".to_string()), None);
+        assert_eq!(
+            default_variant_to_none("PLAN".to_string()),
+            Some("PLAN".to_string())
+        );
+
+        let model = ModelInfo {
+            id: "gpt-5".to_string(),
+            name: "GPT-5".to_string(),
+            provider_id: Some("openai".to_string()),
+            reasoning_options: Vec::new(),
+        };
+        assert_eq!(model_key(&model), "openai/gpt-5");
+    }
+
+    #[test]
+    fn viewport_helpers_keep_selection_visible() {
+        assert_eq!(viewport_capacity(Rect::new(0, 0, 20, 2), 3), 1);
+        assert_eq!(viewport_capacity(Rect::new(0, 0, 20, 8), 2), 3);
+
+        assert_eq!(selected_list_offset(1, 3, 5), 0);
+        assert_eq!(selected_list_offset(4, 10, 3), 2);
+        assert_eq!(selected_list_offset(9, 10, 3), 7);
+    }
+}

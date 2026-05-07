@@ -19,13 +19,13 @@ use crate::{
     model::{PatchType, QueueStatus},
 };
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConversationScope {
     Session(Uuid),
     NewSession(Uuid),
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OptimisticState {
     Pending,
     Failed,
@@ -376,5 +376,316 @@ impl App {
             }
         }
         lines
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use chrono::{TimeZone, Utc};
+    use db::models::execution_process::{
+        ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus, ExecutorActionField,
+    };
+    use executors::{
+        actions::{
+            ExecutorAction, ExecutorActionType,
+            coding_agent_initial::CodingAgentInitialRequest,
+        },
+        executor_discovery::ExecutorDiscoveredOptions,
+        logs::{NormalizedEntry, NormalizedEntryType, TokenUsageInfo},
+        profile::{ExecutorConfig, ExecutorConfigs},
+    };
+    use sqlx::types::Json;
+    use tokio::sync::mpsc::unbounded_channel;
+    use uuid::Uuid;
+
+    use crate::{
+        api::{Api, WorkspaceSubscriptions},
+        app::App,
+        conversation::ConversationScope,
+        editor::ComposerEditorMode,
+        model::{Focus, Pane, PatchType, QueueStatus, WorkspaceBundle},
+    };
+
+    use super::{OptimisticState, OptimisticConversationEntry};
+
+    fn test_app() -> App {
+        let api = Api::new("http://127.0.0.1:9".to_string()).unwrap();
+        let (tx, rx) = unbounded_channel();
+        App {
+            api,
+            rx,
+            tx,
+            workspace_streams: Vec::new(),
+            summary_streams: Vec::new(),
+            subscriptions: WorkspaceSubscriptions::default(),
+            active_workspaces: HashMap::new(),
+            archived_workspaces: HashMap::new(),
+            summaries: HashMap::new(),
+            selected_workspace_id: None,
+            selected_pane: Pane::Chat,
+            focus: Focus::Main,
+            maximized_panel: false,
+            show_archived: false,
+            filter: String::new(),
+            session_filter: String::new(),
+            status: String::new(),
+            error: None,
+            bundle: WorkspaceBundle::default(),
+            executor_profiles: ExecutorConfigs {
+                executors: HashMap::new(),
+            },
+            default_executor_profile: None,
+            composer_config: Some(ExecutorConfig::new(
+                executors::executors::BaseCodingAgent::Codex,
+            )),
+            composer_options: Some(ExecutorDiscoveredOptions::default()),
+            composer: String::new(),
+            composer_cursor: 0,
+            editor_mode: ComposerEditorMode::Standard,
+            vim_pending_operator: None,
+            composer_dirty: false,
+            composer_edit_revision: 0,
+            draft_save_in_flight: false,
+            composer_queue_conflict: false,
+            composer_scratch_id: None,
+            composer_scratch_loaded: false,
+            queue_session_id: None,
+            queue_status: QueueStatus::Empty,
+            queue_pending: false,
+            last_composer_edit: None,
+            chat_end_offset: 0,
+            chat_render_cache: None,
+            chat_render_cache_dirty: false,
+            last_chat_render_cache_build: None,
+            conversation_loader: None,
+            conversation_process_entries: HashMap::new(),
+            conversation_process_order: Vec::new(),
+            conversation_bootstrapping: false,
+            conversation_backfilling: false,
+            optimistic_entries: Vec::new(),
+            notes_cursor: 0,
+            notes_edit_revision: 0,
+            notes_save_in_flight: false,
+            agent_picker: None,
+            session_rename: None,
+            search_prompt: None,
+            conversation_search: None,
+            creating_new_session: false,
+            should_quit: false,
+        }
+    }
+
+    fn process(id: Uuid, prompt: &str, created_at_second: i64) -> ExecutionProcess {
+        let created_at = Utc.timestamp_opt(created_at_second, 0).unwrap();
+        ExecutionProcess {
+            id,
+            session_id: Uuid::new_v4(),
+            run_reason: ExecutionProcessRunReason::CodingAgent,
+            executor_action: Json(ExecutorActionField::ExecutorAction(ExecutorAction::new(
+                ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+                    prompt: prompt.to_string(),
+                    executor_config: ExecutorConfig::new(
+                        executors::executors::BaseCodingAgent::Codex,
+                    ),
+                    working_dir: None,
+                }),
+                None,
+            ))),
+            status: ExecutionProcessStatus::Completed,
+            exit_code: Some(0),
+            dropped: false,
+            started_at: created_at,
+            completed_at: Some(created_at),
+            created_at,
+            updated_at: created_at,
+        }
+    }
+
+    fn user_message(content: &str) -> PatchType {
+        PatchType::NormalizedEntry(NormalizedEntry {
+            timestamp: None,
+            entry_type: NormalizedEntryType::UserMessage,
+            content: content.to_string(),
+            metadata: None,
+        })
+    }
+
+    #[test]
+    fn current_conversation_scope_covers_new_existing_and_none() {
+        let mut app = test_app();
+        assert_eq!(app.current_conversation_scope(), None);
+
+        let workspace_id = Uuid::new_v4();
+        app.selected_workspace_id = Some(workspace_id);
+        app.creating_new_session = true;
+        assert_eq!(
+            app.current_conversation_scope(),
+            Some(ConversationScope::NewSession(workspace_id))
+        );
+
+        let session_id = Uuid::new_v4();
+        app.creating_new_session = false;
+        app.bundle.selected_session_id = Some(session_id);
+        assert_eq!(
+            app.current_conversation_scope(),
+            Some(ConversationScope::Session(session_id))
+        );
+    }
+
+    #[test]
+    fn optimistic_entry_mutations_mark_cache_and_scope_correctly() {
+        let mut app = test_app();
+        app.chat_render_cache_dirty = false;
+        let workspace_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        let local_id = app.push_optimistic_entry(
+            ConversationScope::NewSession(workspace_id),
+            "draft".to_string(),
+            ExecutorConfig::new(executors::executors::BaseCodingAgent::Codex),
+        );
+        assert!(app.chat_render_cache_dirty);
+        assert_eq!(app.optimistic_entries.len(), 1);
+
+        app.chat_render_cache_dirty = false;
+        app.mark_optimistic_failed(local_id);
+        assert_eq!(app.optimistic_entries[0].state, OptimisticState::Failed);
+        assert!(app.chat_render_cache_dirty);
+
+        app.chat_render_cache_dirty = false;
+        app.rekey_new_session_optimistic_entries(workspace_id, session_id);
+        assert_eq!(
+            app.optimistic_entries[0].scope,
+            ConversationScope::Session(session_id)
+        );
+        assert!(app.chat_render_cache_dirty);
+    }
+
+    #[tokio::test]
+    async fn reset_conversation_state_clears_cached_inputs() {
+        let mut app = test_app();
+        let process_id = Uuid::new_v4();
+        app.conversation_loader = Some(tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        }));
+        app.conversation_process_entries
+            .insert(process_id, vec![user_message("hello")]);
+        app.conversation_process_order.push(process_id);
+        app.conversation_bootstrapping = true;
+        app.conversation_backfilling = true;
+        app.optimistic_entries.push(OptimisticConversationEntry {
+            local_id: Uuid::new_v4(),
+            scope: ConversationScope::Session(Uuid::new_v4()),
+            message: "pending".to_string(),
+            executor_config: ExecutorConfig::new(executors::executors::BaseCodingAgent::Codex),
+            state: OptimisticState::Pending,
+        });
+        app.chat_render_cache = Some(super::ChatRenderCache {
+            width: 80,
+            lines: Vec::new(),
+            latest_token_usage: None,
+        });
+        app.last_chat_render_cache_build = Some(std::time::Instant::now());
+
+        app.reset_conversation_state();
+
+        assert!(app.conversation_loader.is_none());
+        assert!(app.conversation_process_entries.is_empty());
+        assert!(app.conversation_process_order.is_empty());
+        assert!(!app.conversation_bootstrapping);
+        assert!(!app.conversation_backfilling);
+        assert!(app.optimistic_entries.is_empty());
+        assert!(app.chat_render_cache.is_none());
+        assert!(app.chat_render_cache_dirty);
+        assert!(app.last_chat_render_cache_build.is_none());
+    }
+
+    #[test]
+    fn process_chat_entries_synthesizes_missing_user_prompt_and_reconcile_drops_matches() {
+        let mut app = test_app();
+        let session_id = Uuid::new_v4();
+        let process_id = Uuid::new_v4();
+        app.bundle.selected_session_id = Some(session_id);
+        app.bundle.process_map.insert(process_id, process(process_id, "hello there", 10));
+        app.conversation_process_order.push(process_id);
+        app.conversation_process_entries.insert(
+            process_id,
+            vec![PatchType::NormalizedEntry(NormalizedEntry {
+                timestamp: None,
+                entry_type: NormalizedEntryType::AssistantMessage,
+                content: "response".to_string(),
+                metadata: None,
+            })],
+        );
+
+        let entries = app.process_chat_entries(process_id);
+        assert!(matches!(
+            entries.first(),
+            Some(PatchType::NormalizedEntry(entry))
+                if matches!(entry.entry_type, NormalizedEntryType::UserMessage)
+                    && entry.content == "hello there"
+        ));
+
+        app.optimistic_entries = vec![
+            OptimisticConversationEntry {
+                local_id: Uuid::new_v4(),
+                scope: ConversationScope::Session(session_id),
+                message: "hello there".to_string(),
+                executor_config: ExecutorConfig::new(executors::executors::BaseCodingAgent::Codex),
+                state: OptimisticState::Pending,
+            },
+            OptimisticConversationEntry {
+                local_id: Uuid::new_v4(),
+                scope: ConversationScope::Session(session_id),
+                message: "hello there".to_string(),
+                executor_config: ExecutorConfig::new(executors::executors::BaseCodingAgent::Codex),
+                state: OptimisticState::Failed,
+            },
+        ];
+
+        app.reconcile_optimistic_entries();
+
+        assert_eq!(app.optimistic_entries.len(), 1);
+        assert_eq!(app.optimistic_entries[0].state, OptimisticState::Failed);
+    }
+
+    #[test]
+    fn chat_cache_and_loading_banners_reflect_canonical_state() {
+        let mut app = test_app();
+        let process_id = Uuid::new_v4();
+        app.bundle.process_map.insert(process_id, process(process_id, "hi", 10));
+        app.conversation_process_order.push(process_id);
+        app.conversation_process_entries.insert(
+            process_id,
+            vec![PatchType::NormalizedEntry(NormalizedEntry {
+                timestamp: None,
+                entry_type: NormalizedEntryType::TokenUsageInfo(TokenUsageInfo {
+                    total_tokens: 42,
+                    model_context_window: 128_000,
+                }),
+                content: String::new(),
+                metadata: None,
+            })],
+        );
+
+        let cache = app.build_chat_render_cache(40);
+        assert_eq!(cache.latest_token_usage, Some((42, 128_000)));
+
+        app.conversation_bootstrapping = true;
+        app.conversation_process_entries.clear();
+        let bootstrap_lines = app.chat_lines();
+        assert!(bootstrap_lines[0]
+            .spans
+            .iter()
+            .any(|span| span.content.contains("Loading recent conversation")));
+
+        app.conversation_bootstrapping = false;
+        app.conversation_backfilling = true;
+        let backfill_lines = app.chat_lines();
+        assert!(backfill_lines[0]
+            .spans
+            .iter()
+            .any(|span| span.content.contains("Loading older messages")));
     }
 }

@@ -40,6 +40,9 @@ impl App {
         self.queue_session_id = None;
         self.queue_pending = false;
         self.session_rename = None;
+        self.session_filter.clear();
+        self.search_prompt = None;
+        self.conversation_search = None;
         self.reset_conversation_state();
         self.api.load_workspace(workspace_id, self.tx.clone());
         self.api.replace_workspace_subscriptions(
@@ -147,6 +150,7 @@ impl App {
         match target {
             crate::workspace::SessionTarget::NewSession => {
                 self.session_rename = None;
+                self.conversation_search = None;
                 self.creating_new_session = true;
                 self.selected_pane = Pane::Chat;
                 self.rebind_discovery_stream();
@@ -157,6 +161,7 @@ impl App {
                 if self.bundle.selected_session_id != Some(session_id) || self.creating_new_session
                 {
                     self.session_rename = None;
+                    self.conversation_search = None;
                     self.bundle.selected_session_id = Some(session_id);
                     self.creating_new_session = false;
                     self.rebind_session_streams();

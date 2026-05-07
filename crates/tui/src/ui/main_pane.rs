@@ -99,7 +99,7 @@ impl App {
         }
     }
 
-    fn chat_composer_height(&self, area_width: u16) -> u16 {
+    pub(crate) fn chat_composer_height(&self, area_width: u16) -> u16 {
         let inner_width = area_width.saturating_sub(2).max(12) as usize;
         let wrapped_lines = if self.composer.is_empty() {
             1

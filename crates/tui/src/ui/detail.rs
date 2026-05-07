@@ -132,9 +132,14 @@ impl App {
         if let Some(index) = self.selected_session_row_index(&session_rows) {
             state.select(Some(index));
         }
+        let sessions_title = if self.session_filter.is_empty() {
+            "Sessions".to_string()
+        } else {
+            format!("Sessions / {}", self.session_filter)
+        };
         frame.render_stateful_widget(
             List::new(sessions)
-                .block(panel_block("Sessions", self.focus == Focus::Detail))
+                .block(panel_block(&sessions_title, self.focus == Focus::Detail))
                 .highlight_style(Style::default().fg(Color::Cyan).bg(Color::Rgb(28, 38, 48))),
             chunks[1],
             &mut state,
@@ -210,5 +215,145 @@ impl App {
             Line::raw(name),
             Line::styled(executor, Style::default().fg(Color::DarkGray)),
         ]))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use chrono::{TimeZone, Utc};
+    use db::models::session::Session;
+    use ratatui::layout::Rect;
+    use tokio::sync::mpsc::unbounded_channel;
+    use uuid::Uuid;
+
+    use crate::{
+        api::{Api, WorkspaceSubscriptions},
+        app::{App, SessionRenameState},
+        editor::ComposerEditorMode,
+        model::{Focus, Pane, QueueStatus, WorkspaceBundle},
+        workspace::SessionRow,
+    };
+
+    fn test_app() -> App {
+        let api = Api::new("http://127.0.0.1:9".to_string()).unwrap();
+        let (tx, rx) = unbounded_channel();
+        App {
+            api,
+            rx,
+            tx,
+            workspace_streams: Vec::new(),
+            summary_streams: Vec::new(),
+            subscriptions: WorkspaceSubscriptions::default(),
+            active_workspaces: HashMap::new(),
+            archived_workspaces: HashMap::new(),
+            summaries: HashMap::new(),
+            selected_workspace_id: None,
+            selected_pane: Pane::Chat,
+            focus: Focus::Detail,
+            maximized_panel: false,
+            show_archived: false,
+            filter: String::new(),
+            session_filter: String::new(),
+            status: String::new(),
+            error: None,
+            bundle: WorkspaceBundle::default(),
+            executor_profiles: executors::profile::ExecutorConfigs {
+                executors: HashMap::new(),
+            },
+            default_executor_profile: None,
+            composer_config: None,
+            composer_options: None,
+            composer: String::new(),
+            composer_cursor: 0,
+            editor_mode: ComposerEditorMode::Standard,
+            vim_pending_operator: None,
+            composer_dirty: false,
+            composer_edit_revision: 0,
+            draft_save_in_flight: false,
+            composer_queue_conflict: false,
+            composer_scratch_id: None,
+            composer_scratch_loaded: false,
+            queue_session_id: None,
+            queue_status: QueueStatus::Empty,
+            queue_pending: false,
+            last_composer_edit: None,
+            chat_end_offset: 0,
+            chat_render_cache: None,
+            chat_render_cache_dirty: true,
+            last_chat_render_cache_build: None,
+            conversation_loader: None,
+            conversation_process_entries: HashMap::new(),
+            conversation_process_order: Vec::new(),
+            conversation_bootstrapping: false,
+            conversation_backfilling: false,
+            optimistic_entries: Vec::new(),
+            notes_cursor: 0,
+            notes_edit_revision: 0,
+            notes_save_in_flight: false,
+            agent_picker: None,
+            session_rename: None,
+            search_prompt: None,
+            conversation_search: None,
+            creating_new_session: false,
+            should_quit: false,
+        }
+    }
+
+    fn session(id: Uuid, name: &str) -> Session {
+        let now = Utc.timestamp_opt(1, 0).unwrap();
+        Session {
+            id,
+            workspace_id: Uuid::new_v4(),
+            name: Some(name.to_string()),
+            executor: Some("CODEX".to_string()),
+            agent_working_dir: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn session_row_height_only_expands_for_active_rename_row() {
+        let first = session(Uuid::new_v4(), "first");
+        let second = session(Uuid::new_v4(), "second");
+        let mut app = test_app();
+        app.session_rename = Some(SessionRenameState {
+            session_id: second.id,
+            name: "renaming".to_string(),
+            cursor: 8,
+        });
+
+        assert_eq!(app.session_row_height(&SessionRow::NewSession), 2);
+        assert_eq!(app.session_row_height(&SessionRow::Session(&first)), 2);
+        assert_eq!(app.session_row_height(&SessionRow::Session(&second)), 3);
+    }
+
+    #[test]
+    fn session_scroll_metrics_accounts_for_taller_rename_row() {
+        let sessions = [
+            session(Uuid::new_v4(), "one"),
+            session(Uuid::new_v4(), "two"),
+            session(Uuid::new_v4(), "three"),
+        ];
+        let mut app = test_app();
+        app.bundle.selected_session_id = Some(sessions[1].id);
+        app.session_rename = Some(SessionRenameState {
+            session_id: sessions[1].id,
+            name: "rename".to_string(),
+            cursor: 6,
+        });
+
+        let rows = vec![
+            SessionRow::NewSession,
+            SessionRow::Session(&sessions[0]),
+            SessionRow::Session(&sessions[1]),
+            SessionRow::Session(&sessions[2]),
+        ];
+
+        let metrics = app.session_scroll_metrics(&rows, Rect::new(0, 0, 40, 6));
+
+        assert_eq!(metrics, (9, 4, 4));
     }
 }

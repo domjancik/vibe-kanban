@@ -61,6 +61,10 @@ impl App {
             self.handle_session_rename_key(key).await;
             return;
         }
+        if self.search_prompt.is_some() {
+            self.handle_search_prompt_key(key, size).await;
+            return;
+        }
 
         if self.bundle.terminal.input_mode && self.selected_pane == Pane::Terminal {
             match map_terminal_key(key) {
@@ -83,6 +87,20 @@ impl App {
                 }
                 Pane::Notes => {
                     self.handle_editor_key(key, true).await;
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        if self.focus == Focus::Main && self.selected_pane == Pane::Chat {
+            match key.code {
+                crossterm::event::KeyCode::Char('n') if self.conversation_search.is_some() => {
+                    self.advance_conversation_search(true, size);
+                    return;
+                }
+                crossterm::event::KeyCode::Char('N') if self.conversation_search.is_some() => {
+                    self.advance_conversation_search(false, size);
                     return;
                 }
                 _ => {}
