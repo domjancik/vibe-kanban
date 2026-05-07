@@ -1,10 +1,14 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{Event as CrosstermEvent, EventStream, KeyEvent};
 use futures_util::StreamExt;
 use ratatui::{DefaultTerminal, layout::Rect};
-use tokio::{select, sync::mpsc::error::TryRecvError, time::interval};
+use tokio::{
+    select,
+    sync::mpsc::error::TryRecvError,
+    time::{MissedTickBehavior, interval},
+};
 
 use crate::{
     app::App,
@@ -15,23 +19,37 @@ use crate::{
 
 impl App {
     pub async fn run(mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        const MAINTENANCE_INTERVAL: Duration = Duration::from_millis(150);
+        const BACKGROUND_REDRAW_INTERVAL: Duration = Duration::from_millis(50);
+        const INPUT_QUIET_WINDOW: Duration = Duration::from_millis(45);
+
         let mut events = EventStream::new();
-        let mut ticker = interval(Duration::from_millis(150));
+        let mut maintenance = interval(MAINTENANCE_INTERVAL);
+        maintenance.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut background_flush = interval(BACKGROUND_REDRAW_INTERVAL);
+        background_flush.set_missed_tick_behavior(MissedTickBehavior::Skip);
         self.status = format!("Connected to {}", self.api.base_url);
-        let mut ui_dirty = true;
+        let mut draw_requested = true;
+        let mut pending_background_redraw = false;
+        let mut last_key_event = Instant::now() - INPUT_QUIET_WINDOW;
 
         self.ensure_workspace_selected(rect_from_size(terminal.size()?));
 
         while !self.should_quit {
-            if ui_dirty {
+            if draw_requested {
                 terminal.draw(|frame| self.render(frame))?;
-                ui_dirty = false;
+                draw_requested = false;
+                pending_background_redraw = false;
             }
             select! {
-                _ = ticker.tick() => {
-                    let notes_changed = self.flush_notes_if_needed().await;
-                    let draft_changed = self.flush_draft_if_needed().await;
-                    ui_dirty |= notes_changed || draft_changed;
+                biased;
+                Some(Ok(event)) = events.next() => {
+                    if let CrosstermEvent::Key(key) = event {
+                        self.handle_key(key, rect_from_size(terminal.size()?)).await;
+                        draw_requested = true;
+                        pending_background_redraw = false;
+                        last_key_event = Instant::now();
+                    }
                 }
                 Some(event) = self.rx.recv() => {
                     let size = rect_from_size(terminal.size()?);
@@ -42,12 +60,26 @@ impl App {
                             Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
                         }
                     }
-                    ui_dirty = true;
+                    if last_key_event.elapsed() < INPUT_QUIET_WINDOW {
+                        pending_background_redraw = true;
+                    } else {
+                        draw_requested = true;
+                    }
                 }
-                Some(Ok(event)) = events.next() => {
-                    if let CrosstermEvent::Key(key) = event {
-                        self.handle_key(key, rect_from_size(terminal.size()?)).await;
-                        ui_dirty = true;
+                _ = background_flush.tick(), if pending_background_redraw => {
+                    if last_key_event.elapsed() >= INPUT_QUIET_WINDOW {
+                        draw_requested = true;
+                    }
+                }
+                _ = maintenance.tick() => {
+                    let notes_changed = self.flush_notes_if_needed().await;
+                    let draft_changed = self.flush_draft_if_needed().await;
+                    if notes_changed || draft_changed {
+                        if last_key_event.elapsed() < INPUT_QUIET_WINDOW {
+                            pending_background_redraw = true;
+                        } else {
+                            draw_requested = true;
+                        }
                     }
                 }
             }

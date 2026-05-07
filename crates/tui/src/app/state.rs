@@ -5,6 +5,7 @@ use executors::{
     executor_discovery::ExecutorDiscoveredOptions,
     profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},
 };
+use ratatui::{text::Text, widgets::ListItem};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use uuid::Uuid;
 
@@ -67,6 +68,23 @@ pub(crate) struct ComposerHeightCache {
     pub(crate) height: u16,
 }
 
+pub(crate) struct WorkspaceListRenderCache {
+    pub(crate) revision: u64,
+    pub(crate) query: String,
+    pub(crate) items: Vec<ListItem<'static>>,
+    pub(crate) row_ids: Vec<Option<Uuid>>,
+}
+
+pub(crate) struct DetailPaneRenderCache {
+    pub(crate) revision: u64,
+    pub(crate) session_query: String,
+    pub(crate) renaming_session_id: Option<Uuid>,
+    pub(crate) workspace_info: Text<'static>,
+    pub(crate) session_items: Vec<ListItem<'static>>,
+    pub(crate) session_ids: Vec<Option<Uuid>>,
+    pub(crate) process_items: Vec<ListItem<'static>>,
+}
+
 pub struct App {
     pub(crate) api: Api,
     pub(crate) rx: UnboundedReceiver<NetEvent>,
@@ -84,6 +102,10 @@ pub struct App {
     pub(crate) show_archived: bool,
     pub(crate) filter: String,
     pub(crate) session_filter: String,
+    pub(crate) workspace_list_revision: u64,
+    pub(crate) detail_revision: u64,
+    pub(crate) workspace_list_cache: Option<WorkspaceListRenderCache>,
+    pub(crate) detail_pane_cache: Option<DetailPaneRenderCache>,
     pub(crate) status: String,
     pub(crate) error: Option<String>,
     pub(crate) bundle: WorkspaceBundle,
@@ -151,6 +173,10 @@ impl App {
             show_archived: false,
             filter: String::new(),
             session_filter: String::new(),
+            workspace_list_revision: 0,
+            detail_revision: 0,
+            workspace_list_cache: None,
+            detail_pane_cache: None,
             status: String::new(),
             error: None,
             bundle: WorkspaceBundle::default(),
@@ -196,5 +222,20 @@ impl App {
             creating_new_session: false,
             should_quit: false,
         }
+    }
+
+    pub(crate) fn mark_workspace_list_dirty(&mut self) {
+        self.workspace_list_revision = self.workspace_list_revision.saturating_add(1);
+        self.workspace_list_cache = None;
+    }
+
+    pub(crate) fn mark_detail_dirty(&mut self) {
+        self.detail_revision = self.detail_revision.saturating_add(1);
+        self.detail_pane_cache = None;
+    }
+
+    pub(crate) fn mark_sidebar_dirty(&mut self) {
+        self.mark_workspace_list_dirty();
+        self.mark_detail_dirty();
     }
 }
