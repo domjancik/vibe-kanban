@@ -16,3 +16,8 @@ pub use crate::{
         WorkspaceStreamState, WorkspaceSummary, WorkspaceSummaryRequest, WorkspaceSummaryResponse,
     },
 };
+
+pub mod domain;
+pub mod dto;
+pub mod event;
+pub mod format;
