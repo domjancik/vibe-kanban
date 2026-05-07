@@ -12,8 +12,6 @@ mod app_status;
 mod app_update;
 mod app_util;
 mod composer;
-mod composer_config;
-mod composer_state;
 mod conversation;
 mod conversation_state;
 mod editor;
