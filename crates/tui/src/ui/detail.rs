@@ -34,14 +34,11 @@ impl App {
             .unwrap_or("")
             .to_string();
         let renaming_session_id = self.session_rename.as_ref().map(|rename| rename.session_id);
-        let needs_rebuild = self
-            .detail_pane_cache
-            .as_ref()
-            .is_none_or(|cache| {
-                cache.revision != self.detail_revision
-                    || cache.session_query != session_query
-                    || cache.renaming_session_id != renaming_session_id
-            });
+        let needs_rebuild = self.detail_pane_cache.as_ref().is_none_or(|cache| {
+            cache.revision != self.detail_revision
+                || cache.session_query != session_query
+                || cache.renaming_session_id != renaming_session_id
+        });
         if needs_rebuild {
             let workspace_info = if let Some(workspace) = &self.bundle.workspace {
                 Text::from(vec![
@@ -144,7 +141,10 @@ impl App {
             .expect("detail pane cache should be populated")
     }
 
-    fn selected_session_row_index_from_ids(&self, session_ids: &[Option<uuid::Uuid>]) -> Option<usize> {
+    fn selected_session_row_index_from_ids(
+        &self,
+        session_ids: &[Option<uuid::Uuid>],
+    ) -> Option<usize> {
         if self.creating_new_session {
             return Some(0);
         }
@@ -154,13 +154,19 @@ impl App {
             .position(|session_id| session_id.is_some_and(|session_id| session_id == selected))
     }
 
-    fn session_scroll_metrics(&self, session_ids: &[Option<uuid::Uuid>], area: Rect) -> (usize, usize, usize) {
+    fn session_scroll_metrics(
+        &self,
+        session_ids: &[Option<uuid::Uuid>],
+        area: Rect,
+    ) -> (usize, usize, usize) {
         let viewport_lines = area.height.saturating_sub(2).max(1) as usize;
         let total_lines = session_ids
             .iter()
             .map(|session_id| self.session_row_height_for_id(*session_id))
             .sum::<usize>();
-        let selected_index = self.selected_session_row_index_from_ids(session_ids).unwrap_or(0);
+        let selected_index = self
+            .selected_session_row_index_from_ids(session_ids)
+            .unwrap_or(0);
 
         let mut top_index = selected_index.min(session_ids.len().saturating_sub(1));
         let mut used_lines = session_ids
