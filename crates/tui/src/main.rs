@@ -2,7 +2,6 @@ mod api;
 mod app;
 mod composer;
 mod conversation;
-mod conversation_state;
 mod editor;
 mod input;
 mod model;
