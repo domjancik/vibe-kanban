@@ -1,6 +1,8 @@
 mod api;
+mod api_session;
 mod api_terminal;
 mod api_transport;
+mod api_workspace;
 mod app;
 mod app_editor;
 mod app_state;
