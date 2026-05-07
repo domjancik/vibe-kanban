@@ -8,6 +8,8 @@ mod app_editor;
 mod app_state;
 mod app_update;
 mod composer;
+mod composer_config;
+mod composer_state;
 mod conversation;
 mod editor;
 mod input;
