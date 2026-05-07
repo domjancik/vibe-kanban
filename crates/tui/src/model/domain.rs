@@ -10,6 +10,13 @@ use uuid::Uuid;
 
 use crate::model::{LocalDiff, PatchType, RepoBranchStatus};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiffViewMode {
+    #[default]
+    Unified,
+    SideBySide,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pane {
     Chat,
@@ -67,6 +74,7 @@ pub struct WorkspaceBundle {
     pub selected_session_id: Option<Uuid>,
     pub selected_process_id: Option<Uuid>,
     pub selected_diff_index: usize,
+    pub diff_view_mode: DiffViewMode,
     pub log_scroll: u16,
     pub terminal: TerminalState,
 }

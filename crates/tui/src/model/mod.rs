@@ -1,6 +1,6 @@
 #[allow(unused_imports)]
 pub use self::{
-    domain::{Focus, Pane, TerminalState, WorkspaceBundle, active_process},
+    domain::{DiffViewMode, Focus, Pane, TerminalState, WorkspaceBundle, active_process},
     dto::{
         ApiEnvelope, BranchStatus, CreateSessionRequest, DiffChangeKind, DiffStreamState,
         ExecutionProcessesState, ExecutorDiscoveryStreamState, FollowUpRequest, LocalDiff,

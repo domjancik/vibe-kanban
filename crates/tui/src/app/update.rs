@@ -519,6 +519,26 @@ impl App {
             AppIntent::QueuePrompt => self.queue_prompt().await,
             AppIntent::CancelQueuedPrompt => self.cancel_queued_prompt().await,
             AppIntent::DiscardDraft => self.discard_draft().await,
+            AppIntent::ToggleDiffViewMode => {
+                if self.selected_pane == Pane::Changes {
+                    self.bundle.diff_view_mode = match self.bundle.diff_view_mode {
+                        crate::model::DiffViewMode::Unified => {
+                            crate::model::DiffViewMode::SideBySide
+                        }
+                        crate::model::DiffViewMode::SideBySide => {
+                            crate::model::DiffViewMode::Unified
+                        }
+                    };
+                    self.status = match self.bundle.diff_view_mode {
+                        crate::model::DiffViewMode::Unified => {
+                            "Diff view: unified".to_string()
+                        }
+                        crate::model::DiffViewMode::SideBySide => {
+                            "Diff view: side by side".to_string()
+                        }
+                    };
+                }
+            }
             AppIntent::Enter => self.handle_enter(size).await,
             AppIntent::JumpToStart => self.jump_to_boundary(false, size),
             AppIntent::JumpToEnd => self.jump_to_boundary(true, size),
