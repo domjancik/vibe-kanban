@@ -374,3 +374,222 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use chrono::{TimeZone, Utc};
+    use db::models::{
+        execution_process::{
+            ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus,
+            ExecutorActionField,
+        },
+        scratch::DraftFollowUpData,
+        session::Session,
+    };
+    use executors::{
+        actions::{
+            ExecutorAction, ExecutorActionType,
+            script::{ScriptContext, ScriptRequest, ScriptRequestLanguage},
+        },
+        profile::{ExecutorConfig, ExecutorConfigs},
+    };
+    use ratatui::layout::Rect;
+    use sqlx::types::Json;
+    use tokio::sync::mpsc::unbounded_channel;
+    use uuid::Uuid;
+
+    use crate::{
+        api::{Api, WorkspaceSubscriptions},
+        app::App,
+        editor::ComposerEditorMode,
+        model::{Focus, NetEvent, Pane, PatchType, QueueStatus, WorkspaceBundle},
+    };
+
+    fn test_app() -> App {
+        let api = Api::new("http://127.0.0.1:9".to_string()).unwrap();
+        let (tx, rx) = unbounded_channel();
+        App {
+            api,
+            rx,
+            tx,
+            workspace_streams: Vec::new(),
+            summary_streams: Vec::new(),
+            subscriptions: WorkspaceSubscriptions::default(),
+            active_workspaces: HashMap::new(),
+            archived_workspaces: HashMap::new(),
+            summaries: HashMap::new(),
+            selected_workspace_id: None,
+            selected_pane: Pane::Chat,
+            focus: Focus::Main,
+            maximized_panel: false,
+            show_archived: false,
+            filter: String::new(),
+            session_filter: String::new(),
+            status: String::new(),
+            error: None,
+            bundle: WorkspaceBundle::default(),
+            executor_profiles: ExecutorConfigs {
+                executors: HashMap::new(),
+            },
+            default_executor_profile: None,
+            composer_config: Some(ExecutorConfig::new(
+                executors::executors::BaseCodingAgent::Codex,
+            )),
+            composer_options: None,
+            composer: String::new(),
+            composer_cursor: 0,
+            editor_mode: ComposerEditorMode::Standard,
+            vim_pending_operator: None,
+            composer_dirty: false,
+            composer_edit_revision: 0,
+            draft_save_in_flight: false,
+            composer_queue_conflict: false,
+            composer_scratch_id: None,
+            composer_scratch_loaded: false,
+            queue_session_id: None,
+            queue_status: QueueStatus::Empty,
+            queue_pending: false,
+            last_composer_edit: None,
+            chat_end_offset: 0,
+            chat_render_cache: None,
+            chat_render_cache_dirty: true,
+            last_chat_render_cache_build: None,
+            conversation_loader: None,
+            conversation_process_entries: HashMap::new(),
+            conversation_process_order: Vec::new(),
+            conversation_bootstrapping: false,
+            conversation_backfilling: false,
+            optimistic_entries: Vec::new(),
+            notes_cursor: 0,
+            notes_edit_revision: 0,
+            notes_save_in_flight: false,
+            agent_picker: None,
+            session_rename: None,
+            search_prompt: None,
+            conversation_search: None,
+            creating_new_session: false,
+            should_quit: false,
+        }
+    }
+
+    fn session(id: Uuid, name: &str) -> Session {
+        let now = Utc.timestamp_opt(1, 0).unwrap();
+        Session {
+            id,
+            workspace_id: Uuid::new_v4(),
+            name: Some(name.to_string()),
+            executor: Some("CODEX".to_string()),
+            agent_working_dir: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn process(id: Uuid, second: i64) -> ExecutionProcess {
+        let created_at = Utc.timestamp_opt(second, 0).unwrap();
+        ExecutionProcess {
+            id,
+            session_id: Uuid::new_v4(),
+            run_reason: ExecutionProcessRunReason::CodingAgent,
+            executor_action: Json(ExecutorActionField::ExecutorAction(ExecutorAction::new(
+                ExecutorActionType::ScriptRequest(ScriptRequest {
+                    script: "echo hi".to_string(),
+                    language: ScriptRequestLanguage::Bash,
+                    context: ScriptContext::SetupScript,
+                    working_dir: None,
+                }),
+                None,
+            ))),
+            status: ExecutionProcessStatus::Completed,
+            exit_code: Some(0),
+            dropped: false,
+            started_at: Some(created_at),
+            completed_at: Some(created_at),
+            created_at,
+            updated_at: created_at,
+        }
+    }
+
+    #[tokio::test]
+    async fn sessions_loaded_preserves_existing_selection_when_still_present() {
+        let workspace_id = Uuid::new_v4();
+        let first = session(Uuid::new_v4(), "first");
+        let second = session(Uuid::new_v4(), "second");
+        let process_id = Uuid::new_v4();
+        let mut app = test_app();
+        app.selected_workspace_id = Some(workspace_id);
+        app.bundle.selected_session_id = Some(second.id);
+        app.bundle.process_map.insert(process_id, process(process_id, 1));
+        app.bundle.log_entries = vec![PatchType::Stdout("keep".to_string())];
+
+        app.handle_net_event(
+            NetEvent::SessionsLoaded {
+                workspace_id,
+                sessions: vec![first, second.clone()],
+            },
+            Rect::new(0, 0, 80, 24),
+        )
+        .await;
+
+        assert_eq!(app.bundle.selected_session_id, Some(second.id));
+        assert_eq!(app.bundle.log_entries.len(), 1);
+        assert_eq!(app.bundle.process_map.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn sessions_loaded_falls_back_and_clears_process_state_when_selection_disappears() {
+        let workspace_id = Uuid::new_v4();
+        let missing = session(Uuid::new_v4(), "missing");
+        let first = session(Uuid::new_v4(), "first");
+        let process_id = Uuid::new_v4();
+        let mut app = test_app();
+        app.selected_workspace_id = Some(workspace_id);
+        app.bundle.selected_session_id = Some(missing.id);
+        app.bundle.selected_process_id = Some(process_id);
+        app.bundle.process_map.insert(process_id, process(process_id, 1));
+        app.bundle.log_entries = vec![PatchType::Stdout("clear".to_string())];
+
+        app.handle_net_event(
+            NetEvent::SessionsLoaded {
+                workspace_id,
+                sessions: vec![first.clone()],
+            },
+            Rect::new(0, 0, 80, 24),
+        )
+        .await;
+
+        assert_eq!(app.bundle.selected_session_id, Some(first.id));
+        assert!(app.bundle.process_map.is_empty());
+        assert!(app.bundle.log_entries.is_empty());
+        assert!(app.bundle.selected_process_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn draft_loaded_does_not_overwrite_local_dirty_edits() {
+        let scratch_id = Uuid::new_v4();
+        let mut app = test_app();
+        app.bundle.selected_session_id = Some(scratch_id);
+        app.composer = "local".to_string();
+        app.composer_dirty = true;
+        app.composer_scratch_loaded = true;
+
+        app.handle_net_event(
+            NetEvent::DraftLoaded {
+                scratch_id,
+                draft: Some(DraftFollowUpData {
+                    message: "remote".to_string(),
+                    executor_config: ExecutorConfig::new(
+                        executors::executors::BaseCodingAgent::Codex,
+                    ),
+                }),
+            },
+            Rect::new(0, 0, 80, 24),
+        )
+        .await;
+
+        assert_eq!(app.composer, "local");
+        assert!(app.composer_dirty);
+    }
+}

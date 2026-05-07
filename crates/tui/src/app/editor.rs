@@ -592,3 +592,154 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use crossterm::event::{KeyCode, KeyEvent};
+    use tokio::sync::mpsc::unbounded_channel;
+    use uuid::Uuid;
+
+    use crate::{
+        api::{Api, WorkspaceSubscriptions},
+        app::{App, SessionRenameState},
+        editor::{ComposerEditorMode, VimMode},
+        model::{Focus, Pane, QueueStatus, WorkspaceBundle},
+    };
+
+    fn test_app() -> App {
+        let api = Api::new("http://127.0.0.1:9".to_string()).unwrap();
+        let (tx, rx) = unbounded_channel();
+        App {
+            api,
+            rx,
+            tx,
+            workspace_streams: Vec::new(),
+            summary_streams: Vec::new(),
+            subscriptions: WorkspaceSubscriptions::default(),
+            active_workspaces: HashMap::new(),
+            archived_workspaces: HashMap::new(),
+            summaries: HashMap::new(),
+            selected_workspace_id: None,
+            selected_pane: Pane::Chat,
+            focus: Focus::Main,
+            maximized_panel: false,
+            show_archived: false,
+            filter: String::new(),
+            session_filter: String::new(),
+            status: String::new(),
+            error: None,
+            bundle: WorkspaceBundle::default(),
+            executor_profiles: executors::profile::ExecutorConfigs {
+                executors: HashMap::new(),
+            },
+            default_executor_profile: None,
+            composer_config: None,
+            composer_options: None,
+            composer: String::new(),
+            composer_cursor: 0,
+            editor_mode: ComposerEditorMode::Standard,
+            vim_pending_operator: None,
+            composer_dirty: false,
+            composer_edit_revision: 0,
+            draft_save_in_flight: false,
+            composer_queue_conflict: false,
+            composer_scratch_id: None,
+            composer_scratch_loaded: false,
+            queue_session_id: None,
+            queue_status: QueueStatus::Empty,
+            queue_pending: false,
+            last_composer_edit: None,
+            chat_end_offset: 0,
+            chat_render_cache: None,
+            chat_render_cache_dirty: true,
+            last_chat_render_cache_build: None,
+            conversation_loader: None,
+            conversation_process_entries: HashMap::new(),
+            conversation_process_order: Vec::new(),
+            conversation_bootstrapping: false,
+            conversation_backfilling: false,
+            optimistic_entries: Vec::new(),
+            notes_cursor: 0,
+            notes_edit_revision: 0,
+            notes_save_in_flight: false,
+            agent_picker: None,
+            session_rename: None,
+            search_prompt: None,
+            conversation_search: None,
+            creating_new_session: false,
+            should_quit: false,
+        }
+    }
+
+    #[test]
+    fn editor_buffer_cursor_mut_routes_targets_correctly() {
+        let mut app = test_app();
+        app.composer = "composer".to_string();
+        app.composer_cursor = 3;
+        app.bundle.notes = "notes".to_string();
+        app.notes_cursor = 2;
+        app.session_rename = Some(SessionRenameState {
+            session_id: Uuid::new_v4(),
+            name: "rename".to_string(),
+            cursor: 4,
+        });
+
+        let (buffer, cursor) = app.editor_buffer_cursor_mut(EditorTarget::Composer);
+        assert_eq!(buffer.as_str(), "composer");
+        assert_eq!(*cursor, 3);
+
+        let (buffer, cursor) = app.editor_buffer_cursor_mut(EditorTarget::Notes);
+        assert_eq!(buffer.as_str(), "notes");
+        assert_eq!(*cursor, 2);
+
+        let (buffer, cursor) = app.editor_buffer_cursor_mut(EditorTarget::SessionRename);
+        assert_eq!(buffer.as_str(), "rename");
+        assert_eq!(*cursor, 4);
+    }
+
+    #[test]
+    fn mark_editor_dirty_updates_only_persisted_editor_targets() {
+        let mut app = test_app();
+        app.session_rename = Some(SessionRenameState {
+            session_id: Uuid::new_v4(),
+            name: "rename".to_string(),
+            cursor: 6,
+        });
+
+        app.mark_editor_dirty(EditorTarget::Composer);
+        assert!(app.composer_dirty);
+        assert_eq!(app.composer_edit_revision, 1);
+
+        app.mark_editor_dirty(EditorTarget::Notes);
+        assert!(app.bundle.notes_dirty);
+        assert_eq!(app.notes_edit_revision, 1);
+
+        app.mark_editor_dirty(EditorTarget::SessionRename);
+        assert_eq!(app.composer_edit_revision, 1);
+        assert_eq!(app.notes_edit_revision, 1);
+    }
+
+    #[tokio::test]
+    async fn session_rename_uses_shared_vim_mode_rules() {
+        let mut app = test_app();
+        app.session_rename = Some(SessionRenameState {
+            session_id: Uuid::new_v4(),
+            name: "name".to_string(),
+            cursor: 4,
+        });
+        app.editor_mode = ComposerEditorMode::Vim(VimMode::Insert);
+
+        app.handle_session_rename_key(KeyEvent::from(KeyCode::Esc)).await;
+        assert!(app.session_rename.is_some());
+        assert_eq!(app.editor_mode, ComposerEditorMode::Vim(VimMode::Normal));
+
+        app.handle_session_rename_key(KeyEvent::from(KeyCode::Char('h')))
+            .await;
+        assert_eq!(app.session_rename.as_ref().map(|rename| rename.cursor), Some(3));
+
+        app.handle_session_rename_key(KeyEvent::from(KeyCode::Esc)).await;
+        assert!(app.session_rename.is_none());
+    }
+}
