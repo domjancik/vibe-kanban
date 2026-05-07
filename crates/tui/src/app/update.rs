@@ -530,9 +530,7 @@ impl App {
                         }
                     };
                     self.status = match self.bundle.diff_view_mode {
-                        crate::model::DiffViewMode::Unified => {
-                            "Diff view: unified".to_string()
-                        }
+                        crate::model::DiffViewMode::Unified => "Diff view: unified".to_string(),
                         crate::model::DiffViewMode::SideBySide => {
                             "Diff view: side by side".to_string()
                         }

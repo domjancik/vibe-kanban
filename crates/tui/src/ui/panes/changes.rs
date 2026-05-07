@@ -95,7 +95,12 @@ impl App {
             .diffs
             .get(self.bundle.selected_diff_index)
             .map(render_side_by_side_text)
-            .unwrap_or_else(|| (Text::from("No diff selected"), Text::from("No diff selected")));
+            .unwrap_or_else(|| {
+                (
+                    Text::from("No diff selected"),
+                    Text::from("No diff selected"),
+                )
+            });
 
         frame.render_widget(
             Paragraph::new(left_text)
@@ -231,7 +236,11 @@ fn render_side_column_line(
 
     match (content, line_number) {
         (Some(content), Some(line_number)) => {
-            let style = if changed { base } else { Style::default().fg(Color::Gray) };
+            let style = if changed {
+                base
+            } else {
+                Style::default().fg(Color::Gray)
+            };
             Line::from(vec![
                 Span::styled(format!("{line_number:>4} "), muted),
                 Span::styled(content.to_string(), style),
