@@ -208,6 +208,23 @@ impl EventService {
                                 });
 
                                 if matches {
+                                    let is_deleted = value
+                                        .and_then(|v| v.get("deleted"))
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(false);
+                                    if is_deleted {
+                                        let clear_patch = json_patch::Patch(vec![
+                                            json_patch::PatchOperation::Replace(
+                                                json_patch::ReplaceOperation {
+                                                    path: "/scratch"
+                                                        .try_into()
+                                                        .expect("Scratch path should be valid"),
+                                                    value: serde_json::Value::Null,
+                                                },
+                                            ),
+                                        ]);
+                                        return Some(Ok(LogMsg::JsonPatch(clear_patch)));
+                                    }
                                     return Some(Ok(LogMsg::JsonPatch(patch)));
                                 }
                             }

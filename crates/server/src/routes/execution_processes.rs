@@ -270,6 +270,7 @@ async fn handle_execution_processes_by_session_ws(
             }
         }
     }
+    let _ = socket.close().await;
     Ok(())
 }
 

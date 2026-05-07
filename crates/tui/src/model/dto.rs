@@ -212,7 +212,9 @@ pub struct PrMerge {
 #[derive(Debug, Clone, Deserialize)]
 pub struct PullRequestInfo {
     pub status: MergeStatus,
+    #[serde(alias = "number")]
     pub pr_number: i64,
+    #[serde(alias = "url")]
     pub pr_url: String,
 }
 

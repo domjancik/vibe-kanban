@@ -94,10 +94,7 @@ pub async fn delete_scratch(
     State(deployment): State<DeploymentImpl>,
     Path(ScratchPath { scratch_type, id }): Path<ScratchPath>,
 ) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
-    let rows = Scratch::delete(&deployment.db().pool, id, &scratch_type).await?;
-    if rows == 0 {
-        return Err(ApiError::BadRequest("Scratch not found".to_string()));
-    }
+    let _ = Scratch::delete(&deployment.db().pool, id, &scratch_type).await?;
     Ok(ResponseJson(ApiResponse::success(())))
 }
 
@@ -151,6 +148,7 @@ async fn handle_scratch_ws(
             }
         }
     }
+    let _ = socket.close().await;
     Ok(())
 }
 

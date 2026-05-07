@@ -29,28 +29,42 @@ pub fn render_editor_buffer(
     let mut lines = Vec::new();
     let mut current_spans = Vec::new();
     let mut index = 0usize;
+    let mut plain_start = 0usize;
 
     while index < buffer.len() {
         if show_cursor && index == cursor {
+            if plain_start < index {
+                current_spans.push(Span::raw(buffer[plain_start..index].to_string()));
+            }
             let ch = buffer[index..].chars().next().unwrap_or(' ');
             if ch == '\n' {
                 current_spans.push(Span::styled(cursor_glyph, cursor_style));
                 lines.push(Line::from(std::mem::take(&mut current_spans)));
                 index += ch.len_utf8();
+                plain_start = index;
                 continue;
             }
             current_spans.push(Span::styled(ch.to_string(), cursor_style));
             index += ch.len_utf8();
+            plain_start = index;
             continue;
         }
 
         let ch = buffer[index..].chars().next().unwrap_or(' ');
-        index += ch.len_utf8();
         if ch == '\n' {
+            if plain_start < index {
+                current_spans.push(Span::raw(buffer[plain_start..index].to_string()));
+            }
             lines.push(Line::from(std::mem::take(&mut current_spans)));
+            index += ch.len_utf8();
+            plain_start = index;
         } else {
-            current_spans.push(Span::raw(ch.to_string()));
+            index += ch.len_utf8();
         }
+    }
+
+    if plain_start < buffer.len() {
+        current_spans.push(Span::raw(buffer[plain_start..].to_string()));
     }
 
     if show_cursor && cursor == buffer.len() {
@@ -82,5 +96,25 @@ mod tests {
         assert_eq!(text.lines[0].spans.len(), 1);
         assert_eq!(text.lines[0].spans[0].content.as_ref(), "▏");
         assert_eq!(text.lines[0].spans[0].style.bg, Some(Color::Cyan));
+    }
+
+    #[test]
+    fn plain_text_is_batched_into_spans_around_cursor() {
+        let text = render_editor_buffer("hello", 2, true, ComposerEditorMode::Standard);
+        assert_eq!(text.lines.len(), 1);
+        assert_eq!(text.lines[0].spans.len(), 3);
+        assert_eq!(text.lines[0].spans[0].content.as_ref(), "he");
+        assert_eq!(text.lines[0].spans[1].content.as_ref(), "l");
+        assert_eq!(text.lines[0].spans[2].content.as_ref(), "lo");
+    }
+
+    #[test]
+    fn plain_text_without_cursor_uses_single_span_per_line() {
+        let text = render_editor_buffer("hello\nworld", 0, false, ComposerEditorMode::Standard);
+        assert_eq!(text.lines.len(), 2);
+        assert_eq!(text.lines[0].spans.len(), 1);
+        assert_eq!(text.lines[0].spans[0].content.as_ref(), "hello");
+        assert_eq!(text.lines[1].spans.len(), 1);
+        assert_eq!(text.lines[1].spans[0].content.as_ref(), "world");
     }
 }

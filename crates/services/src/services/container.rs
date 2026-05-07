@@ -46,6 +46,7 @@ use executors::{
 use futures::{StreamExt, future, stream::BoxStream};
 use git::{GitService, GitServiceError};
 use json_patch::Patch;
+use serde_json::json;
 use sqlx::Error as SqlxError;
 use thiserror::Error;
 use tokio::{sync::RwLock, task::JoinHandle};
@@ -832,14 +833,18 @@ pub trait ContainerService {
         id: &Uuid,
     ) -> Option<futures::stream::BoxStream<'static, Result<LogMsg, std::io::Error>>> {
         if let Some(store) = self.get_msg_store_by_id(id).await {
+            let snapshot = build_normalized_logs_snapshot(&store.get_history());
             Some(
-                store
-                    .history_plus_stream()
-                    .take_while(|msg| future::ready(!matches!(msg, Ok(LogMsg::Finished))))
-                    .filter(|msg| future::ready(matches!(msg, Ok(LogMsg::JsonPatch(..)))))
-                    .chain(futures::stream::once(async {
-                        Ok::<_, std::io::Error>(LogMsg::Finished)
-                    }))
+                futures::stream::iter(vec![Ok(LogMsg::JsonPatch(snapshot))])
+                    .chain(
+                        store
+                            .history_plus_stream()
+                            .take_while(|msg| future::ready(!matches!(msg, Ok(LogMsg::Finished))))
+                            .filter(|msg| future::ready(matches!(msg, Ok(LogMsg::JsonPatch(..)))))
+                            .chain(futures::stream::once(async {
+                                Ok::<_, std::io::Error>(LogMsg::Finished)
+                            })),
+                    )
                     .boxed(),
             )
         } else {
@@ -1042,6 +1047,30 @@ pub trait ContainerService {
 
             Some(deduped.boxed())
         }
+    }
+
+    fn build_normalized_logs_snapshot(history: &[LogMsg]) -> Patch {
+        let mut state = json!({ "entries": [] });
+
+        for msg in history {
+            if let LogMsg::JsonPatch(patch) = msg {
+                if json_patch::patch(&mut state, patch).is_err() {
+                    continue;
+                }
+            }
+        }
+
+        let value = state
+            .get("entries")
+            .cloned()
+            .unwrap_or_else(|| serde_json::Value::Array(vec![]));
+
+        json_patch::Patch(vec![json_patch::PatchOperation::Replace(
+            json_patch::ReplaceOperation {
+                path: "/entries".try_into().expect("Entries path should be valid"),
+                value,
+            },
+        )])
     }
 
     async fn start_workspace(

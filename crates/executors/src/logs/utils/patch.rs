@@ -124,7 +124,7 @@ impl ConversationPatch {
             .map(|(path, diff)| (path, PatchType::Diff(diff)))
             .collect();
         from_value(json!([{
-            "op": "replace",
+            "op": "add",
             "path": format!("/entries/{}", escape_json_pointer_segment(repo_key)),
             "value": entries,
         }]))

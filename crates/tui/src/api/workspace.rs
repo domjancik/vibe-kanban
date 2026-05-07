@@ -115,32 +115,9 @@ impl Api {
             }
         });
 
-        let api = self.clone();
-        tokio::spawn(async move {
-            match api
-                .get::<ScratchRecord>(&format!(
-                    "/api/scratch/{SCRATCH_TYPE_WORKSPACE_NOTES}/{workspace_id}"
-                ))
-                .await
-            {
-                Ok(scratch) => {
-                    let notes = match scratch.payload {
-                        ScratchPayload::WorkspaceNotes(data) => data.content,
-                        ScratchPayload::DraftFollowUp(_) => String::new(),
-                        ScratchPayload::Other => String::new(),
-                    };
-                    let _ = tx.send(NetEvent::NotesLoaded {
-                        workspace_id,
-                        notes,
-                    });
-                }
-                Err(_) => {
-                    let _ = tx.send(NetEvent::NotesLoaded {
-                        workspace_id,
-                        notes: String::new(),
-                    });
-                }
-            }
+        let _ = tx.send(NetEvent::NotesLoaded {
+            workspace_id,
+            notes: String::new(),
         });
     }
 

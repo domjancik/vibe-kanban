@@ -94,6 +94,7 @@ async fn handle_workspace_diff_ws(
             }
         }
     }
+    let _ = socket.close().await;
     Ok(())
 }
 
@@ -137,5 +138,6 @@ async fn handle_workspaces_ws(
             }
         }
     }
+    let _ = socket.close().await;
     Ok(())
 }
