@@ -3,6 +3,7 @@ pub mod layout;
 pub mod main_pane;
 pub mod modal;
 pub mod panes;
+pub mod shell;
 pub mod widgets;
 pub mod workspace_list;
 

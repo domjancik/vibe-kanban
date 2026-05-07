@@ -6,11 +6,10 @@ use db::models::execution_process::{ExecutionProcessRunReason, ExecutionProcessS
 use executors::{model_selector::ModelInfo, profile::ExecutorConfig};
 use futures_util::StreamExt;
 use ratatui::{
-    DefaultTerminal, Frame,
+    DefaultTerminal,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
 };
 use tokio::{select, time::interval};
 use uuid::Uuid;
@@ -24,10 +23,7 @@ use crate::{
         render_optimistic_chat_entry, wrap_lines,
     },
     input::{TerminalInput, map_app_key, map_terminal_key},
-    model::{
-        Focus, NetEvent, Pane, PatchType, QueueStatus, display_permission, display_variant,
-        workspace_title,
-    },
+    model::{Focus, NetEvent, Pane, PatchType, QueueStatus, display_permission, display_variant},
     ui::{rect_from_size, terminal_content_area},
     workspace::session_target,
 };
@@ -429,71 +425,6 @@ impl App {
     fn adjust_chat_scroll(&mut self, delta: i32) {
         let offset = self.chat_end_offset as i32 - delta;
         self.chat_end_offset = offset.clamp(0, u16::MAX as i32) as u16;
-    }
-
-    fn render(&mut self, frame: &mut Frame) {
-        let outer = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Min(1),
-                Constraint::Length(2),
-            ])
-            .split(frame.area());
-
-        frame.render_widget(self.header(), outer[0]);
-
-        if frame.area().width >= 140 {
-            let body = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Length(32),
-                    Constraint::Min(50),
-                    Constraint::Length(44),
-                ])
-                .split(outer[1]);
-            self.render_workspace_list(frame, body[0]);
-            self.render_main(frame, body[1]);
-            self.render_detail(frame, body[2]);
-        } else {
-            let body = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(32), Constraint::Min(40)])
-                .split(outer[1]);
-            self.render_workspace_list(frame, body[0]);
-            self.render_main(frame, body[1]);
-        }
-
-        frame.render_widget(self.footer(), outer[2]);
-
-        if self.agent_picker.is_some() {
-            self.render_agent_picker(frame, frame.area());
-        }
-    }
-
-    fn header(&self) -> Paragraph<'_> {
-        let workspace = self
-            .selected_workspace_id
-            .and_then(|id| self.find_workspace(id))
-            .map(|workspace| workspace_title(&workspace.workspace))
-            .unwrap_or_else(|| "No workspace".to_string());
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                "Vibe Kanban TUI",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::raw(workspace),
-            Span::raw("  "),
-            Span::styled(self.selected_pane.title(), Style::default().fg(Color::Gray)),
-        ]))
-    }
-
-    fn footer(&self) -> Paragraph<'_> {
-        let status = self.error.as_deref().unwrap_or(&self.status);
-        Paragraph::new(status.to_string()).block(Block::default().borders(Borders::TOP))
     }
 
     pub(crate) fn composer_selection_line(&self) -> Line<'static> {
