@@ -41,7 +41,7 @@ impl App {
         }
         frame.render_stateful_widget(
             List::new(items)
-                .block(panel_block("Files", self.focus == Focus::Detail))
+                .block(panel_block("Files", self.focus == Focus::Main))
                 .highlight_style(Style::default().fg(Color::Cyan).bg(Color::Rgb(28, 38, 48))),
             chunks[0],
             &mut state,
@@ -74,14 +74,14 @@ impl App {
             .unwrap_or_else(|| Text::from("No diff selected"));
         frame.render_widget(
             Paragraph::new(diff_text)
-                .block(panel_block(title, self.focus == Focus::Main))
+                .block(panel_block(title, self.focus == Focus::Detail))
                 .wrap(Wrap { trim: false }),
             area,
         );
     }
 
     fn render_side_by_side_diff(&self, frame: &mut Frame, area: Rect) {
-        let outer = panel_block("Diff [side-by-side | b unified]", self.focus == Focus::Main);
+        let outer = panel_block("Diff [side-by-side | b unified]", self.focus == Focus::Detail);
         let inner = outer.inner(area);
         frame.render_widget(outer, area);
 

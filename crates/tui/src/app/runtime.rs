@@ -168,15 +168,6 @@ impl App {
                 self.load_selected_workspace(size);
             }
             Focus::Detail => match self.selected_pane {
-                Pane::Changes => {
-                    if self.bundle.diffs.is_empty() {
-                        return;
-                    }
-                    let next = (self.bundle.selected_diff_index as i32 + delta)
-                        .clamp(0, self.bundle.diffs.len().saturating_sub(1) as i32)
-                        as usize;
-                    self.bundle.selected_diff_index = next;
-                }
                 Pane::Chat | Pane::Logs => {
                     let rows = self.session_rows();
                     if rows.is_empty() {
@@ -196,6 +187,15 @@ impl App {
                 _ => {}
             },
             Focus::Main | Focus::Composer => match self.selected_pane {
+                Pane::Changes => {
+                    if self.bundle.diffs.is_empty() {
+                        return;
+                    }
+                    let next = (self.bundle.selected_diff_index as i32 + delta)
+                        .clamp(0, self.bundle.diffs.len().saturating_sub(1) as i32)
+                        as usize;
+                    self.bundle.selected_diff_index = next;
+                }
                 Pane::Chat => self.adjust_chat_scroll(delta),
                 Pane::Logs => {
                     let scroll = self.bundle.log_scroll as i32 + delta;
@@ -229,16 +229,6 @@ impl App {
                 self.load_selected_workspace(size);
             }
             Focus::Detail => match self.selected_pane {
-                Pane::Changes => {
-                    if self.bundle.diffs.is_empty() {
-                        return;
-                    }
-                    self.bundle.selected_diff_index = if to_end {
-                        self.bundle.diffs.len().saturating_sub(1)
-                    } else {
-                        0
-                    };
-                }
                 Pane::Chat | Pane::Logs => {
                     let rows = self.session_rows();
                     if rows.is_empty() {
@@ -263,6 +253,16 @@ impl App {
                 _ => {}
             },
             Focus::Main | Focus::Composer => match self.selected_pane {
+                Pane::Changes => {
+                    if self.bundle.diffs.is_empty() {
+                        return;
+                    }
+                    self.bundle.selected_diff_index = if to_end {
+                        self.bundle.diffs.len().saturating_sub(1)
+                    } else {
+                        0
+                    };
+                }
                 Pane::Chat => self.chat_end_offset = if to_end { 0 } else { u16::MAX },
                 Pane::Logs | Pane::Git => {
                     self.bundle.log_scroll = if to_end {
