@@ -13,11 +13,9 @@ pub mod terminal;
 pub mod transport;
 pub mod workspace;
 
-pub use crate::api_transport::detect_base_url;
-use crate::{
-    api_transport::{log_api, parse_api_response},
-    model::{NetEvent, UserSystemInfo},
-};
+pub use self::transport::detect_base_url;
+use self::transport::{log_api, parse_api_response};
+use crate::model::{NetEvent, UserSystemInfo};
 
 pub(crate) const SCRATCH_TYPE_DRAFT_FOLLOW_UP: &str = "DRAFT_FOLLOW_UP";
 pub(crate) const SCRATCH_TYPE_WORKSPACE_NOTES: &str = "WORKSPACE_NOTES";

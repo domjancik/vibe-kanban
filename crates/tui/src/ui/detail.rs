@@ -8,7 +8,7 @@ use ratatui::{
 };
 
 use crate::{
-    app_state::App,
+    app::App,
     editor::render_editor_buffer,
     model::{Focus, format_relative_time, workspace_title},
     ui::{panel_block, render_vertical_scrollbar},

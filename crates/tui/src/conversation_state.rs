@@ -8,7 +8,7 @@ use ratatui::{
 use uuid::Uuid;
 
 use crate::{
-    app_state::App,
+    app::App,
     conversation::{
         ChatRenderCache, ConversationScope, OptimisticConversationEntry, OptimisticState,
         initial_conversation_process_ids, process_prompt, render_chat_entry,

@@ -1,7 +1,7 @@
 use ratatui::layout::Rect;
 
 use crate::{
-    app_state::App,
+    app::App,
     model::{Pane, QueueStatus, TerminalState, WorkspaceBundle},
 };
 

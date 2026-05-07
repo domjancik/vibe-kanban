@@ -1,7 +1,7 @@
 use db::models::workspace::WorkspaceWithStatus;
 use uuid::Uuid;
 
-use crate::{app_state::App, model::workspace_title, workspace::WorkspaceRow};
+use crate::{app::App, model::workspace_title, workspace::WorkspaceRow};
 
 impl App {
     fn all_workspaces(&self) -> Vec<&WorkspaceWithStatus> {

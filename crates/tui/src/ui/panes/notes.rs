@@ -4,7 +4,7 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
 };
 
-use crate::{app_state::App, model::Focus, ui::panel_block};
+use crate::{app::App, model::Focus, ui::panel_block};
 
 impl App {
     pub(crate) fn render_notes(&self, frame: &mut Frame, area: Rect) {

@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
-use crate::{app_state::App, model::workspace_title};
+use crate::{app::App, model::workspace_title};
 
 impl App {
     pub(crate) fn render(&mut self, frame: &mut Frame) {

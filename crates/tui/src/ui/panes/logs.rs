@@ -6,7 +6,7 @@ use ratatui::{
 };
 
 use crate::{
-    app_state::App,
+    app::App,
     conversation::render_log_entry,
     model::Focus,
     ui::{panel_block, render_vertical_scrollbar},

@@ -2,7 +2,7 @@ use db::models::session::Session;
 use ratatui::layout::Rect;
 
 use crate::{
-    app_state::App,
+    app::App,
     workspace::{SessionRow, session_target},
 };
 

@@ -5,7 +5,7 @@ use executors::{executors::BaseCodingAgent, profile::ExecutorConfig};
 use uuid::Uuid;
 
 use crate::{
-    app_state::App,
+    app::App,
     conversation::ConversationScope,
     model::{Focus, NetEvent, QueueStatus},
 };

@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::{
-    app_state::App,
+    app::App,
     model::{Focus, diff_title},
     ui::{panel_block, render_vertical_scrollbar},
 };

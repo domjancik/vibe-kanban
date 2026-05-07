@@ -79,7 +79,7 @@ pub struct ScratchRecord {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "SCREAMING_SNAKE_CASE")]
+#[serde(tag = "type", content = "data", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ScratchPayload {
     DraftFollowUp(DraftFollowUpData),
     WorkspaceNotes(WorkspaceNotesData),
@@ -93,7 +93,7 @@ pub struct UpdateScratchRequest {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "SCREAMING_SNAKE_CASE")]
+#[serde(tag = "type", content = "data", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum UpdateScratchPayload {
     DraftFollowUp(DraftFollowUpData),
     WorkspaceNotes(WorkspaceNotesData),

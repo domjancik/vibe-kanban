@@ -6,7 +6,7 @@ use executors::{
 };
 use uuid::Uuid;
 
-use crate::app_state::{AgentPickerState, App};
+use crate::app::{AgentPickerState, App};
 
 impl App {
     fn current_discovery_session_id(&self) -> Option<Uuid> {

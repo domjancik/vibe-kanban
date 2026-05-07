@@ -1,16 +1,5 @@
 mod api;
-mod api_session;
-mod api_terminal;
-mod api_transport;
-mod api_workspace;
 mod app;
-mod app_editor;
-mod app_runtime;
-mod app_shell;
-mod app_state;
-mod app_status;
-mod app_update;
-mod app_util;
 mod composer;
 mod conversation;
 mod conversation_state;
