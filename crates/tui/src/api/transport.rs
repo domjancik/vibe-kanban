@@ -75,11 +75,16 @@ pub async fn parse_api_response<T: DeserializeOwned>(
 }
 
 pub fn log_api(message: String) {
-    let path = std::env::var("VK_TUI_API_LOG")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir().join("vibe-kanban-tui-api.log"));
+    let path = api_log_path();
     if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "[tui-api] {message}");
+    }
+}
+
+pub fn log_tui(message: String) {
+    let path = tui_log_path();
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "[tui] {message}");
     }
 }
 
@@ -133,4 +138,16 @@ fn truncate_for_log(body: &str) -> String {
     } else {
         format!("{}...", &body[..LIMIT])
     }
+}
+
+fn api_log_path() -> PathBuf {
+    std::env::var("VK_TUI_API_LOG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir().join("vibe-kanban-tui-api.log"))
+}
+
+fn tui_log_path() -> PathBuf {
+    std::env::var("VK_TUI_LOG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir().join("vibe-kanban-tui.log"))
 }

@@ -1,6 +1,7 @@
 use ratatui::layout::Rect;
 
 use crate::{
+    api::transport::log_tui,
     app::App,
     input::{AppIntent, next_focus, prev_focus},
     model::{Focus, NetEvent, Pane, QueueStatus, active_process},
@@ -301,6 +302,7 @@ impl App {
                 }
             }
             NetEvent::Error(message) => {
+                log_tui(format!("net event error: {message}"));
                 self.error = Some(message.clone());
                 self.status = message;
             }
