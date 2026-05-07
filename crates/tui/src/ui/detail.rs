@@ -400,6 +400,7 @@ mod tests {
             session_rename: None,
             search_prompt: None,
             conversation_search: None,
+            tool_call_display_mode: crate::app::ToolCallDisplayMode::Expanded,
             actions_in_flight: Default::default(),
             creating_new_session: false,
             should_quit: false,

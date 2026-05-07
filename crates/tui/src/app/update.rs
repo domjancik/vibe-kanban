@@ -2,7 +2,7 @@ use ratatui::layout::Rect;
 
 use crate::{
     api::transport::log_tui,
-    app::App,
+    app::{App, ToolCallDisplayMode},
     input::{AppIntent, next_focus, prev_focus},
     model::{Focus, NetEvent, Pane, QueueStatus, WorkspaceActionKind, active_process},
 };
@@ -488,7 +488,7 @@ impl App {
             AppIntent::FocusNext => self.focus = next_focus(&self.focus),
             AppIntent::FocusPrev => self.focus = prev_focus(&self.focus),
             AppIntent::ShowHelp => {
-                self.status = "Keys: Tab focus, Ctrl+W maximize active panel, / search or filter, n/N next/prev chat match, j/k nav, 1-6 panes, i edit, Enter open/send, r rename session, E executor, V variant, M model, R reasoning, A agent menu, P permission, p pin, x archive, n new session, s start dev, c cleanup, e editor, Esc/C-]/C-g leave terminal".to_string();
+                self.status = "Keys: Tab focus, Ctrl+W maximize active panel, / search or filter, n/N next/prev chat match, [/ ] user turns, T compact tool runs, j/k nav, 1-6 panes, i edit, Enter open/send, r rename session, E executor, V variant, M model, R reasoning, A agent menu, P permission, p pin, x archive, n new session, s start dev, c cleanup, e editor, Esc/C-]/C-g leave terminal".to_string();
             }
             AppIntent::OpenSearch => self.open_search(size),
             AppIntent::SelectPane(pane) => self.selected_pane = pane,
@@ -541,6 +541,19 @@ impl App {
                         crate::model::DiffViewMode::SideBySide => {
                             "Diff view: side by side".to_string()
                         }
+                    };
+                }
+            }
+            AppIntent::ToggleToolRunCollapse => {
+                if self.selected_pane == Pane::Chat {
+                    self.tool_call_display_mode = match self.tool_call_display_mode {
+                        ToolCallDisplayMode::Expanded => ToolCallDisplayMode::Collapsed,
+                        ToolCallDisplayMode::Collapsed => ToolCallDisplayMode::Expanded,
+                    };
+                    self.mark_chat_render_cache_dirty();
+                    self.status = match self.tool_call_display_mode {
+                        ToolCallDisplayMode::Expanded => "Tool calls: expanded".to_string(),
+                        ToolCallDisplayMode::Collapsed => "Tool calls: collapsed runs".to_string(),
                     };
                 }
             }
@@ -661,6 +674,7 @@ mod tests {
             session_rename: None,
             search_prompt: None,
             conversation_search: None,
+            tool_call_display_mode: crate::app::ToolCallDisplayMode::Expanded,
             actions_in_flight: Default::default(),
             creating_new_session: false,
             should_quit: false,

@@ -33,6 +33,7 @@ pub enum AppIntent {
     CancelQueuedPrompt,
     DiscardDraft,
     ToggleDiffViewMode,
+    ToggleToolRunCollapse,
     PrevUserMessage,
     NextUserMessage,
     Enter,
@@ -186,6 +187,10 @@ pub fn map_app_key(
             code: KeyCode::Char('b'),
             ..
         } => Some(AppIntent::ToggleDiffViewMode),
+        KeyEvent {
+            code: KeyCode::Char('T'),
+            ..
+        } => Some(AppIntent::ToggleToolRunCollapse),
         KeyEvent {
             code: KeyCode::Char('['),
             ..

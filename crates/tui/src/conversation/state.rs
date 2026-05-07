@@ -12,10 +12,10 @@ use uuid::Uuid;
 
 use crate::{
     api::net_error,
-    app::App,
+    app::{App, ToolCallDisplayMode},
     conversation::{
         initial_conversation_process_ids, process_prompt, render_chat_entry,
-        render_optimistic_chat_entry, wrap_lines,
+        render_collapsed_tool_run, render_optimistic_chat_entry, wrap_lines,
     },
     model::{PatchType, QueueStatus},
 };
@@ -431,7 +431,34 @@ impl App {
             queue_lines.push(Line::raw(""));
             lines.extend(wrap_lines(queue_lines, width));
         }
-        for entry in self.canonical_chat_entries() {
+        let canonical_entries = self.canonical_chat_entries();
+        let mut entry_index = 0usize;
+        while entry_index < canonical_entries.len() {
+            if self.tool_call_display_mode == ToolCallDisplayMode::Collapsed {
+                let tool_run_len = canonical_entries[entry_index..]
+                    .iter()
+                    .take_while(|entry| {
+                        matches!(
+                            entry,
+                            PatchType::NormalizedEntry(normalized)
+                                if matches!(normalized.entry_type, NormalizedEntryType::ToolUse { .. })
+                        )
+                    })
+                    .count();
+                if tool_run_len > 1 {
+                    let tool_run = canonical_entries[entry_index..entry_index + tool_run_len]
+                        .iter()
+                        .filter_map(|entry| match entry {
+                            PatchType::NormalizedEntry(normalized) => Some(normalized.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    lines.extend(wrap_lines(render_collapsed_tool_run(&tool_run), width));
+                    entry_index += tool_run_len;
+                    continue;
+                }
+            }
+            let entry = &canonical_entries[entry_index];
             let is_user_message = matches!(
                 &entry,
                 PatchType::NormalizedEntry(entry)
@@ -442,6 +469,7 @@ impl App {
                 user_message_offsets.push(lines.len());
             }
             lines.extend(wrap_lines(rendered, width));
+            entry_index += 1;
         }
         if let Some(scope) = self.current_conversation_scope() {
             for entry in self
@@ -553,6 +581,7 @@ mod tests {
             session_rename: None,
             search_prompt: None,
             conversation_search: None,
+            tool_call_display_mode: crate::app::ToolCallDisplayMode::Expanded,
             actions_in_flight: Default::default(),
             creating_new_session: false,
             should_quit: false,

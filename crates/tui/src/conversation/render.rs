@@ -88,13 +88,7 @@ pub fn render_normalized_chat_entry(entry: &NormalizedEntry) -> Vec<Line<'static
             action_type,
             status,
         } => {
-            let status_color = match status {
-                ToolStatus::Success => Color::Green,
-                ToolStatus::Failed | ToolStatus::Denied { .. } => Color::Red,
-                ToolStatus::PendingApproval { .. } => Color::Yellow,
-                ToolStatus::TimedOut => Color::LightRed,
-                ToolStatus::Created => Color::Cyan,
-            };
+            let status_badge = tool_status_badge(status);
             let mut lines = vec![Line::from(vec![
                 Span::styled(
                     "tool",
@@ -105,10 +99,7 @@ pub fn render_normalized_chat_entry(entry: &NormalizedEntry) -> Vec<Line<'static
                 Span::raw(" "),
                 Span::styled(tool_name.clone(), Style::default().fg(Color::LightCyan)),
                 Span::raw(" "),
-                Span::styled(
-                    format!("[{status:?}]").to_lowercase(),
-                    Style::default().fg(status_color),
-                ),
+                status_badge,
                 Span::raw(" "),
                 Span::styled(
                     summarize_action(action_type),
@@ -171,6 +162,32 @@ pub fn render_normalized_chat_entry(entry: &NormalizedEntry) -> Vec<Line<'static
             indent_chat_lines(render_labeled_content("answers", Color::LightBlue, &text))
         }
     }
+}
+
+pub fn render_collapsed_tool_run(entries: &[NormalizedEntry]) -> Vec<Line<'static>> {
+    let mut spans = vec![Span::raw("    ")];
+    for (index, entry) in entries.iter().enumerate() {
+        let NormalizedEntryType::ToolUse {
+            action_type,
+            status,
+            ..
+        } = &entry.entry_type
+        else {
+            continue;
+        };
+        if index > 0 {
+            spans.push(Span::styled(", ", Style::default().fg(Color::DarkGray)));
+        }
+        spans.push(Span::styled(
+            summarize_compact_action(action_type),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(" "));
+        spans.push(tool_status_badge(status));
+    }
+    vec![Line::from(spans), Line::raw("")]
 }
 
 pub fn render_log_entry(index: usize, entry: &PatchType) -> Vec<Line<'static>> {
@@ -302,12 +319,50 @@ fn summarize_action(action_type: &ActionType) -> String {
     }
 }
 
+fn summarize_compact_action(action_type: &ActionType) -> String {
+    match action_type {
+        ActionType::CommandRun { .. } => "bash".to_string(),
+        ActionType::FileRead { .. } => "read".to_string(),
+        ActionType::FileEdit { .. } => "edit".to_string(),
+        ActionType::Search { .. } => "search".to_string(),
+        ActionType::WebFetch { .. } => "fetch".to_string(),
+        ActionType::Tool { tool_name, .. } => tool_name.clone(),
+        ActionType::TaskCreate { subagent_type, .. } => subagent_type
+            .as_deref()
+            .map(|value| format!("spawn {value}"))
+            .unwrap_or_else(|| "spawn".to_string()),
+        ActionType::PlanPresentation { .. } => "plan".to_string(),
+        ActionType::TodoManagement { .. } => "todo".to_string(),
+        ActionType::AskUserQuestion { .. } => "ask".to_string(),
+        ActionType::Other { description } => description
+            .split_whitespace()
+            .next()
+            .unwrap_or("tool")
+            .to_lowercase(),
+    }
+}
+
+fn tool_status_badge(status: &ToolStatus) -> Span<'static> {
+    let color = match status {
+        ToolStatus::Success => Color::Green,
+        ToolStatus::Failed | ToolStatus::Denied { .. } => Color::Red,
+        ToolStatus::PendingApproval { .. } => Color::Yellow,
+        ToolStatus::TimedOut => Color::LightRed,
+        ToolStatus::Created => Color::Cyan,
+    };
+    let symbol = match status {
+        ToolStatus::PendingApproval { .. } | ToolStatus::Created => "◌",
+        _ => "●",
+    };
+    Span::styled(symbol, Style::default().fg(color))
+}
+
 #[cfg(test)]
 mod tests {
     use executors::logs::{ActionType, NormalizedEntry, NormalizedEntryType, ToolStatus};
     use ratatui::style::{Color, Modifier, Style};
 
-    use super::render_normalized_chat_entry;
+    use super::{render_collapsed_tool_run, render_normalized_chat_entry};
     use crate::conversation::wrap::wrap_line;
 
     fn entry(entry_type: NormalizedEntryType, content: &str) -> NormalizedEntry {
@@ -369,5 +424,65 @@ mod tests {
         ));
         assert_eq!(lines[0].spans[0].content.as_ref(), "    ");
         assert_eq!(lines[0].spans[1].content.as_ref(), "tool");
+    }
+
+    #[test]
+    fn tool_entries_render_result_as_circle_badge() {
+        let lines = render_normalized_chat_entry(&entry(
+            NormalizedEntryType::ToolUse {
+                tool_name: "shell".to_string(),
+                action_type: ActionType::Other {
+                    description: "run".to_string(),
+                },
+                status: ToolStatus::Success,
+            },
+            "done",
+        ));
+        assert_eq!(lines[0].spans[3].content.as_ref(), "shell");
+        assert_eq!(lines[0].spans[5].content.as_ref(), "●");
+        assert_eq!(lines[0].spans[5].style.fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn collapsed_tool_run_summarizes_consecutive_tools() {
+        let lines = render_collapsed_tool_run(&[
+            entry(
+                NormalizedEntryType::ToolUse {
+                    tool_name: "shell".to_string(),
+                    action_type: ActionType::CommandRun {
+                        command: "cargo test".to_string(),
+                        result: None,
+                        category: Default::default(),
+                    },
+                    status: ToolStatus::Success,
+                },
+                "",
+            ),
+            entry(
+                NormalizedEntryType::ToolUse {
+                    tool_name: "editor".to_string(),
+                    action_type: ActionType::FileEdit {
+                        path: "src/main.rs".to_string(),
+                        changes: vec![],
+                    },
+                    status: ToolStatus::Failed,
+                },
+                "",
+            ),
+        ]);
+        let text = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(text.contains("bash"));
+        assert!(text.contains("edit"));
+        let circle_colors = lines[0]
+            .spans
+            .iter()
+            .filter(|span| span.content.as_ref() == "●")
+            .map(|span| span.style.fg)
+            .collect::<Vec<_>>();
+        assert_eq!(circle_colors, vec![Some(Color::Green), Some(Color::Red)]);
     }
 }

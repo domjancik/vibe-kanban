@@ -12,7 +12,7 @@ pub(crate) use self::{
     search::{highlight_line_matches, highlight_text_span},
     state::{
         AgentPickerState, ConversationSearchState, SearchPromptState, SearchTarget,
-        SessionRenameState,
+        SessionRenameState, ToolCallDisplayMode,
     },
     util::{
         default_variant_to_none, fuzzy_contains, model_key, selected_list_offset, viewport_capacity,
