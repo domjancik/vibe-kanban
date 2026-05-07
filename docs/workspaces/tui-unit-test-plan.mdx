@@ -1,0 +1,337 @@
+---
+title: "TUI Unit Test Plan"
+description: "A staged unit test plan for the refactored Ratatui workspaces client, focused on the highest-risk state, editor, and UI behaviours."
+---
+
+# TUI Unit Test Plan
+
+This document defines a practical unit-test plan for `crates/tui` after the modular refactor.
+
+<Info>
+This plan is intentionally scoped to unit tests. It does not replace future integration or end-to-end terminal coverage, but it should close the most important logic gaps in the current TUI crate.
+</Info>
+
+## Goals
+
+You should use this plan to reach four outcomes:
+
+- protect the new module boundaries introduced by the refactor
+- cover state transitions that are hard to reason about from manual review alone
+- keep rendering and selection helpers safe to change
+- make regressions visible before they reach interactive testing
+
+## Non-goals
+
+This plan does not try to:
+
+- add snapshot tests for every rendered pane
+- unit test network transport against live endpoints
+- replace terminal-level behaviour checks
+- force one test per function when a higher-level test covers the same risk
+
+## Current coverage summary
+
+The current test suite already covers these areas well enough for now:
+
+- conversation markdown parsing
+- conversation line wrapping
+- conversation chat-entry rendering basics
+- editor buffer primitives
+- editor action application
+- editor Vim word motions
+- key mapping for general editor and terminal input
+
+The largest remaining gaps are:
+
+- conversation state orchestration
+- network event reduction
+- `App`-level editor integration
+- workspace and session list calculations
+- composer configuration selection logic
+- helper formatting and layout utilities
+
+## Testing principles
+
+You should prefer these testing rules when implementing the backlog:
+
+- test behaviour, not file boundaries
+- keep most tests pure and synchronous where possible
+- construct the smallest valid `App` state needed for each case
+- assert visible outcomes such as selection, dirty flags, cache invalidation, and derived text
+- avoid brittle full-frame render assertions when a helper-level assertion is enough
+
+<Tip>
+When a module exposes mostly helper methods through `impl App`, add small state builders inside the module test block rather than reusing large app fixtures across unrelated cases.
+</Tip>
+
+## Priority backlog
+
+### P0: conversation state and cache behaviour
+
+Target module:
+
+- `crates/tui/src/conversation/state.rs`
+
+Why it matters:
+
+- this module now owns one of the main seams created by the refactor
+- it combines optimistic UI state, derived conversation entries, cache invalidation, and history refresh decisions
+
+Add tests for:
+
+- `current_conversation_scope` returning `NewSession`, `Session`, or `None`
+- `push_optimistic_entry` appending state and marking the cache dirty
+- `mark_optimistic_failed` only changing the matching optimistic entry
+- `rekey_new_session_optimistic_entries` converting workspace-scoped optimistic entries into session-scoped entries
+- `reset_conversation_state` aborting stateful conversation data and clearing cache inputs
+- `process_chat_entries` inserting a synthetic user message when the process log does not contain one
+- `reconcile_optimistic_entries` dropping matched optimistic user messages while preserving failed entries
+- `build_chat_render_cache` extracting the latest token usage from canonical entries
+- `chat_lines` showing bootstrap and backfill loading banners in the expected conditions
+
+Suggested success criteria:
+
+- conversation state changes can be verified without rendering a full frame
+- cache invalidation rules are covered directly
+
+### P0: network event reduction
+
+Target module:
+
+- `crates/tui/src/app/update.rs`
+
+Why it matters:
+
+- this is the core reducer for stream updates and async side effects
+- most serious TUI regressions will show up here as stale selection, dirty-flag, or rebinding bugs
+
+Add tests for:
+
+- `SessionsLoaded` preserving the current session when still present
+- `SessionsLoaded` falling back to the first session when the current one disappears
+- `SessionsLoaded` clearing process and log state when session selection changes
+- `ProcessesUpdated` selecting the active process when available
+- `ProcessesUpdated` keeping the previous selected process if still present and there is no new active process
+- `ProcessesUpdated` refreshing queue status and conversation history when the process set changes
+- `LogsUpdated` updating the visible process log and resetting chat scroll only for the selected process
+- `ConversationHistoryLoaded` updating per-process conversation entries and resetting chat end offset
+- `DraftLoaded` respecting dirty-state rules and not overwriting local edits when it should not
+- `DraftSaveFailed` setting queue-conflict state only for the matching revision
+- `NotesSaved` and `NotesSaveFailed` only mutating state for the selected workspace and matching revision
+
+Suggested success criteria:
+
+- reducer tests exercise state transitions through `NetEvent`
+- tests assert state changes, not implementation details such as exact helper-call ordering
+
+### P0: editor integration at the `App` layer
+
+Target module:
+
+- `crates/tui/src/app/editor.rs`
+
+Why it matters:
+
+- the low-level editor engine is already covered
+- the remaining risk is in how composer, notes, and in-place rename route through that engine
+
+Add tests for:
+
+- session rename input using the same editor-mode rules as the composer
+- rename flow accepting `Enter` to save and `Esc` to cancel
+- Vim normal-mode navigation in session rename
+- Vim delete operator behaviour for composer, notes, and rename targets
+- cursor movement after multibyte deletion in each editor target
+- `editor_buffer_cursor_mut` returning the expected buffer and cursor pair for each target
+- `mark_editor_dirty` setting the correct dirty fields for composer and notes without incorrectly marking rename as a persisted draft
+
+Suggested success criteria:
+
+- target routing is covered explicitly
+- rename and composer behaviour cannot silently diverge again
+
+### P1: workspace and session list calculations
+
+Target modules:
+
+- `crates/tui/src/ui/detail.rs`
+- `crates/tui/src/workspace/list.rs`
+- `crates/tui/src/workspace/mod.rs`
+
+Why it matters:
+
+- these helpers drive selection, grouping, and scroll behaviour
+- they are easy to break with harmless-looking UI edits
+
+Add tests for:
+
+- `session_row_height` returning the larger height only for the actively renamed session row
+- `session_scroll_metrics` calculating offsets correctly when a rename row is visible
+- `selected_session_row_index` staying aligned with new-session and existing-session rows
+- workspace grouping into `Needs Attention`, `Running`, `Idle`, and `Archived`
+- sorting pinned workspaces ahead of unpinned workspaces within groups
+- active and archived filtering honouring the current filter text
+- `visible_workspace_ids` excluding header rows
+- `session_target` mapping `NewSession` and existing sessions correctly
+
+Suggested success criteria:
+
+- selection and scrollbar math can be changed safely without manual terminal verification every time
+
+### P1: composer configuration and picker logic
+
+Target modules:
+
+- `crates/tui/src/composer/config.rs`
+- `crates/tui/src/app/util.rs`
+
+Why it matters:
+
+- this is one of the larger untested logic surfaces left in the crate
+- it contains sorting, fallback, and fuzzy-filter behaviour that can regress quietly
+
+Add tests for:
+
+- `executor_options` sorting executors deterministically
+- `variant_options` keeping `DEFAULT` first and excluding `recently_used_models`
+- `selected_model_value` preferring the explicit config value and falling back to the default model
+- `selected_reasoning_label` falling back to the default reasoning option for the selected model
+- `filtered_agent_mode_options` matching by label, id, and description
+- `selected_agent_mode_index` choosing the correct current option, including `None`
+- `fuzzy_contains` matching direct substrings, sparse matches, and rejecting out-of-order characters
+- `default_variant_to_none` and `model_key` returning the expected normalised values
+
+Suggested success criteria:
+
+- model and agent selection logic is covered without requiring API transport or full UI rendering
+
+### P1: conversation history helpers
+
+Target module:
+
+- `crates/tui/src/conversation/history.rs`
+
+Why it matters:
+
+- these helpers define bootstrap behaviour for the conversation pane
+- they are small but user-visible when wrong
+
+Add tests for:
+
+- `initial_conversation_process_ids` selecting enough recent process ids to meet the minimum bootstrap size
+- `initial_conversation_process_ids` keeping the newest running process included even when it would exceed the minimum
+- `initial_conversation_process_ids` skipping ids missing from the map
+- `process_prompt` extracting prompts from initial request, follow-up request, and review request actions
+- `process_prompt` returning `None` for script actions and blank prompts
+
+Suggested success criteria:
+
+- bootstrap and prompt recovery logic is fully deterministic under unit tests
+
+### P2: formatting and layout helpers
+
+Target modules:
+
+- `crates/tui/src/model/format.rs`
+- `crates/tui/src/ui/layout.rs`
+- `crates/tui/src/ui/widgets/panel.rs`
+- `crates/tui/src/ui/widgets/scrollbar.rs`
+
+Why it matters:
+
+- these are low-cost tests with good regression value
+- the logic is pure and should be cheap to lock down
+
+Add tests for:
+
+- `diff_title` choosing new path, old path, or fallback text correctly
+- `format_patch_entry` rendering diff change kinds and plain stdout or stderr entries
+- `format_normalized_entry` handling empty content, token usage, errors, and user-answered questions
+- `format_relative_time` formatting seconds, minutes, hours, days, and `None`
+- `workspace_title`, `display_variant`, and `display_permission`
+- `centered_rect` returning the expected inner rectangle
+- `terminal_content_area` preserving the intended terminal inset contract
+- shared widget helpers returning the expected style or geometry assumptions where feasible
+
+Suggested success criteria:
+
+- string-format regressions are caught with direct assertions
+- terminal geometry helpers are documented by tests
+
+### P2: transport and domain helpers
+
+Target modules:
+
+- `crates/tui/src/api/transport.rs`
+- `crates/tui/src/model/domain.rs`
+
+Why it matters:
+
+- these are not the highest-risk modules, but they are deterministic and easy to cover
+
+Add tests for:
+
+- `detect_base_url` environment-variable precedence and fallback behaviour
+- `ws_base` converting `http` and `https` bases correctly
+- log truncation helper behaviour for long request or response bodies
+- `active_process` preferring the correct process from the map
+
+Suggested success criteria:
+
+- remaining pure helper logic has baseline coverage
+
+## Recommended implementation order
+
+<Steps>
+<Step title="Stabilise core reducers">
+  Start with `conversation/state.rs` and `app/update.rs`.
+
+  These tests protect the highest-risk refactor seams and should land before any further TUI feature work.
+</Step>
+
+<Step title="Cover shared editor integration">
+  Add `app/editor.rs` tests next.
+
+  This gives you confidence that composer, notes, and inline rename continue to share behaviour intentionally.
+</Step>
+
+<Step title="Lock down list and picker helpers">
+  Add tests for `ui/detail.rs`, `workspace/list.rs`, and `composer/config.rs`.
+
+  These modules are heavily branched and easy to regress through small UI edits.
+</Step>
+
+<Step title="Finish pure utility coverage">
+  Add tests for `conversation/history.rs`, `model/format.rs`, `ui/layout.rs`, `api/transport.rs`, and `model/domain.rs`.
+
+  These tests are quick to write and should leave the refactor with a cleaner coverage floor.
+</Step>
+</Steps>
+
+## Suggested test shape
+
+Prefer these patterns:
+
+- put tests beside the module they protect
+- create tiny builders for `App`, `ExecutionProcess`, `Session`, and workspace summary inputs
+- use helper functions for repeated test setup, not shared mutable global fixtures
+- keep async reducer tests narrowly scoped to one event branch where possible
+
+Avoid these patterns:
+
+- asserting on whole rendered frames unless a helper-level assertion cannot cover the behaviour
+- coupling one test to multiple unrelated modules
+- reaching through several layers of private state when one public or crate-visible method is enough
+
+## Verification
+
+When implementing the plan, use this minimum validation set:
+
+```bash
+cargo test -p tui
+cargo clippy -p tui -- -D warnings
+```
+
+<Check>
+The plan is complete when the highest-risk state, reducer, and editor-routing logic has direct unit coverage, and helper-level regressions no longer depend on manual TUI testing to be detected early.
+</Check>
