@@ -49,6 +49,17 @@ pub(crate) struct ConversationSearchState {
     pub(crate) current_match: usize,
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct ActionInFlightState {
+    pub(crate) prompt_submit: bool,
+    pub(crate) queue_mutation: bool,
+    pub(crate) pin_toggle: bool,
+    pub(crate) archive_toggle: bool,
+    pub(crate) dev_server: bool,
+    pub(crate) cleanup: bool,
+    pub(crate) open_editor: bool,
+}
+
 pub struct App {
     pub(crate) api: Api,
     pub(crate) rx: UnboundedReceiver<NetEvent>,
@@ -104,6 +115,7 @@ pub struct App {
     pub(crate) session_rename: Option<SessionRenameState>,
     pub(crate) search_prompt: Option<SearchPromptState>,
     pub(crate) conversation_search: Option<ConversationSearchState>,
+    pub(crate) actions_in_flight: ActionInFlightState,
     pub(crate) creating_new_session: bool,
     pub(crate) should_quit: bool,
 }
@@ -171,6 +183,7 @@ impl App {
             session_rename: None,
             search_prompt: None,
             conversation_search: None,
+            actions_in_flight: ActionInFlightState::default(),
             creating_new_session: false,
             should_quit: false,
         }

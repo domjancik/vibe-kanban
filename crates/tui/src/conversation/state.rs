@@ -470,6 +470,7 @@ mod tests {
             session_rename: None,
             search_prompt: None,
             conversation_search: None,
+            actions_in_flight: Default::default(),
             creating_new_session: false,
             should_quit: false,
         }

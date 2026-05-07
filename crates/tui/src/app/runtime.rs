@@ -18,6 +18,10 @@ impl App {
             self.status = "No workspace selected".to_string();
             return;
         };
+        if self.actions_in_flight.prompt_submit {
+            self.status = "Prompt submission already in progress".to_string();
+            return;
+        }
         let prompt = self.composer.trim().to_string();
         if prompt.is_empty() {
             return;
@@ -47,36 +51,37 @@ impl App {
         let optimistic_id = optimistic_scope.clone().map(|scope| {
             self.push_optimistic_entry(scope, prompt.clone(), executor_config.clone())
         });
-        match self
-            .api
-            .send_prompt(workspace_id, session, prompt, executor_config)
-            .await
-        {
-            Ok(session_id) => {
-                if let Some(workspace_scope) = self.selected_workspace_id {
-                    self.rekey_new_session_optimistic_entries(workspace_scope, session_id);
+        self.actions_in_flight.prompt_submit = true;
+        self.status = "Sending prompt".to_string();
+        let api = self.api.clone();
+        let tx = self.tx.clone();
+        let workspace_scope = self
+            .selected_workspace_id
+            .filter(|_| self.creating_new_session);
+        tokio::spawn(async move {
+            match api
+                .send_prompt(workspace_id, session, prompt, executor_config)
+                .await
+            {
+                Ok(session_id) => {
+                    if let Some(scratch_id) = scratch_id {
+                        let _ = api.delete_follow_up_draft(scratch_id).await;
+                    }
+                    let _ = tx.send(NetEvent::PromptSubmitted {
+                        workspace_id,
+                        session_id,
+                        workspace_scope,
+                    });
                 }
-                self.creating_new_session = false;
-                self.bundle.selected_session_id = Some(session_id);
-                if let Some(scratch_id) = scratch_id {
-                    let _ = self.api.delete_follow_up_draft(scratch_id).await;
+                Err(error) => {
+                    let _ = tx.send(NetEvent::PromptSubmissionFailed {
+                        message: error.to_string(),
+                        restored_message,
+                        optimistic_id,
+                    });
                 }
-                self.api.load_workspace(workspace_id, self.tx.clone());
-                self.status = "Prompt sent".to_string();
             }
-            Err(error) => {
-                if let Some(local_id) = optimistic_id {
-                    self.mark_optimistic_failed(local_id);
-                }
-                self.composer = restored_message;
-                self.composer_cursor = self.composer.len();
-                self.composer_dirty = true;
-                self.last_composer_edit = Some(std::time::Instant::now());
-                self.focus = Focus::Composer;
-                self.error = Some(error.to_string());
-                self.status = error.to_string();
-            }
-        }
+        });
     }
 
     pub(crate) async fn flush_notes_if_needed(&mut self) {

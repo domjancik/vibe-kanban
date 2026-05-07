@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::{
     app::App,
     conversation::ConversationScope,
-    model::{Focus, NetEvent, QueueStatus},
+    model::{NetEvent, QueueStatus},
 };
 
 impl App {
@@ -158,6 +158,10 @@ impl App {
     }
 
     pub(crate) async fn queue_prompt(&mut self) {
+        if self.actions_in_flight.queue_mutation {
+            self.status = "Queue action already in progress".to_string();
+            return;
+        }
         let Some(session_id) = self.current_queue_session_id() else {
             self.status = "Queueing is only available for an existing session".to_string();
             return;
@@ -175,32 +179,33 @@ impl App {
             message: prompt,
             executor_config,
         };
-        if let Some(scratch_id) = self.current_composer_scratch_id() {
-            let _ = self
-                .api
-                .save_follow_up_draft(scratch_id, draft.clone())
-                .await;
-        }
-        match self.api.queue_follow_up(session_id, draft).await {
-            Ok(status) => {
-                self.queue_status = status;
-                self.queue_pending = false;
-                self.composer.clear();
-                self.composer_cursor = 0;
-                self.composer_dirty = false;
-                self.last_composer_edit = None;
-                self.focus = Focus::Main;
-                self.status = "Queued follow-up".to_string();
-                self.error = None;
+        self.actions_in_flight.queue_mutation = true;
+        self.status = "Queueing follow-up".to_string();
+        let scratch_id = self.current_composer_scratch_id();
+        let api = self.api.clone();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            if let Some(scratch_id) = scratch_id {
+                let _ = api.save_follow_up_draft(scratch_id, draft.clone()).await;
             }
-            Err(error) => {
-                self.error = Some(error.to_string());
-                self.status = error.to_string();
+            match api.queue_follow_up(session_id, draft).await {
+                Ok(status) => {
+                    let _ = tx.send(NetEvent::QueuedPrompt { session_id, status });
+                }
+                Err(error) => {
+                    let _ = tx.send(NetEvent::QueuePromptFailed {
+                        message: error.to_string(),
+                    });
+                }
             }
-        }
+        });
     }
 
     pub(crate) async fn cancel_queued_prompt(&mut self) {
+        if self.actions_in_flight.queue_mutation {
+            self.status = "Queue action already in progress".to_string();
+            return;
+        }
         let Some(session_id) = self.current_queue_session_id() else {
             self.status = "No session queue to cancel".to_string();
             return;
@@ -209,53 +214,57 @@ impl App {
             QueueStatus::Queued { message } => Some(message.data.clone()),
             QueueStatus::Empty => None,
         };
-        match self.api.cancel_queued_follow_up(session_id).await {
-            Ok(status) => {
-                self.queue_status = status;
-                self.queue_pending = false;
-                if let Some(queued) = queued {
-                    let executor_changed = self
-                        .composer_config
-                        .as_ref()
-                        .map(|config| config.executor != queued.executor_config.executor)
-                        .unwrap_or(true);
-                    self.composer = queued.message;
-                    self.composer_cursor = self.composer.len();
-                    self.composer_config = Some(queued.executor_config);
-                    self.composer_dirty = true;
-                    self.last_composer_edit = Some(std::time::Instant::now());
-                    self.composer_queue_conflict = false;
-                    if executor_changed {
-                        self.rebind_discovery_stream();
-                    }
+        self.actions_in_flight.queue_mutation = true;
+        self.status = "Cancelling queued follow-up".to_string();
+        let api = self.api.clone();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            match api.cancel_queued_follow_up(session_id).await {
+                Ok(status) => {
+                    let _ = tx.send(NetEvent::QueueCancelled {
+                        session_id,
+                        status,
+                        restored: queued,
+                    });
                 }
-                self.status = "Cancelled queued follow-up".to_string();
-                self.error = None;
+                Err(error) => {
+                    let _ = tx.send(NetEvent::QueueCancelFailed {
+                        message: error.to_string(),
+                    });
+                }
             }
-            Err(error) => {
-                self.error = Some(error.to_string());
-                self.status = error.to_string();
-            }
-        }
+        });
     }
 
     pub(crate) async fn discard_draft(&mut self) {
+        if self.actions_in_flight.queue_mutation {
+            self.status = "Queue action already in progress".to_string();
+            return;
+        }
         self.composer.clear();
         self.composer_cursor = 0;
         self.composer_dirty = false;
         self.last_composer_edit = None;
         self.composer_queue_conflict = false;
         if let Some(scratch_id) = self.current_composer_scratch_id() {
-            match self.api.delete_follow_up_draft(scratch_id).await {
-                Ok(()) => {
-                    self.status = "Discarded follow-up draft".to_string();
-                    self.error = None;
+            self.actions_in_flight.queue_mutation = true;
+            self.status = "Discarding follow-up draft".to_string();
+            let api = self.api.clone();
+            let tx = self.tx.clone();
+            tokio::spawn(async move {
+                match api.delete_follow_up_draft(scratch_id).await {
+                    Ok(()) => {
+                        let _ = tx.send(NetEvent::DraftDiscarded {
+                            message: "Discarded follow-up draft".to_string(),
+                        });
+                    }
+                    Err(error) => {
+                        let _ = tx.send(NetEvent::DraftDiscardFailed {
+                            message: error.to_string(),
+                        });
+                    }
                 }
-                Err(error) => {
-                    self.error = Some(error.to_string());
-                    self.status = error.to_string();
-                }
-            }
+            });
         }
     }
 }

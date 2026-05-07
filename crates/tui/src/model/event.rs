@@ -12,6 +12,16 @@ use crate::model::{
     WorkspaceSummary,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceActionKind {
+    TogglePinned,
+    ToggleArchived,
+    StopWorkspace,
+    StartDevServer,
+    RunCleanup,
+    OpenEditor,
+}
+
 #[derive(Debug, Clone)]
 pub enum NetEvent {
     UserSystemLoaded(UserSystemInfo),
@@ -86,6 +96,43 @@ pub enum NetEvent {
     NotesSaveFailed {
         workspace_id: Uuid,
         revision: u64,
+        message: String,
+    },
+    PromptSubmitted {
+        workspace_id: Uuid,
+        session_id: Uuid,
+        workspace_scope: Option<Uuid>,
+    },
+    PromptSubmissionFailed {
+        message: String,
+        restored_message: String,
+        optimistic_id: Option<Uuid>,
+    },
+    QueuedPrompt {
+        session_id: Uuid,
+        status: QueueStatus,
+    },
+    QueuePromptFailed {
+        message: String,
+    },
+    QueueCancelled {
+        session_id: Uuid,
+        status: QueueStatus,
+        restored: Option<DraftFollowUpData>,
+    },
+    QueueCancelFailed {
+        message: String,
+    },
+    DraftDiscarded {
+        message: String,
+    },
+    DraftDiscardFailed {
+        message: String,
+    },
+    WorkspaceActionFinished {
+        kind: WorkspaceActionKind,
+        workspace_id: Option<Uuid>,
+        success: bool,
         message: String,
     },
     TerminalConnected(Uuid),

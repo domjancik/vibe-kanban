@@ -10,7 +10,7 @@ pub use self::{
         UpdateSessionRequest, UpdateWorkspaceRequest, UserConfig, UserSystemInfo,
         WorkspaceStreamState, WorkspaceSummary, WorkspaceSummaryRequest, WorkspaceSummaryResponse,
     },
-    event::NetEvent,
+    event::{NetEvent, WorkspaceActionKind},
     format::{
         diff_title, display_permission, display_variant, format_patch_entry, format_relative_time,
         workspace_title,

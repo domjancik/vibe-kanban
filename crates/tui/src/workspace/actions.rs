@@ -2,7 +2,7 @@ use ratatui::layout::Rect;
 
 use crate::{
     app::App,
-    model::{Pane, QueueStatus, TerminalState, WorkspaceBundle},
+    model::{NetEvent, Pane, QueueStatus, TerminalState, WorkspaceActionKind, WorkspaceBundle},
 };
 
 impl App {
@@ -77,72 +77,193 @@ impl App {
         let Some(workspace_id) = self.selected_workspace_id else {
             return;
         };
-        let Some(workspace) = self.find_workspace(workspace_id) else {
+        if self.actions_in_flight.pin_toggle {
+            self.status = "Pin update already in progress".to_string();
+            return;
+        }
+        let Some(next_pinned) = self
+            .find_workspace(workspace_id)
+            .map(|workspace| !workspace.pinned)
+        else {
             return;
         };
-        match self
-            .api
-            .toggle_pinned(workspace_id, !workspace.pinned)
-            .await
-        {
-            Ok(()) => self.status = "Updated pin state".to_string(),
-            Err(error) => self.status = error.to_string(),
-        }
+        self.actions_in_flight.pin_toggle = true;
+        self.status = "Updating pin state".to_string();
+        let api = self.api.clone();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let event = match api.toggle_pinned(workspace_id, next_pinned).await {
+                Ok(()) => NetEvent::WorkspaceActionFinished {
+                    kind: WorkspaceActionKind::TogglePinned,
+                    workspace_id: Some(workspace_id),
+                    success: true,
+                    message: "Updated pin state".to_string(),
+                },
+                Err(error) => NetEvent::WorkspaceActionFinished {
+                    kind: WorkspaceActionKind::TogglePinned,
+                    workspace_id: Some(workspace_id),
+                    success: false,
+                    message: error.to_string(),
+                },
+            };
+            let _ = tx.send(event);
+        });
     }
 
     pub(crate) async fn toggle_archived(&mut self) {
         let Some(workspace_id) = self.selected_workspace_id else {
             return;
         };
-        let Some(workspace) = self.find_workspace(workspace_id) else {
+        if self.actions_in_flight.archive_toggle {
+            self.status = "Archive update already in progress".to_string();
+            return;
+        }
+        let Some(next_archived) = self
+            .find_workspace(workspace_id)
+            .map(|workspace| !workspace.archived)
+        else {
             return;
         };
-        match self
-            .api
-            .toggle_archived(workspace_id, !workspace.archived)
-            .await
-        {
-            Ok(()) => self.status = "Updated archive state".to_string(),
-            Err(error) => self.status = error.to_string(),
-        }
+        self.actions_in_flight.archive_toggle = true;
+        self.status = "Updating archive state".to_string();
+        let api = self.api.clone();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let event = match api.toggle_archived(workspace_id, next_archived).await {
+                Ok(()) => NetEvent::WorkspaceActionFinished {
+                    kind: WorkspaceActionKind::ToggleArchived,
+                    workspace_id: Some(workspace_id),
+                    success: true,
+                    message: "Updated archive state".to_string(),
+                },
+                Err(error) => NetEvent::WorkspaceActionFinished {
+                    kind: WorkspaceActionKind::ToggleArchived,
+                    workspace_id: Some(workspace_id),
+                    success: false,
+                    message: error.to_string(),
+                },
+            };
+            let _ = tx.send(event);
+        });
     }
 
     pub(crate) async fn stop_workspace(&mut self) {
         if let Some(workspace_id) = self.selected_workspace_id {
-            match self.api.stop_workspace(workspace_id).await {
-                Ok(()) => {
-                    self.status = "Stopped workspace execution".to_string();
-                    self.refresh_queue_status();
-                }
-                Err(error) => self.status = error.to_string(),
+            if self.actions_in_flight.dev_server {
+                self.status = "Workspace stop already in progress".to_string();
+                return;
             }
+            self.actions_in_flight.dev_server = true;
+            self.status = "Stopping workspace execution".to_string();
+            let api = self.api.clone();
+            let tx = self.tx.clone();
+            tokio::spawn(async move {
+                let event = match api.stop_workspace(workspace_id).await {
+                    Ok(()) => NetEvent::WorkspaceActionFinished {
+                        kind: WorkspaceActionKind::StopWorkspace,
+                        workspace_id: Some(workspace_id),
+                        success: true,
+                        message: "Stopped workspace execution".to_string(),
+                    },
+                    Err(error) => NetEvent::WorkspaceActionFinished {
+                        kind: WorkspaceActionKind::StopWorkspace,
+                        workspace_id: Some(workspace_id),
+                        success: false,
+                        message: error.to_string(),
+                    },
+                };
+                let _ = tx.send(event);
+            });
         }
     }
 
     pub(crate) async fn start_dev_server(&mut self) {
         if let Some(workspace_id) = self.selected_workspace_id {
-            match self.api.start_dev_server(workspace_id).await {
-                Ok(()) => self.status = "Started dev server".to_string(),
-                Err(error) => self.status = error.to_string(),
+            if self.actions_in_flight.dev_server {
+                self.status = "Dev server action already in progress".to_string();
+                return;
             }
+            self.actions_in_flight.dev_server = true;
+            self.status = "Starting dev server".to_string();
+            let api = self.api.clone();
+            let tx = self.tx.clone();
+            tokio::spawn(async move {
+                let event = match api.start_dev_server(workspace_id).await {
+                    Ok(()) => NetEvent::WorkspaceActionFinished {
+                        kind: WorkspaceActionKind::StartDevServer,
+                        workspace_id: Some(workspace_id),
+                        success: true,
+                        message: "Started dev server".to_string(),
+                    },
+                    Err(error) => NetEvent::WorkspaceActionFinished {
+                        kind: WorkspaceActionKind::StartDevServer,
+                        workspace_id: Some(workspace_id),
+                        success: false,
+                        message: error.to_string(),
+                    },
+                };
+                let _ = tx.send(event);
+            });
         }
     }
 
     pub(crate) async fn run_cleanup(&mut self) {
         if let Some(workspace_id) = self.selected_workspace_id {
-            match self.api.run_cleanup(workspace_id).await {
-                Ok(()) => self.status = "Started cleanup script".to_string(),
-                Err(error) => self.status = error.to_string(),
+            if self.actions_in_flight.cleanup {
+                self.status = "Cleanup already in progress".to_string();
+                return;
             }
+            self.actions_in_flight.cleanup = true;
+            self.status = "Starting cleanup script".to_string();
+            let api = self.api.clone();
+            let tx = self.tx.clone();
+            tokio::spawn(async move {
+                let event = match api.run_cleanup(workspace_id).await {
+                    Ok(()) => NetEvent::WorkspaceActionFinished {
+                        kind: WorkspaceActionKind::RunCleanup,
+                        workspace_id: Some(workspace_id),
+                        success: true,
+                        message: "Started cleanup script".to_string(),
+                    },
+                    Err(error) => NetEvent::WorkspaceActionFinished {
+                        kind: WorkspaceActionKind::RunCleanup,
+                        workspace_id: Some(workspace_id),
+                        success: false,
+                        message: error.to_string(),
+                    },
+                };
+                let _ = tx.send(event);
+            });
         }
     }
 
     pub(crate) async fn open_editor(&mut self) {
         if let Some(workspace_id) = self.selected_workspace_id {
-            match self.api.open_editor(workspace_id).await {
-                Ok(()) => self.status = "Requested editor open".to_string(),
-                Err(error) => self.status = error.to_string(),
+            if self.actions_in_flight.open_editor {
+                self.status = "Open editor already in progress".to_string();
+                return;
             }
+            self.actions_in_flight.open_editor = true;
+            self.status = "Requesting editor open".to_string();
+            let api = self.api.clone();
+            let tx = self.tx.clone();
+            tokio::spawn(async move {
+                let event = match api.open_editor(workspace_id).await {
+                    Ok(()) => NetEvent::WorkspaceActionFinished {
+                        kind: WorkspaceActionKind::OpenEditor,
+                        workspace_id: Some(workspace_id),
+                        success: true,
+                        message: "Requested editor open".to_string(),
+                    },
+                    Err(error) => NetEvent::WorkspaceActionFinished {
+                        kind: WorkspaceActionKind::OpenEditor,
+                        workspace_id: Some(workspace_id),
+                        success: false,
+                        message: error.to_string(),
+                    },
+                };
+                let _ = tx.send(event);
+            });
         }
     }
 

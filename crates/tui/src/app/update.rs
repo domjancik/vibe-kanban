@@ -4,7 +4,7 @@ use crate::{
     api::transport::log_tui,
     app::App,
     input::{AppIntent, next_focus, prev_focus},
-    model::{Focus, NetEvent, Pane, QueueStatus, active_process},
+    model::{Focus, NetEvent, Pane, QueueStatus, WorkspaceActionKind, active_process},
 };
 
 impl App {
@@ -284,6 +284,139 @@ impl App {
                     self.mark_chat_render_cache_dirty();
                 }
             }
+            NetEvent::PromptSubmitted {
+                workspace_id,
+                session_id,
+                workspace_scope,
+            } => {
+                self.actions_in_flight.prompt_submit = false;
+                if let Some(workspace_scope) = workspace_scope {
+                    self.rekey_new_session_optimistic_entries(workspace_scope, session_id);
+                }
+                self.creating_new_session = false;
+                self.bundle.selected_session_id = Some(session_id);
+                if Some(workspace_id) == self.selected_workspace_id {
+                    self.api.load_workspace(workspace_id, self.tx.clone());
+                }
+                self.status = "Prompt sent".to_string();
+                self.error = None;
+            }
+            NetEvent::PromptSubmissionFailed {
+                message,
+                restored_message,
+                optimistic_id,
+            } => {
+                self.actions_in_flight.prompt_submit = false;
+                if let Some(local_id) = optimistic_id {
+                    self.mark_optimistic_failed(local_id);
+                }
+                self.composer = restored_message;
+                self.composer_cursor = self.composer.len();
+                self.composer_dirty = true;
+                self.last_composer_edit = Some(std::time::Instant::now());
+                self.focus = Focus::Composer;
+                self.error = Some(message.clone());
+                self.status = message;
+            }
+            NetEvent::QueuedPrompt { session_id, status } => {
+                self.actions_in_flight.queue_mutation = false;
+                if Some(session_id) == self.current_queue_session_id() {
+                    self.queue_status = status;
+                    self.queue_pending = false;
+                    self.composer.clear();
+                    self.composer_cursor = 0;
+                    self.composer_dirty = false;
+                    self.last_composer_edit = None;
+                    self.focus = Focus::Main;
+                    self.status = "Queued follow-up".to_string();
+                    self.error = None;
+                }
+            }
+            NetEvent::QueuePromptFailed { message } => {
+                self.actions_in_flight.queue_mutation = false;
+                self.error = Some(message.clone());
+                self.status = message;
+            }
+            NetEvent::QueueCancelled {
+                session_id,
+                status,
+                restored,
+            } => {
+                self.actions_in_flight.queue_mutation = false;
+                if Some(session_id) == self.current_queue_session_id() {
+                    self.queue_status = status;
+                    self.queue_pending = false;
+                    if let Some(queued) = restored {
+                        let executor_changed = self
+                            .composer_config
+                            .as_ref()
+                            .map(|config| config.executor != queued.executor_config.executor)
+                            .unwrap_or(true);
+                        self.composer = queued.message;
+                        self.composer_cursor = self.composer.len();
+                        self.composer_config = Some(queued.executor_config);
+                        self.composer_dirty = true;
+                        self.last_composer_edit = Some(std::time::Instant::now());
+                        self.composer_queue_conflict = false;
+                        if executor_changed {
+                            self.rebind_discovery_stream();
+                        }
+                    }
+                    self.status = "Cancelled queued follow-up".to_string();
+                    self.error = None;
+                }
+            }
+            NetEvent::QueueCancelFailed { message } => {
+                self.actions_in_flight.queue_mutation = false;
+                self.error = Some(message.clone());
+                self.status = message;
+            }
+            NetEvent::DraftDiscarded { message } => {
+                self.actions_in_flight.queue_mutation = false;
+                self.status = message;
+                self.error = None;
+            }
+            NetEvent::DraftDiscardFailed { message } => {
+                self.actions_in_flight.queue_mutation = false;
+                self.error = Some(message.clone());
+                self.status = message;
+            }
+            NetEvent::WorkspaceActionFinished {
+                kind,
+                workspace_id,
+                success,
+                message,
+            } => {
+                match kind {
+                    WorkspaceActionKind::TogglePinned => {
+                        self.actions_in_flight.pin_toggle = false;
+                    }
+                    WorkspaceActionKind::ToggleArchived => {
+                        self.actions_in_flight.archive_toggle = false;
+                    }
+                    WorkspaceActionKind::StopWorkspace | WorkspaceActionKind::StartDevServer => {
+                        self.actions_in_flight.dev_server = false;
+                    }
+                    WorkspaceActionKind::RunCleanup => {
+                        self.actions_in_flight.cleanup = false;
+                    }
+                    WorkspaceActionKind::OpenEditor => {
+                        self.actions_in_flight.open_editor = false;
+                    }
+                }
+                if success {
+                    self.status = message;
+                    self.error = None;
+                    if matches!(kind, WorkspaceActionKind::StopWorkspace)
+                        && workspace_id == self.selected_workspace_id
+                    {
+                        self.refresh_queue_status();
+                    }
+                } else {
+                    self.error = Some(message.clone());
+                    self.status = message;
+                }
+            }
             NetEvent::TerminalConnected(workspace_id) => {
                 if Some(workspace_id) == self.selected_workspace_id {
                     self.bundle.terminal.connected = true;
@@ -469,6 +602,7 @@ mod tests {
             session_rename: None,
             search_prompt: None,
             conversation_search: None,
+            actions_in_flight: Default::default(),
             creating_new_session: false,
             should_quit: false,
         }
@@ -595,5 +729,55 @@ mod tests {
 
         assert_eq!(app.composer, "local");
         assert!(app.composer_dirty);
+    }
+
+    #[tokio::test]
+    async fn prompt_submission_failed_restores_composer_and_clears_in_flight_flag() {
+        let local_id = Uuid::new_v4();
+        let mut app = test_app();
+        app.actions_in_flight.prompt_submit = true;
+        app.focus = Focus::Main;
+
+        app.handle_net_event(
+            NetEvent::PromptSubmissionFailed {
+                message: "backend slow".to_string(),
+                restored_message: "retry me".to_string(),
+                optimistic_id: Some(local_id),
+            },
+            Rect::new(0, 0, 80, 24),
+        )
+        .await;
+
+        assert!(!app.actions_in_flight.prompt_submit);
+        assert_eq!(app.composer, "retry me");
+        assert_eq!(app.focus, Focus::Composer);
+        assert_eq!(app.status, "backend slow");
+    }
+
+    #[tokio::test]
+    async fn queued_prompt_event_clears_composer_and_in_flight_flag() {
+        let session_id = Uuid::new_v4();
+        let mut app = test_app();
+        app.bundle.selected_session_id = Some(session_id);
+        app.composer = "queued".to_string();
+        app.composer_cursor = app.composer.len();
+        app.composer_dirty = true;
+        app.actions_in_flight.queue_mutation = true;
+        app.focus = Focus::Composer;
+
+        app.handle_net_event(
+            NetEvent::QueuedPrompt {
+                session_id,
+                status: QueueStatus::Empty,
+            },
+            Rect::new(0, 0, 80, 24),
+        )
+        .await;
+
+        assert!(!app.actions_in_flight.queue_mutation);
+        assert!(app.composer.is_empty());
+        assert!(!app.composer_dirty);
+        assert_eq!(app.focus, Focus::Main);
+        assert_eq!(app.status, "Queued follow-up");
     }
 }
