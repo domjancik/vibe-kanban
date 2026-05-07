@@ -13,7 +13,7 @@ use tokio::{
 use crate::{
     app::App,
     input::{TerminalInput, map_app_key, map_terminal_key},
-    model::{Focus, Pane},
+    model::{Focus, NetEvent, Pane},
     ui::rect_from_size,
 };
 
@@ -53,17 +53,26 @@ impl App {
                 }
                 Some(event) = self.rx.recv() => {
                     let size = rect_from_size(terminal.size()?);
+                    let mut should_draw_now =
+                        !self.should_defer_net_event_redraw(&event, last_key_event.elapsed());
                     self.handle_net_event(event, size).await;
                     loop {
                         match self.rx.try_recv() {
-                            Ok(next_event) => self.handle_net_event(next_event, size).await,
+                            Ok(next_event) => {
+                                should_draw_now |= !self.should_defer_net_event_redraw(
+                                    &next_event,
+                                    last_key_event.elapsed(),
+                                );
+                                self.handle_net_event(next_event, size).await;
+                            }
                             Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
                         }
                     }
-                    if last_key_event.elapsed() < INPUT_QUIET_WINDOW {
-                        pending_background_redraw = true;
-                    } else {
+                    if should_draw_now {
                         draw_requested = true;
+                        pending_background_redraw = false;
+                    } else {
+                        pending_background_redraw = true;
                     }
                 }
                 _ = background_flush.tick(), if pending_background_redraw => {
@@ -165,5 +174,63 @@ impl App {
         if let Some(intent) = map_app_key(key, self.creating_new_session, &self.selected_pane) {
             self.handle_app_intent(intent, size).await;
         }
+    }
+
+    fn should_defer_net_event_redraw(
+        &self,
+        event: &NetEvent,
+        time_since_last_key: Duration,
+    ) -> bool {
+        if time_since_last_key < Duration::from_millis(45) {
+            return true;
+        }
+
+        if !self.is_input_sensitive_mode() {
+            return false;
+        }
+
+        match event {
+            NetEvent::UserSystemLoaded(_)
+            | NetEvent::ActiveWorkspaces(_)
+            | NetEvent::ArchivedWorkspaces(_)
+            | NetEvent::Summaries(_)
+            | NetEvent::WorkspaceLoaded(_)
+            | NetEvent::SessionsLoaded { .. }
+            | NetEvent::ReposLoaded { .. }
+            | NetEvent::GitStatusLoaded { .. }
+            | NetEvent::NotesLoaded { .. }
+            | NetEvent::DiffsUpdated { .. }
+            | NetEvent::ProcessesUpdated { .. }
+            | NetEvent::LogsUpdated { .. }
+            | NetEvent::ExecutorOptionsUpdated { .. }
+            | NetEvent::ConversationHistoryLoaded { .. }
+            | NetEvent::ConversationBootstrapComplete { .. }
+            | NetEvent::ConversationBackfillComplete { .. }
+            | NetEvent::DraftLoaded { .. }
+            | NetEvent::QueueLoaded { .. } => true,
+            NetEvent::TerminalConnected(_)
+            | NetEvent::TerminalOutput(_, _)
+            | NetEvent::TerminalError(_, _) => self.selected_pane != Pane::Terminal,
+            NetEvent::DraftSaved { .. }
+            | NetEvent::DraftSaveFailed { .. }
+            | NetEvent::NotesSaved { .. }
+            | NetEvent::NotesSaveFailed { .. }
+            | NetEvent::PromptSubmitted { .. }
+            | NetEvent::PromptSubmissionFailed { .. }
+            | NetEvent::QueuedPrompt { .. }
+            | NetEvent::QueuePromptFailed { .. }
+            | NetEvent::QueueCancelled { .. }
+            | NetEvent::QueueCancelFailed { .. }
+            | NetEvent::DraftDiscarded { .. }
+            | NetEvent::DraftDiscardFailed { .. }
+            | NetEvent::WorkspaceActionFinished { .. }
+            | NetEvent::Error(_) => false,
+        }
+    }
+
+    fn is_input_sensitive_mode(&self) -> bool {
+        self.focus == Focus::Composer
+            || self.session_rename.is_some()
+            || (self.bundle.terminal.input_mode && self.selected_pane == Pane::Terminal)
     }
 }
