@@ -522,6 +522,7 @@ mod tests {
         session::Session,
     };
     use executors::{
+        logs::{NormalizedEntry, NormalizedEntryType},
         actions::{
             ExecutorAction, ExecutorActionType,
             script::{ScriptContext, ScriptRequest, ScriptRequestLanguage},
@@ -779,5 +780,221 @@ mod tests {
         assert!(!app.composer_dirty);
         assert_eq!(app.focus, Focus::Main);
         assert_eq!(app.status, "Queued follow-up");
+    }
+
+    #[tokio::test]
+    async fn processes_updated_selects_latest_active_process_and_clears_logs_on_change() {
+        let session_id = Uuid::new_v4();
+        let old_process = process(Uuid::new_v4(), 1);
+        let newer_process = process(Uuid::new_v4(), 2);
+        let old_process_id = old_process.id;
+        let mut app = test_app();
+        app.bundle.selected_session_id = Some(session_id);
+        app.bundle.selected_process_id = Some(old_process.id);
+        app.bundle.process_map.insert(old_process.id, old_process.clone());
+        app.bundle.log_entries = vec![PatchType::Stdout("stale".to_string())];
+
+        app.handle_net_event(
+            NetEvent::ProcessesUpdated {
+                session_id,
+                processes: HashMap::from([
+                    (old_process.id, old_process),
+                    (newer_process.id, newer_process.clone()),
+                ]),
+            },
+            Rect::new(0, 0, 80, 24),
+        )
+        .await;
+
+        assert_eq!(app.bundle.selected_process_id, Some(newer_process.id));
+        assert!(app.bundle.log_entries.is_empty());
+        assert!(app.queue_pending);
+        assert!(app.chat_render_cache_dirty);
+        assert_eq!(
+            app.conversation_process_order,
+            vec![old_process_id, newer_process.id]
+        );
+    }
+
+    #[tokio::test]
+    async fn processes_updated_keeps_previous_selection_when_only_dev_server_remains_active() {
+        let session_id = Uuid::new_v4();
+        let selected = process(Uuid::new_v4(), 1);
+        let mut dev_server = process(Uuid::new_v4(), 2);
+        dev_server.run_reason = ExecutionProcessRunReason::DevServer;
+        let mut app = test_app();
+        app.bundle.selected_session_id = Some(session_id);
+        app.bundle.selected_process_id = Some(selected.id);
+
+        app.handle_net_event(
+            NetEvent::ProcessesUpdated {
+                session_id,
+                processes: HashMap::from([
+                    (selected.id, selected.clone()),
+                    (dev_server.id, dev_server),
+                ]),
+            },
+            Rect::new(0, 0, 80, 24),
+        )
+        .await;
+
+        assert_eq!(app.bundle.selected_process_id, Some(selected.id));
+    }
+
+    #[tokio::test]
+    async fn logs_updated_only_replaces_selected_process_log_and_resets_chat_offset() {
+        let selected_process = Uuid::new_v4();
+        let other_process = Uuid::new_v4();
+        let entries = vec![PatchType::Stdout("visible".to_string())];
+        let mut app = test_app();
+        app.bundle.selected_process_id = Some(selected_process);
+        app.chat_end_offset = 7;
+        app.conversation_process_order = vec![selected_process];
+
+        app.handle_net_event(
+            NetEvent::LogsUpdated {
+                process_id: selected_process,
+                entries: entries.clone(),
+            },
+            Rect::new(0, 0, 80, 24),
+        )
+        .await;
+        assert_eq!(app.bundle.log_entries.len(), 1);
+        assert_eq!(app.chat_end_offset, 0);
+        assert_eq!(
+            app.conversation_process_entries.get(&selected_process).map(Vec::len),
+            Some(1)
+        );
+
+        app.bundle.log_entries.clear();
+        app.chat_end_offset = 5;
+        app.handle_net_event(
+            NetEvent::LogsUpdated {
+                process_id: other_process,
+                entries: vec![PatchType::Stdout("other".to_string())],
+            },
+            Rect::new(0, 0, 80, 24),
+        )
+        .await;
+        assert!(app.bundle.log_entries.is_empty());
+        assert_eq!(app.chat_end_offset, 5);
+    }
+
+    #[tokio::test]
+    async fn conversation_history_loaded_updates_process_entries_and_resets_scroll() {
+        let session_id = Uuid::new_v4();
+        let process_id = Uuid::new_v4();
+        let entries = vec![PatchType::NormalizedEntry(NormalizedEntry {
+            timestamp: None,
+            entry_type: NormalizedEntryType::AssistantMessage,
+            content: "hello".to_string(),
+            metadata: None,
+        })];
+        let mut app = test_app();
+        app.bundle.selected_session_id = Some(session_id);
+        app.chat_end_offset = 9;
+
+        app.handle_net_event(
+            NetEvent::ConversationHistoryLoaded {
+                session_id,
+                process_id,
+                entries: entries.clone(),
+            },
+            Rect::new(0, 0, 80, 24),
+        )
+        .await;
+
+        assert_eq!(
+            app.conversation_process_entries.get(&process_id).map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(app.chat_end_offset, 0);
+        assert!(app.chat_render_cache_dirty);
+    }
+
+    #[tokio::test]
+    async fn draft_save_failed_sets_queue_conflict_only_for_matching_revision() {
+        let scratch_id = Uuid::new_v4();
+        let mut app = test_app();
+        app.bundle.selected_session_id = Some(scratch_id);
+        app.composer_edit_revision = 4;
+        app.draft_save_in_flight = true;
+
+        app.handle_net_event(
+            NetEvent::DraftSaveFailed {
+                scratch_id,
+                revision: 4,
+                message: "queued message exists".to_string(),
+            },
+            Rect::new(0, 0, 80, 24),
+        )
+        .await;
+        assert!(app.composer_queue_conflict);
+        assert!(!app.draft_save_in_flight);
+
+        app.composer_queue_conflict = false;
+        app.draft_save_in_flight = true;
+        app.handle_net_event(
+            NetEvent::DraftSaveFailed {
+                scratch_id,
+                revision: 3,
+                message: "queued message exists".to_string(),
+            },
+            Rect::new(0, 0, 80, 24),
+        )
+        .await;
+        assert!(!app.composer_queue_conflict);
+        assert!(!app.draft_save_in_flight);
+    }
+
+    #[tokio::test]
+    async fn notes_save_events_only_apply_for_matching_workspace_and_revision() {
+        let selected_workspace = Uuid::new_v4();
+        let other_workspace = Uuid::new_v4();
+        let mut app = test_app();
+        app.selected_workspace_id = Some(selected_workspace);
+        app.notes_edit_revision = 8;
+        app.notes_save_in_flight = true;
+        app.bundle.notes_dirty = true;
+        app.bundle.last_notes_edit = Some(std::time::Instant::now());
+
+        app.handle_net_event(
+            NetEvent::NotesSaved {
+                workspace_id: selected_workspace,
+                revision: 8,
+            },
+            Rect::new(0, 0, 80, 24),
+        )
+        .await;
+        assert!(!app.bundle.notes_dirty);
+        assert!(app.bundle.last_notes_edit.is_none());
+        assert!(!app.notes_save_in_flight);
+
+        app.bundle.notes_dirty = true;
+        app.notes_save_in_flight = true;
+        app.error = None;
+        app.handle_net_event(
+            NetEvent::NotesSaveFailed {
+                workspace_id: other_workspace,
+                revision: 8,
+                message: "ignore me".to_string(),
+            },
+            Rect::new(0, 0, 80, 24),
+        )
+        .await;
+        assert!(app.error.is_none());
+        assert!(app.notes_save_in_flight);
+
+        app.handle_net_event(
+            NetEvent::NotesSaveFailed {
+                workspace_id: selected_workspace,
+                revision: 7,
+                message: "stale".to_string(),
+            },
+            Rect::new(0, 0, 80, 24),
+        )
+        .await;
+        assert!(app.error.is_none());
+        assert!(!app.notes_save_in_flight);
     }
 }

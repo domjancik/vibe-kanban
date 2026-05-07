@@ -594,7 +594,11 @@ impl App {
 mod tests {
     use std::collections::HashMap;
 
+    use chrono::{TimeZone, Utc};
     use crossterm::event::{KeyCode, KeyEvent};
+    use db::models::session::Session;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
     use tokio::sync::mpsc::unbounded_channel;
     use uuid::Uuid;
 
@@ -670,6 +674,42 @@ mod tests {
             creating_new_session: false,
             should_quit: false,
         }
+    }
+
+    fn session(id: Uuid, name: &str) -> Session {
+        let now = Utc.timestamp_opt(1, 0).unwrap();
+        Session {
+            id,
+            workspace_id: Uuid::new_v4(),
+            name: Some(name.to_string()),
+            executor: Some("CODEX".to_string()),
+            agent_working_dir: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    async fn spawn_rename_server(session: Session) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = vec![0u8; 4096];
+            let _ = socket.read(&mut buffer).await.unwrap();
+            let body = serde_json::json!({
+                "success": true,
+                "data": session,
+                "message": null
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        format!("http://{}", addr)
     }
 
     #[test]
@@ -748,5 +788,101 @@ mod tests {
         app.handle_session_rename_key(KeyEvent::from(KeyCode::Esc))
             .await;
         assert!(app.session_rename.is_none());
+    }
+
+    #[tokio::test]
+    async fn session_rename_standard_mode_escape_cancels_and_enter_saves() {
+        let session_id = Uuid::new_v4();
+        let updated = session(session_id, "renamed");
+        let mut app = test_app();
+        app.api = Api::new(spawn_rename_server(updated.clone()).await).unwrap();
+        app.bundle.sessions = vec![session(session_id, "old")];
+        app.session_rename = Some(SessionRenameState {
+            session_id,
+            name: "renamed".to_string(),
+            cursor: 7,
+        });
+
+        app.handle_session_rename_key(KeyEvent::from(KeyCode::Enter))
+            .await;
+        assert!(app.session_rename.is_none());
+        assert_eq!(
+            app.bundle.sessions[0].name.as_deref(),
+            Some("renamed")
+        );
+
+        app.session_rename = Some(SessionRenameState {
+            session_id,
+            name: "temp".to_string(),
+            cursor: 4,
+        });
+        app.handle_session_rename_key(KeyEvent::from(KeyCode::Esc))
+            .await;
+        assert!(app.session_rename.is_none());
+        assert_eq!(app.status, "Cancelled session rename");
+    }
+
+    #[test]
+    fn vim_delete_operator_applies_across_editor_targets() {
+        let mut app = test_app();
+        app.composer = "hello world".to_string();
+        app.composer_cursor = 0;
+        app.bundle.notes = "note words".to_string();
+        app.notes_cursor = 5;
+        app.session_rename = Some(SessionRenameState {
+            session_id: Uuid::new_v4(),
+            name: "rename me".to_string(),
+            cursor: 7,
+        });
+
+        app.execute_vim_delete(KeyEvent::from(KeyCode::Char('w')), EditorTarget::Composer);
+        assert_eq!(app.composer, "world");
+
+        app.execute_vim_delete(KeyEvent::from(KeyCode::Char('b')), EditorTarget::Notes);
+        assert_eq!(app.bundle.notes, "words");
+
+        app.execute_vim_delete(
+            KeyEvent::from(KeyCode::Char('$')),
+            EditorTarget::SessionRename,
+        );
+        assert_eq!(
+            app.session_rename.as_ref().map(|rename| rename.name.as_str()),
+            Some("rename ")
+        );
+    }
+
+    #[tokio::test]
+    async fn multibyte_deletion_keeps_target_cursors_on_char_boundaries() {
+        let mut app = test_app();
+        app.composer = "aé🙂".to_string();
+        app.composer_cursor = 1;
+        app.bundle.notes = "é🙂z".to_string();
+        app.notes_cursor = 0;
+        app.session_rename = Some(SessionRenameState {
+            session_id: Uuid::new_v4(),
+            name: "é🙂z".to_string(),
+            cursor: 0,
+        });
+
+        let _ = app
+            .handle_vim_normal_key(KeyEvent::from(KeyCode::Char('x')), EditorTarget::Composer)
+            .await;
+        assert_eq!(app.composer, "a🙂");
+        assert!(app.composer.is_char_boundary(app.composer_cursor));
+
+        let _ = app
+            .handle_vim_normal_key(KeyEvent::from(KeyCode::Char('x')), EditorTarget::Notes)
+            .await;
+        assert_eq!(app.bundle.notes, "🙂z");
+        assert!(app.bundle.notes.is_char_boundary(app.notes_cursor));
+
+        let _ = app.handle_vim_normal_key(
+            KeyEvent::from(KeyCode::Char('x')),
+            EditorTarget::SessionRename,
+        )
+        .await;
+        let rename = app.session_rename.as_ref().unwrap();
+        assert_eq!(rename.name, "🙂z");
+        assert!(rename.name.is_char_boundary(rename.cursor));
     }
 }
