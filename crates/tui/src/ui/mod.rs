@@ -1,6 +1,8 @@
 pub mod detail;
 pub mod layout;
+pub mod main_pane;
 pub mod modal;
+pub mod panes;
 pub mod widgets;
 pub mod workspace_list;
 

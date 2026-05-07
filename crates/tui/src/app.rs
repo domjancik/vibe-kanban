@@ -16,8 +16,8 @@ use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Tabs, Wrap},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph},
 };
 use tokio::{select, time::interval};
 use uuid::Uuid;
@@ -28,19 +28,15 @@ use crate::{
     app_state::AgentPickerState,
     conversation::{
         ChatRenderCache, ConversationScope, OptimisticConversationEntry, OptimisticState,
-        chat_window_bounds, initial_conversation_process_ids, process_prompt, render_chat_entry,
-        render_log_entry, render_optimistic_chat_entry, wrap_lines,
+        initial_conversation_process_ids, process_prompt, render_chat_entry, render_log_entry,
+        render_optimistic_chat_entry, wrap_lines,
     },
-    editor::render_editor_buffer,
     input::{TerminalInput, map_app_key, map_terminal_key},
     model::{
-        Focus, NetEvent, Pane, PatchType, QueueStatus, diff_title, display_permission,
-        display_variant, workspace_title,
+        Focus, NetEvent, Pane, PatchType, QueueStatus, display_permission, display_variant,
+        workspace_title,
     },
-    ui::{
-        centered_rect, panel_block, rect_from_size, render_vertical_scrollbar,
-        terminal_content_area,
-    },
+    ui::{rect_from_size, terminal_content_area},
     workspace::session_target,
 };
 
@@ -279,7 +275,7 @@ impl App {
         });
     }
 
-    fn handle_terminal_resize(&mut self, size: Rect) {
+    pub(crate) fn handle_terminal_resize(&mut self, size: Rect) {
         let cols = size.width.max(1);
         let rows = size.height.max(1);
         if self.bundle.terminal.size != (cols, rows) {
@@ -534,407 +530,6 @@ impl App {
         }
     }
 
-    fn render_main(&mut self, frame: &mut Frame, area: Rect) {
-        let chunks = if self.selected_pane == Pane::Chat {
-            let composer_height = self.chat_composer_height(area.width);
-            Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(3),
-                    Constraint::Min(8),
-                    Constraint::Length(4),
-                    Constraint::Length(composer_height),
-                ])
-                .split(area)
-        } else {
-            Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(3),
-                    Constraint::Min(10),
-                    Constraint::Length(5),
-                ])
-                .split(area)
-        };
-
-        let tabs = Tabs::new(
-            Pane::all()
-                .iter()
-                .map(|pane| Line::from(Span::raw(pane.title())))
-                .collect::<Vec<_>>(),
-        )
-        .block(panel_block("Pane", self.focus == Focus::Main))
-        .select(
-            Pane::all()
-                .iter()
-                .position(|pane| pane == &self.selected_pane)
-                .unwrap_or(0),
-        )
-        .style(Style::default().fg(Color::Gray))
-        .highlight_style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        );
-        frame.render_widget(tabs, chunks[0]);
-
-        match self.selected_pane {
-            Pane::Chat => self.render_chat(frame, chunks[1]),
-            Pane::Changes => self.render_changes(frame, chunks[1]),
-            Pane::Logs => self.render_logs(frame, chunks[1]),
-            Pane::Git => self.render_git(frame, chunks[1]),
-            Pane::Terminal => self.render_terminal(frame, chunks[1]),
-            Pane::Notes => self.render_notes(frame, chunks[1]),
-        }
-
-        let composer_title = self.editor_panel_title();
-        if self.selected_pane == Pane::Chat {
-            frame.render_widget(
-                Paragraph::new(Text::from(vec![
-                    self.composer_selection_line(),
-                    self.composer_status_line(),
-                ]))
-                .block(panel_block("Selection", false))
-                .wrap(Wrap { trim: false }),
-                chunks[2],
-            );
-            frame.render_widget(
-                Paragraph::new(self.render_composer_text())
-                    .block(panel_block(&composer_title, self.focus == Focus::Composer))
-                    .wrap(Wrap { trim: false }),
-                chunks[3],
-            );
-        } else {
-            frame.render_widget(
-                Paragraph::new(render_editor_buffer(
-                    &self.bundle.notes,
-                    self.notes_cursor.min(self.bundle.notes.len()),
-                    self.focus == Focus::Composer && self.selected_pane == Pane::Notes,
-                    self.editor_mode,
-                ))
-                .block(panel_block(&composer_title, self.focus == Focus::Composer))
-                .wrap(Wrap { trim: false }),
-                chunks[2],
-            );
-        }
-    }
-
-    fn chat_composer_height(&self, area_width: u16) -> u16 {
-        let inner_width = area_width.saturating_sub(2).max(12) as usize;
-        let wrapped_lines = if self.composer.is_empty() {
-            1
-        } else {
-            self.composer
-                .split('\n')
-                .map(|line| line.chars().count().max(1).div_ceil(inner_width))
-                .sum::<usize>()
-                .max(1)
-        };
-        wrapped_lines.saturating_add(2).clamp(7, 16) as u16
-    }
-
-    fn render_chat(&mut self, frame: &mut Frame, area: Rect) {
-        let title = if self.creating_new_session {
-            "Conversation (new session)"
-        } else {
-            "Conversation"
-        };
-        let block = panel_block(title, self.focus == Focus::Main);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        if inner.height == 0 || inner.width == 0 {
-            return;
-        }
-
-        let (messages_area, status_area) = if inner.height > 1 {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(1), Constraint::Length(1)])
-                .split(inner);
-            (chunks[0], Some(chunks[1]))
-        } else {
-            (inner, None)
-        };
-        let padded_messages_area = messages_area.inner(ratatui::layout::Margin {
-            vertical: 0,
-            horizontal: 1,
-        });
-        let content_area = if padded_messages_area.width > 0 {
-            padded_messages_area
-        } else {
-            messages_area
-        };
-
-        let visible_lines = content_area.height.max(1) as usize;
-        let requested_end_offset = self.chat_end_offset as usize;
-        let (total_lines, latest_token_usage, clamped_end_offset, start, end) = {
-            let cache = self.chat_render_cache(content_area.width.max(1) as usize);
-            let (clamped_end_offset, start, end, _) =
-                chat_window_bounds(cache.lines.len(), visible_lines, requested_end_offset);
-            (
-                cache.lines.len(),
-                cache.latest_token_usage,
-                clamped_end_offset,
-                start,
-                end,
-            )
-        };
-        if clamped_end_offset != self.chat_end_offset as usize {
-            self.chat_end_offset = clamped_end_offset.min(u16::MAX as usize) as u16;
-        }
-        let lines = {
-            let cache = self.chat_render_cache(content_area.width.max(1) as usize);
-            cache.lines[start..end].to_vec()
-        };
-        frame.render_widget(
-            Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
-            content_area,
-        );
-        let (_, _, _, top_offset) =
-            chat_window_bounds(total_lines, visible_lines, clamped_end_offset);
-        render_vertical_scrollbar(frame, area, total_lines, visible_lines, top_offset);
-
-        if let Some(status_area) = status_area {
-            self.render_chat_status(frame, status_area, latest_token_usage);
-        }
-    }
-
-    fn render_chat_status(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        latest_token_usage: Option<(u32, u32)>,
-    ) {
-        let Some((total_tokens, context_window)) = latest_token_usage else {
-            frame.render_widget(
-                Paragraph::new(Line::styled(
-                    "latest context usage unavailable",
-                    Style::default().fg(Color::DarkGray),
-                )),
-                area,
-            );
-            return;
-        };
-
-        let ratio = if context_window == 0 {
-            0.0
-        } else {
-            (total_tokens as f64 / context_window as f64).clamp(0.0, 1.0)
-        };
-        let gauge_color = if ratio >= 0.85 {
-            Color::Red
-        } else if ratio >= 0.65 {
-            Color::Yellow
-        } else {
-            Color::Green
-        };
-
-        frame.render_widget(
-            Gauge::default()
-                .ratio(ratio)
-                .label(format!("context {total_tokens}/{context_window}"))
-                .gauge_style(Style::default().fg(gauge_color)),
-            area,
-        );
-    }
-
-    fn render_changes(&self, frame: &mut Frame, area: Rect) {
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(28), Constraint::Min(20)])
-            .split(area);
-
-        let items = self
-            .bundle
-            .diffs
-            .iter()
-            .map(|diff| {
-                let counts = format!(
-                    "+{} -{}",
-                    diff.additions.unwrap_or_default(),
-                    diff.deletions.unwrap_or_default()
-                );
-                ListItem::new(Text::from(vec![
-                    Line::raw(diff_title(diff)),
-                    Line::styled(counts, Style::default().fg(Color::DarkGray)),
-                ]))
-            })
-            .collect::<Vec<_>>();
-        let mut state = ListState::default();
-        if !self.bundle.diffs.is_empty() {
-            state.select(Some(self.bundle.selected_diff_index));
-        }
-        frame.render_stateful_widget(
-            List::new(items)
-                .block(panel_block("Files", self.focus == Focus::Detail))
-                .highlight_style(Style::default().fg(Color::Cyan).bg(Color::Rgb(28, 38, 48))),
-            chunks[0],
-            &mut state,
-        );
-        render_vertical_scrollbar(
-            frame,
-            chunks[0],
-            self.bundle.diffs.len(),
-            viewport_capacity(chunks[0], 2),
-            selected_list_offset(
-                self.bundle.selected_diff_index,
-                self.bundle.diffs.len(),
-                viewport_capacity(chunks[0], 2),
-            ),
-        );
-
-        let diff_text = self
-            .bundle
-            .diffs
-            .get(self.bundle.selected_diff_index)
-            .map(render_diff_text)
-            .unwrap_or_else(|| "No diff selected".to_string());
-        frame.render_widget(
-            Paragraph::new(diff_text)
-                .block(panel_block("Diff", self.focus == Focus::Main))
-                .wrap(Wrap { trim: false }),
-            chunks[1],
-        );
-    }
-
-    fn render_logs(&self, frame: &mut Frame, area: Rect) {
-        let lines = self
-            .bundle
-            .log_entries
-            .iter()
-            .enumerate()
-            .flat_map(|(index, entry)| render_log_entry(index, entry))
-            .collect::<Vec<_>>();
-        let total_lines = lines.len();
-        frame.render_widget(
-            Paragraph::new(Text::from(lines))
-                .block(panel_block("Logs", self.focus == Focus::Main))
-                .scroll((self.bundle.log_scroll, 0))
-                .wrap(Wrap { trim: false }),
-            area,
-        );
-        render_vertical_scrollbar(
-            frame,
-            area,
-            total_lines,
-            area.height.saturating_sub(2) as usize,
-            self.bundle.log_scroll as usize,
-        );
-    }
-
-    fn render_git(&self, frame: &mut Frame, area: Rect) {
-        let lines = if self.bundle.git_status.is_empty() {
-            vec![Line::raw("No repository status available")]
-        } else {
-            self.bundle
-                .git_status
-                .iter()
-                .flat_map(|status| {
-                    let mut lines = vec![
-                        Line::styled(
-                            format!(
-                                "{} -> {}",
-                                status.repo_name, status.status.target_branch_name
-                            ),
-                            Style::default().fg(Color::Cyan),
-                        ),
-                        Line::raw(format!(
-                            "ahead {}  behind {}  uncommitted {:?}  untracked {:?}",
-                            status.status.commits_ahead.unwrap_or_default(),
-                            status.status.commits_behind.unwrap_or_default(),
-                            status.status.uncommitted_count,
-                            status.status.untracked_count
-                        )),
-                    ];
-                    if status.status.is_rebase_in_progress {
-                        lines.push(Line::styled(
-                            "rebase in progress",
-                            Style::default().fg(Color::Yellow),
-                        ));
-                    }
-                    if !status.status.conflicted_files.is_empty() {
-                        lines.push(Line::styled(
-                            format!("conflicts: {}", status.status.conflicted_files.join(", ")),
-                            Style::default().fg(Color::Red),
-                        ));
-                    }
-                    if let Some(pr) = status.status.merges.iter().find_map(|merge| match merge {
-                        crate::model::Merge::Pr(pr) => Some(pr),
-                        _ => None,
-                    }) {
-                        lines.push(Line::raw(format!(
-                            "pr #{}  {}",
-                            pr.pr_info.pr_number, pr.pr_info.pr_url
-                        )));
-                    }
-                    lines.push(Line::raw(""));
-                    lines
-                })
-                .collect()
-        };
-        let total_lines = lines.len();
-        frame.render_widget(
-            Paragraph::new(Text::from(lines))
-                .block(panel_block("Git", self.focus == Focus::Main))
-                .wrap(Wrap { trim: false }),
-            area,
-        );
-        render_vertical_scrollbar(
-            frame,
-            area,
-            total_lines,
-            area.height.saturating_sub(2) as usize,
-            self.bundle.log_scroll as usize,
-        );
-    }
-
-    fn render_terminal(&mut self, frame: &mut Frame, area: Rect) {
-        let title = if self.bundle.terminal.input_mode {
-            "Terminal *"
-        } else {
-            "Terminal"
-        };
-        let block = panel_block(title, self.focus == Focus::Main);
-        let content_area = terminal_content_area(area);
-        self.handle_terminal_resize(content_area);
-        let screen = self.bundle.terminal.parser.screen();
-        let mut lines = Vec::new();
-        for row in 0..screen.size().0 {
-            let mut text = String::new();
-            for col in 0..screen.size().1 {
-                if let Some(cell) = screen.cell(row + 1, col + 1) {
-                    text.push(cell.contents().chars().next().unwrap_or(' '));
-                }
-            }
-            lines.push(Line::raw(text.trim_end_matches(' ').to_string()));
-        }
-        frame.render_widget(block, area);
-        frame.render_widget(Paragraph::new(Text::from(lines)), content_area);
-        if let Some(error) = &self.bundle.terminal.error {
-            let popup = centered_rect(70, 20, area);
-            frame.render_widget(Clear, popup);
-            frame.render_widget(
-                Paragraph::new(error.as_str())
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .title("Terminal error"),
-                    )
-                    .wrap(Wrap { trim: false }),
-                popup,
-            );
-        }
-    }
-
-    fn render_notes(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(
-            Paragraph::new(self.bundle.notes.as_str())
-                .block(panel_block("Notes", self.focus == Focus::Main))
-                .wrap(Wrap { trim: false }),
-            area,
-        );
-    }
-
     fn header(&self) -> Paragraph<'_> {
         let workspace = self
             .selected_workspace_id
@@ -960,7 +555,7 @@ impl App {
         Paragraph::new(status.to_string()).block(Block::default().borders(Borders::TOP))
     }
 
-    fn composer_selection_line(&self) -> Line<'static> {
+    pub(crate) fn composer_selection_line(&self) -> Line<'static> {
         let config = self.composer_config.as_ref();
         let executor = config
             .map(|config| config.executor.to_string())
@@ -1011,7 +606,7 @@ impl App {
         ])
     }
 
-    fn composer_status_line(&self) -> Line<'static> {
+    pub(crate) fn composer_status_line(&self) -> Line<'static> {
         let draft = self.draft_status_label();
         let queue = self.queue_status_label();
         let draft_style = if self.composer_queue_conflict {
@@ -1422,7 +1017,7 @@ impl App {
         self.chat_lines().len()
     }
 
-    fn chat_render_cache(&mut self, width: usize) -> &ChatRenderCache {
+    pub(crate) fn chat_render_cache(&mut self, width: usize) -> &ChatRenderCache {
         let width = width.max(1);
         let should_rebuild = self
             .chat_render_cache
@@ -2128,21 +1723,6 @@ impl App {
         };
         let _ = tx.send(TerminalCommand::Input(bytes));
     }
-}
-
-fn render_diff_text(diff: &crate::model::LocalDiff) -> String {
-    let old = diff.old_content.as_deref().unwrap_or("");
-    let new = diff.new_content.as_deref().unwrap_or("");
-    if diff.content_omitted {
-        return format!(
-            "{}\ncontent omitted  +{} -{}",
-            diff_title(diff),
-            diff.additions.unwrap_or_default(),
-            diff.deletions.unwrap_or_default()
-        );
-    }
-    let file = diff_title(diff);
-    utils::diff::create_unified_diff(&file, old, new)
 }
 
 fn default_variant_to_none(variant: String) -> Option<String> {
