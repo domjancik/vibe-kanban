@@ -205,6 +205,9 @@ impl App {
                 if Some(scratch_id) == self.current_composer_scratch_id()
                     && (!self.composer_scratch_loaded || !self.composer_dirty)
                 {
+                    if self.is_queue_present() && draft.is_some() {
+                        return;
+                    }
                     self.composer = draft
                         .as_ref()
                         .map(|draft| draft.message.trim_end_matches('\n').to_string())
@@ -759,6 +762,43 @@ mod tests {
 
         assert_eq!(app.composer, "local");
         assert!(app.composer_dirty);
+    }
+
+    #[tokio::test]
+    async fn queued_session_ignores_non_empty_draft_reload() {
+        let session_id = Uuid::new_v4();
+        let mut app = test_app();
+        app.bundle.selected_session_id = Some(session_id);
+        app.queue_status = QueueStatus::Queued {
+            message: crate::model::QueuedMessage {
+                session_id,
+                data: DraftFollowUpData {
+                    message: "queued".to_string(),
+                    executor_config: ExecutorConfig::new(
+                        executors::executors::BaseCodingAgent::Codex,
+                    ),
+                },
+                queued_at: chrono::Utc::now(),
+            },
+        };
+        app.composer_scratch_loaded = false;
+
+        app.handle_net_event(
+            NetEvent::DraftLoaded {
+                scratch_id: session_id,
+                draft: Some(DraftFollowUpData {
+                    message: "stale".to_string(),
+                    executor_config: ExecutorConfig::new(
+                        executors::executors::BaseCodingAgent::Codex,
+                    ),
+                }),
+            },
+            Rect::new(0, 0, 80, 24),
+        )
+        .await;
+
+        assert!(app.composer.is_empty());
+        assert!(!app.composer_scratch_loaded);
     }
 
     #[tokio::test]

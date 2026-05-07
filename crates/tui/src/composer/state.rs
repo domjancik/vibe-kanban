@@ -197,6 +197,9 @@ impl App {
             }
             match api.queue_follow_up(session_id, draft).await {
                 Ok(status) => {
+                    if let Some(scratch_id) = scratch_id {
+                        let _ = api.delete_follow_up_draft(scratch_id).await;
+                    }
                     let _ = tx.send(NetEvent::QueuedPrompt { session_id, status });
                 }
                 Err(error) => {
