@@ -16,6 +16,7 @@ struct ChatViewportAnchor {
 struct ChatViewportMetrics {
     total_lines: usize,
     visible_lines: usize,
+    clamped_end_offset: usize,
     top_offset: usize,
 }
 
@@ -590,7 +591,7 @@ impl App {
 
     fn capture_chat_viewport_anchor(&mut self, size: Rect) -> Option<ChatViewportAnchor> {
         let metrics = self.chat_viewport_metrics(size)?;
-        (self.chat_end_offset != 0).then_some(ChatViewportAnchor {
+        (metrics.clamped_end_offset != 0).then_some(ChatViewportAnchor {
             top_offset: metrics.top_offset,
         })
     }
@@ -679,7 +680,7 @@ impl App {
         let visible_lines = content_area.height.max(1) as usize;
         let requested_end_offset = self.chat_end_offset as usize;
         let cache = self.chat_render_cache(content_width);
-        let (_, _, _, top_offset) = chat_window_bounds(
+        let (clamped_end_offset, _, _, top_offset) = chat_window_bounds(
             cache.lines.len(),
             visible_lines,
             requested_end_offset,
@@ -688,6 +689,7 @@ impl App {
         Some(ChatViewportMetrics {
             total_lines: cache.lines.len(),
             visible_lines,
+            clamped_end_offset,
             top_offset,
         })
     }
@@ -1126,6 +1128,42 @@ mod tests {
         .await;
         assert!(app.bundle.log_entries.is_empty());
         assert_eq!(app.chat_end_offset, previous_offset);
+    }
+
+    #[tokio::test]
+    async fn logs_updated_keeps_following_tail_when_chat_is_at_bottom() {
+        let selected_process = Uuid::new_v4();
+        let mut entries = (0..24)
+            .map(|index| PatchType::Stdout(format!("visible {index}")))
+            .collect::<Vec<_>>();
+        let mut app = test_app();
+        let size = Rect::new(0, 0, 80, 24);
+        app.selected_pane = Pane::Chat;
+        app.focus = Focus::Main;
+        app.bundle.selected_process_id = Some(selected_process);
+        app.conversation_process_order = vec![selected_process];
+        app.conversation_process_entries
+            .insert(selected_process, entries.clone());
+        app.mark_chat_render_cache_dirty();
+        app.chat_end_offset = 0;
+
+        entries.push(PatchType::Stdout("visible 24".to_string()));
+        app.handle_net_event(
+            NetEvent::LogsUpdated {
+                process_id: selected_process,
+                entries,
+            },
+            size,
+        )
+        .await;
+
+        assert_eq!(app.chat_end_offset, 0);
+        assert_eq!(
+            app.chat_viewport_metrics(size)
+                .expect("chat viewport")
+                .clamped_end_offset,
+            0
+        );
     }
 
     #[tokio::test]
