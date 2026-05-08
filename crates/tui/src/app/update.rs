@@ -1,11 +1,23 @@
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 
 use crate::{
     api::transport::log_tui,
     app::{App, ToolCallDisplayMode},
+    conversation::chat_window_bounds,
     input::{AppIntent, next_focus, prev_focus},
     model::{Focus, NetEvent, Pane, QueueStatus, WorkspaceActionKind, active_process},
 };
+
+#[derive(Clone, Copy)]
+struct ChatViewportAnchor {
+    top_offset: usize,
+}
+
+struct ChatViewportMetrics {
+    total_lines: usize,
+    visible_lines: usize,
+    top_offset: usize,
+}
 
 impl App {
     pub(crate) async fn handle_net_event(&mut self, event: NetEvent, size: Rect) {
@@ -183,6 +195,7 @@ impl App {
                 process_id,
                 entries,
             } => {
+                let chat_anchor = self.capture_chat_viewport_anchor(size);
                 if Some(process_id) == self.bundle.selected_process_id {
                     self.bundle.log_entries = entries.clone();
                     self.mark_logs_dirty();
@@ -192,6 +205,7 @@ impl App {
                         .insert(process_id, entries);
                     self.reconcile_optimistic_entries();
                     self.mark_chat_render_cache_dirty();
+                    self.restore_chat_viewport_anchor(size, chat_anchor);
                 }
             }
             NetEvent::ExecutorOptionsUpdated { executor, options } => {
@@ -270,10 +284,12 @@ impl App {
                 entries,
             } => {
                 if Some(session_id) == self.bundle.selected_session_id {
+                    let chat_anchor = self.capture_chat_viewport_anchor(size);
                     self.conversation_process_entries
                         .insert(process_id, entries);
                     self.reconcile_optimistic_entries();
                     self.mark_chat_render_cache_dirty();
+                    self.restore_chat_viewport_anchor(size, chat_anchor);
                 }
             }
             NetEvent::ConversationBootstrapComplete { session_id } => {
@@ -570,6 +586,110 @@ impl App {
                 self.status = "Terminal input mode enabled".to_string();
             }
         }
+    }
+
+    fn capture_chat_viewport_anchor(&mut self, size: Rect) -> Option<ChatViewportAnchor> {
+        let metrics = self.chat_viewport_metrics(size)?;
+        (self.chat_end_offset != 0).then_some(ChatViewportAnchor {
+            top_offset: metrics.top_offset,
+        })
+    }
+
+    fn restore_chat_viewport_anchor(&mut self, size: Rect, anchor: Option<ChatViewportAnchor>) {
+        let Some(anchor) = anchor else {
+            return;
+        };
+        let Some(metrics) = self.chat_viewport_metrics(size) else {
+            return;
+        };
+        self.chat_end_offset = metrics
+            .total_lines
+            .saturating_sub(metrics.visible_lines.saturating_add(anchor.top_offset))
+            .min(u16::MAX as usize) as u16;
+    }
+
+    fn chat_viewport_metrics(&mut self, size: Rect) -> Option<ChatViewportMetrics> {
+        if self.selected_pane != Pane::Chat {
+            return None;
+        }
+
+        let body_area = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(2),
+            ])
+            .split(size)[1];
+
+        let main_area = if self.maximized_panel {
+            if !matches!(self.focus, Focus::Main | Focus::Composer) {
+                return None;
+            }
+            body_area
+        } else if size.width >= 140 {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(32),
+                    Constraint::Min(50),
+                    Constraint::Length(44),
+                ])
+                .split(body_area)[1]
+        } else {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(32), Constraint::Min(40)])
+                .split(body_area)[1]
+        };
+
+        let composer_height = self.chat_composer_height(main_area.width);
+        let messages_area = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(8),
+                Constraint::Length(4),
+                Constraint::Length(composer_height),
+            ])
+            .split(main_area)[1];
+
+        let content_width = messages_area.width.saturating_sub(4).max(1) as usize;
+        let has_status_row = self
+            .chat_render_cache(content_width)
+            .latest_token_usage
+            .is_some();
+        let messages_area = if has_status_row {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(1)])
+                .split(messages_area)[0]
+        } else {
+            messages_area
+        };
+        let padded_messages_area = messages_area.inner(Margin {
+            vertical: 0,
+            horizontal: 1,
+        });
+        let content_area = if padded_messages_area.width > 0 {
+            padded_messages_area
+        } else {
+            messages_area
+        };
+        let visible_lines = content_area.height.max(1) as usize;
+        let requested_end_offset = self.chat_end_offset as usize;
+        let cache = self.chat_render_cache(content_width);
+        let (_, _, _, top_offset) = chat_window_bounds(
+            cache.lines.len(),
+            visible_lines,
+            requested_end_offset,
+        );
+
+        Some(ChatViewportMetrics {
+            total_lines: cache.lines.len(),
+            visible_lines,
+            top_offset,
+        })
     }
 }
 
@@ -957,56 +1077,82 @@ mod tests {
     async fn logs_updated_only_replaces_selected_process_log_and_preserves_chat_offset() {
         let selected_process = Uuid::new_v4();
         let other_process = Uuid::new_v4();
-        let entries = vec![PatchType::Stdout("visible".to_string())];
+        let mut entries = (0..24)
+            .map(|index| PatchType::Stdout(format!("visible {index}")))
+            .collect::<Vec<_>>();
         let mut app = test_app();
+        let size = Rect::new(0, 0, 80, 24);
+        app.selected_pane = Pane::Chat;
+        app.focus = Focus::Main;
         app.bundle.selected_process_id = Some(selected_process);
-        app.chat_end_offset = 7;
         app.conversation_process_order = vec![selected_process];
+        app.conversation_process_entries
+            .insert(selected_process, entries.clone());
+        app.mark_chat_render_cache_dirty();
+        app.chat_end_offset = 7;
+        let previous_metrics = app.chat_viewport_metrics(size).expect("chat viewport");
 
         app.handle_net_event(
             NetEvent::LogsUpdated {
                 process_id: selected_process,
                 entries: entries.clone(),
             },
-            Rect::new(0, 0, 80, 24),
+            size,
         )
         .await;
-        assert_eq!(app.bundle.log_entries.len(), 1);
-        assert_eq!(app.chat_end_offset, 7);
+
+        let updated_metrics = app.chat_viewport_metrics(size).expect("chat viewport");
+        assert_eq!(app.bundle.log_entries.len(), entries.len());
+        assert_eq!(updated_metrics.top_offset, previous_metrics.top_offset);
         assert_eq!(
             app.conversation_process_entries
                 .get(&selected_process)
-                .map(Vec::len),
-            Some(1)
+                .map(Vec::len)
+                .unwrap_or_default(),
+            entries.len()
         );
 
         app.bundle.log_entries.clear();
         app.chat_end_offset = 5;
+        let previous_offset = app.chat_end_offset;
+        entries.push(PatchType::Stdout("visible 24".to_string()));
         app.handle_net_event(
             NetEvent::LogsUpdated {
                 process_id: other_process,
                 entries: vec![PatchType::Stdout("other".to_string())],
             },
-            Rect::new(0, 0, 80, 24),
+            size,
         )
         .await;
         assert!(app.bundle.log_entries.is_empty());
-        assert_eq!(app.chat_end_offset, 5);
+        assert_eq!(app.chat_end_offset, previous_offset);
     }
 
     #[tokio::test]
     async fn conversation_history_loaded_updates_process_entries_and_preserves_scroll() {
         let session_id = Uuid::new_v4();
         let process_id = Uuid::new_v4();
-        let entries = vec![PatchType::NormalizedEntry(NormalizedEntry {
-            timestamp: None,
-            entry_type: NormalizedEntryType::AssistantMessage,
-            content: "hello".to_string(),
-            metadata: None,
-        })];
+        let size = Rect::new(0, 0, 80, 24);
+        let entries = (0..24)
+            .map(|index| {
+                PatchType::NormalizedEntry(NormalizedEntry {
+                    timestamp: None,
+                    entry_type: NormalizedEntryType::AssistantMessage,
+                    content: format!("hello {index}"),
+                    metadata: None,
+                })
+            })
+            .collect::<Vec<_>>();
         let mut app = test_app();
+        app.selected_pane = Pane::Chat;
+        app.focus = Focus::Main;
         app.bundle.selected_session_id = Some(session_id);
-        app.chat_end_offset = 9;
+        app.conversation_process_order = vec![process_id];
+        app.conversation_process_entries
+            .insert(process_id, entries[..20].to_vec());
+        app.mark_chat_render_cache_dirty();
+        app.chat_end_offset = 7;
+        let previous_metrics = app.chat_viewport_metrics(size).expect("chat viewport");
 
         app.handle_net_event(
             NetEvent::ConversationHistoryLoaded {
@@ -1014,18 +1160,18 @@ mod tests {
                 process_id,
                 entries: entries.clone(),
             },
-            Rect::new(0, 0, 80, 24),
+            size,
         )
         .await;
 
+        let updated_metrics = app.chat_viewport_metrics(size).expect("chat viewport");
         assert_eq!(
             app.conversation_process_entries
                 .get(&process_id)
                 .map(Vec::len),
-            Some(1)
+            Some(entries.len())
         );
-        assert_eq!(app.chat_end_offset, 9);
-        assert!(app.chat_render_cache_dirty);
+        assert_eq!(updated_metrics.top_offset, previous_metrics.top_offset);
     }
 
     #[tokio::test]
