@@ -185,7 +185,6 @@ impl App {
             } => {
                 if Some(process_id) == self.bundle.selected_process_id {
                     self.bundle.log_entries = entries.clone();
-                    self.chat_end_offset = 0;
                     self.mark_logs_dirty();
                 }
                 if self.conversation_process_order.contains(&process_id) {
@@ -275,7 +274,6 @@ impl App {
                         .insert(process_id, entries);
                     self.reconcile_optimistic_entries();
                     self.mark_chat_render_cache_dirty();
-                    self.chat_end_offset = 0;
                 }
             }
             NetEvent::ConversationBootstrapComplete { session_id } => {
@@ -956,7 +954,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn logs_updated_only_replaces_selected_process_log_and_resets_chat_offset() {
+    async fn logs_updated_only_replaces_selected_process_log_and_preserves_chat_offset() {
         let selected_process = Uuid::new_v4();
         let other_process = Uuid::new_v4();
         let entries = vec![PatchType::Stdout("visible".to_string())];
@@ -974,7 +972,7 @@ mod tests {
         )
         .await;
         assert_eq!(app.bundle.log_entries.len(), 1);
-        assert_eq!(app.chat_end_offset, 0);
+        assert_eq!(app.chat_end_offset, 7);
         assert_eq!(
             app.conversation_process_entries
                 .get(&selected_process)
@@ -997,7 +995,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn conversation_history_loaded_updates_process_entries_and_resets_scroll() {
+    async fn conversation_history_loaded_updates_process_entries_and_preserves_scroll() {
         let session_id = Uuid::new_v4();
         let process_id = Uuid::new_v4();
         let entries = vec![PatchType::NormalizedEntry(NormalizedEntry {
@@ -1026,7 +1024,7 @@ mod tests {
                 .map(Vec::len),
             Some(1)
         );
-        assert_eq!(app.chat_end_offset, 0);
+        assert_eq!(app.chat_end_offset, 9);
         assert!(app.chat_render_cache_dirty);
     }
 
