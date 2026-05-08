@@ -361,7 +361,8 @@ impl App {
         rows.extend(workspaces.iter().copied().map(WorkspaceRow::Workspace));
     }
 
-    pub(crate) fn selected_workspace_row_index(&self, rows: &[WorkspaceRow<'_>]) -> Option<usize> {
+    #[cfg(test)]
+    fn selected_workspace_row_index(&self, rows: &[WorkspaceRow<'_>]) -> Option<usize> {
         let selected_id = self.selected_workspace_id?;
         rows.iter().position(|row| match row {
             WorkspaceRow::Header(_) => false,
