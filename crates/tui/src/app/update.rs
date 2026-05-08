@@ -1,4 +1,7 @@
-use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
+use ratatui::{
+    layout::{Constraint, Direction, Layout, Margin, Rect},
+    text::Line,
+};
 
 use crate::{
     api::transport::log_tui,
@@ -8,15 +11,19 @@ use crate::{
     model::{Focus, NetEvent, Pane, QueueStatus, WorkspaceActionKind, active_process},
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ChatViewportAnchor {
     top_offset: usize,
+    visible_line_texts: Vec<String>,
 }
 
 struct ChatViewportMetrics {
+    content_width: usize,
     total_lines: usize,
     visible_lines: usize,
     clamped_end_offset: usize,
+    start: usize,
+    end: usize,
     top_offset: usize,
 }
 
@@ -588,8 +595,17 @@ impl App {
 
     fn capture_chat_viewport_anchor(&mut self, size: Rect) -> Option<ChatViewportAnchor> {
         let metrics = self.chat_viewport_metrics(size)?;
-        (metrics.clamped_end_offset != 0).then_some(ChatViewportAnchor {
+        if metrics.clamped_end_offset == 0 {
+            return None;
+        }
+        let cache = self.chat_render_cache(metrics.content_width);
+        Some(ChatViewportAnchor {
             top_offset: metrics.top_offset,
+            visible_line_texts: cache.lines[metrics.start..metrics.end]
+                .iter()
+                .take(3)
+                .map(chat_line_text)
+                .collect(),
         })
     }
 
@@ -600,9 +616,12 @@ impl App {
         let Some(metrics) = self.chat_viewport_metrics(size) else {
             return;
         };
+        let cache = self.chat_render_cache(metrics.content_width);
+        let restored_top_offset = find_chat_anchor_top_offset(&cache.lines, &anchor)
+            .unwrap_or(anchor.top_offset);
         self.chat_end_offset = metrics
             .total_lines
-            .saturating_sub(metrics.visible_lines.saturating_add(anchor.top_offset))
+            .saturating_sub(metrics.visible_lines.saturating_add(restored_top_offset))
             .min(u16::MAX as usize) as u16;
     }
 
@@ -677,16 +696,41 @@ impl App {
         let visible_lines = content_area.height.max(1) as usize;
         let requested_end_offset = self.chat_end_offset as usize;
         let cache = self.chat_render_cache(content_width);
-        let (clamped_end_offset, _, _, top_offset) =
+        let (clamped_end_offset, start, end, top_offset) =
             chat_window_bounds(cache.lines.len(), visible_lines, requested_end_offset);
 
         Some(ChatViewportMetrics {
+            content_width,
             total_lines: cache.lines.len(),
             visible_lines,
             clamped_end_offset,
+            start,
+            end,
             top_offset,
         })
     }
+}
+
+fn chat_line_text(line: &Line<'_>) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>()
+}
+
+fn find_chat_anchor_top_offset(lines: &[Line<'_>], anchor: &ChatViewportAnchor) -> Option<usize> {
+    if anchor.visible_line_texts.is_empty() {
+        return Some(anchor.top_offset);
+    }
+    let line_texts = lines.iter().map(chat_line_text).collect::<Vec<_>>();
+    line_texts
+        .windows(anchor.visible_line_texts.len())
+        .position(|window| window == anchor.visible_line_texts.as_slice())
+        .or_else(|| {
+            line_texts
+                .iter()
+                .position(|line| line == &anchor.visible_line_texts[0])
+        })
 }
 
 #[cfg(test)]
@@ -721,6 +765,15 @@ mod tests {
         editor::ComposerEditorMode,
         model::{Focus, NetEvent, Pane, PatchType, QueueStatus, WorkspaceBundle},
     };
+
+    fn visible_chat_lines(app: &mut App, size: Rect) -> Vec<String> {
+        let metrics = app.chat_viewport_metrics(size).expect("chat viewport");
+        let cache = app.chat_render_cache(metrics.content_width);
+        cache.lines[metrics.start..metrics.end]
+            .iter()
+            .map(super::chat_line_text)
+            .collect()
+    }
 
     fn test_app() -> App {
         let api = Api::new("http://127.0.0.1:9".to_string()).unwrap();
@@ -1086,7 +1139,7 @@ mod tests {
             .insert(selected_process, entries.clone());
         app.mark_chat_render_cache_dirty();
         app.chat_end_offset = 7;
-        let previous_metrics = app.chat_viewport_metrics(size).expect("chat viewport");
+        let previous_lines = visible_chat_lines(&mut app, size);
 
         app.handle_net_event(
             NetEvent::LogsUpdated {
@@ -1097,9 +1150,8 @@ mod tests {
         )
         .await;
 
-        let updated_metrics = app.chat_viewport_metrics(size).expect("chat viewport");
         assert_eq!(app.bundle.log_entries.len(), entries.len());
-        assert_eq!(updated_metrics.top_offset, previous_metrics.top_offset);
+        assert_eq!(visible_chat_lines(&mut app, size), previous_lines);
         assert_eq!(
             app.conversation_process_entries
                 .get(&selected_process)
@@ -1184,7 +1236,7 @@ mod tests {
             .insert(process_id, entries[..20].to_vec());
         app.mark_chat_render_cache_dirty();
         app.chat_end_offset = 7;
-        let previous_metrics = app.chat_viewport_metrics(size).expect("chat viewport");
+        let previous_lines = visible_chat_lines(&mut app, size);
 
         app.handle_net_event(
             NetEvent::ConversationHistoryLoaded {
@@ -1196,14 +1248,13 @@ mod tests {
         )
         .await;
 
-        let updated_metrics = app.chat_viewport_metrics(size).expect("chat viewport");
         assert_eq!(
             app.conversation_process_entries
                 .get(&process_id)
                 .map(Vec::len),
             Some(entries.len())
         );
-        assert_eq!(updated_metrics.top_offset, previous_metrics.top_offset);
+        assert_eq!(visible_chat_lines(&mut app, size), previous_lines);
     }
 
     #[tokio::test]
