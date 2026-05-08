@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{Event as CrosstermEvent, EventStream, KeyEvent};
+use crossterm::event::{Event as CrosstermEvent, EventStream, KeyEvent, KeyEventKind};
 use futures_util::StreamExt;
 use ratatui::{DefaultTerminal, layout::Rect};
 use tokio::{
@@ -45,6 +45,9 @@ impl App {
                 biased;
                 Some(Ok(event)) = events.next() => {
                     if let CrosstermEvent::Key(key) = event {
+                        if !should_process_key_event(key) {
+                            continue;
+                        }
                         self.handle_key(key, rect_from_size(terminal.size()?)).await;
                         draw_requested = true;
                         pending_background_redraw = false;
@@ -244,5 +247,38 @@ impl App {
         self.focus == Focus::Composer
             || self.session_rename.is_some()
             || (self.bundle.terminal.input_mode && self.selected_pane == Pane::Terminal)
+    }
+}
+
+fn should_process_key_event(key: KeyEvent) -> bool {
+    matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+}
+
+#[cfg(test)]
+mod tests {
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+    use super::should_process_key_event;
+
+    #[test]
+    fn ignores_release_events_but_keeps_press_and_repeat() {
+        assert!(should_process_key_event(KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }));
+        assert!(should_process_key_event(KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Repeat,
+            state: KeyEventState::NONE,
+        }));
+        assert!(!should_process_key_event(KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Release,
+            state: KeyEventState::NONE,
+        }));
     }
 }
