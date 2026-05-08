@@ -21,7 +21,7 @@ pub enum AppIntent {
     ToggleArchived,
     StartDevServer,
     RunCleanup,
-    StopWorkspace,
+    StopExecution,
     OpenEditor,
     OpenSessionRename,
     CycleExecutor,
@@ -143,7 +143,7 @@ pub fn map_app_key(
         KeyEvent {
             code: KeyCode::Char('v'),
             ..
-        } => Some(AppIntent::StopWorkspace),
+        } => Some(AppIntent::StopExecution),
         KeyEvent {
             code: KeyCode::Char('e'),
             ..
@@ -334,6 +334,14 @@ mod tests {
         assert_eq!(
             map_app_key(up, false, &Pane::Chat),
             Some(AppIntent::JumpToStart)
+        );
+    }
+
+    #[test]
+    fn v_maps_to_stop_execution() {
+        assert_eq!(
+            map_app_key(key(KeyCode::Char('v')), false, &Pane::Chat),
+            Some(AppIntent::StopExecution)
         );
     }
 }

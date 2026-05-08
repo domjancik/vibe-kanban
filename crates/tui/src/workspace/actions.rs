@@ -2,7 +2,10 @@ use ratatui::layout::Rect;
 
 use crate::{
     app::App,
-    model::{NetEvent, Pane, QueueStatus, TerminalState, WorkspaceActionKind, WorkspaceBundle},
+    model::{
+        NetEvent, Pane, QueueStatus, TerminalState, WorkspaceActionKind, WorkspaceBundle,
+        active_process,
+    },
 };
 
 impl App {
@@ -98,13 +101,11 @@ impl App {
             let event = match api.toggle_pinned(workspace_id, next_pinned).await {
                 Ok(()) => NetEvent::WorkspaceActionFinished {
                     kind: WorkspaceActionKind::TogglePinned,
-                    workspace_id: Some(workspace_id),
                     success: true,
                     message: "Updated pin state".to_string(),
                 },
                 Err(error) => NetEvent::WorkspaceActionFinished {
                     kind: WorkspaceActionKind::TogglePinned,
-                    workspace_id: Some(workspace_id),
                     success: false,
                     message: error.to_string(),
                 },
@@ -135,13 +136,11 @@ impl App {
             let event = match api.toggle_archived(workspace_id, next_archived).await {
                 Ok(()) => NetEvent::WorkspaceActionFinished {
                     kind: WorkspaceActionKind::ToggleArchived,
-                    workspace_id: Some(workspace_id),
                     success: true,
                     message: "Updated archive state".to_string(),
                 },
                 Err(error) => NetEvent::WorkspaceActionFinished {
                     kind: WorkspaceActionKind::ToggleArchived,
-                    workspace_id: Some(workspace_id),
                     success: false,
                     message: error.to_string(),
                 },
@@ -150,34 +149,35 @@ impl App {
         });
     }
 
-    pub(crate) async fn stop_workspace(&mut self) {
-        if let Some(workspace_id) = self.selected_workspace_id {
-            if self.actions_in_flight.dev_server {
-                self.status = "Workspace stop already in progress".to_string();
-                return;
-            }
-            self.actions_in_flight.dev_server = true;
-            self.status = "Stopping workspace execution".to_string();
-            let api = self.api.clone();
-            let tx = self.tx.clone();
-            tokio::spawn(async move {
-                let event = match api.stop_workspace(workspace_id).await {
-                    Ok(()) => NetEvent::WorkspaceActionFinished {
-                        kind: WorkspaceActionKind::StopWorkspace,
-                        workspace_id: Some(workspace_id),
-                        success: true,
-                        message: "Stopped workspace execution".to_string(),
-                    },
-                    Err(error) => NetEvent::WorkspaceActionFinished {
-                        kind: WorkspaceActionKind::StopWorkspace,
-                        workspace_id: Some(workspace_id),
-                        success: false,
-                        message: error.to_string(),
-                    },
-                };
-                let _ = tx.send(event);
-            });
+    pub(crate) async fn stop_current_execution(&mut self) {
+        let Some(process) = active_process(&self.bundle.process_map) else {
+            self.status = "No active execution to stop".to_string();
+            return;
+        };
+        if self.actions_in_flight.stop_execution {
+            self.status = "Execution stop already in progress".to_string();
+            return;
         }
+        self.actions_in_flight.stop_execution = true;
+        self.status = "Stopping current execution".to_string();
+        let api = self.api.clone();
+        let tx = self.tx.clone();
+        let process_id = process.id;
+        tokio::spawn(async move {
+            let event = match api.stop_execution_process(process_id).await {
+                Ok(()) => NetEvent::WorkspaceActionFinished {
+                    kind: WorkspaceActionKind::StopExecution,
+                    success: true,
+                    message: "Stopped current execution".to_string(),
+                },
+                Err(error) => NetEvent::WorkspaceActionFinished {
+                    kind: WorkspaceActionKind::StopExecution,
+                    success: false,
+                    message: error.to_string(),
+                },
+            };
+            let _ = tx.send(event);
+        });
     }
 
     pub(crate) async fn start_dev_server(&mut self) {
@@ -194,13 +194,11 @@ impl App {
                 let event = match api.start_dev_server(workspace_id).await {
                     Ok(()) => NetEvent::WorkspaceActionFinished {
                         kind: WorkspaceActionKind::StartDevServer,
-                        workspace_id: Some(workspace_id),
                         success: true,
                         message: "Started dev server".to_string(),
                     },
                     Err(error) => NetEvent::WorkspaceActionFinished {
                         kind: WorkspaceActionKind::StartDevServer,
-                        workspace_id: Some(workspace_id),
                         success: false,
                         message: error.to_string(),
                     },
@@ -224,13 +222,11 @@ impl App {
                 let event = match api.run_cleanup(workspace_id).await {
                     Ok(()) => NetEvent::WorkspaceActionFinished {
                         kind: WorkspaceActionKind::RunCleanup,
-                        workspace_id: Some(workspace_id),
                         success: true,
                         message: "Started cleanup script".to_string(),
                     },
                     Err(error) => NetEvent::WorkspaceActionFinished {
                         kind: WorkspaceActionKind::RunCleanup,
-                        workspace_id: Some(workspace_id),
                         success: false,
                         message: error.to_string(),
                     },
@@ -254,13 +250,11 @@ impl App {
                 let event = match api.open_editor(workspace_id).await {
                     Ok(()) => NetEvent::WorkspaceActionFinished {
                         kind: WorkspaceActionKind::OpenEditor,
-                        workspace_id: Some(workspace_id),
                         success: true,
                         message: "Requested editor open".to_string(),
                     },
                     Err(error) => NetEvent::WorkspaceActionFinished {
                         kind: WorkspaceActionKind::OpenEditor,
-                        workspace_id: Some(workspace_id),
                         success: false,
                         message: error.to_string(),
                     },

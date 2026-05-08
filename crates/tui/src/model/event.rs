@@ -16,7 +16,7 @@ use crate::model::{
 pub enum WorkspaceActionKind {
     TogglePinned,
     ToggleArchived,
-    StopWorkspace,
+    StopExecution,
     StartDevServer,
     RunCleanup,
     OpenEditor,
@@ -131,7 +131,6 @@ pub enum NetEvent {
     },
     WorkspaceActionFinished {
         kind: WorkspaceActionKind,
-        workspace_id: Option<Uuid>,
         success: bool,
         message: String,
     },

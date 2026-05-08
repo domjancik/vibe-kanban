@@ -75,6 +75,7 @@ pub(crate) struct ActionInFlightState {
     pub(crate) queue_mutation: bool,
     pub(crate) pin_toggle: bool,
     pub(crate) archive_toggle: bool,
+    pub(crate) stop_execution: bool,
     pub(crate) dev_server: bool,
     pub(crate) cleanup: bool,
     pub(crate) open_editor: bool,

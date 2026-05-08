@@ -42,6 +42,11 @@ impl Api {
         .await
     }
 
+    pub async fn stop_execution_process(&self, process_id: Uuid) -> Result<()> {
+        self.post_empty(&format!("/api/execution-processes/{process_id}/stop"))
+            .await
+    }
+
     pub fn load_queue_status(&self, session_id: Uuid, tx: UnboundedSender<NetEvent>) {
         let api = self.clone();
         tokio::spawn(async move {

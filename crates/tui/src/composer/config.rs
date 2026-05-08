@@ -9,6 +9,10 @@ use uuid::Uuid;
 use crate::app::{AgentPickerState, App};
 
 impl App {
+    fn executor_change_locked(&self) -> bool {
+        !self.creating_new_session && self.current_session().is_some()
+    }
+
     fn current_discovery_session_id(&self) -> Option<Uuid> {
         if self.creating_new_session {
             None
@@ -361,6 +365,11 @@ impl App {
     }
 
     pub(crate) async fn cycle_executor(&mut self) {
+        if self.executor_change_locked() {
+            self.status = "Executor cannot be changed for an existing session".to_string();
+            self.error = None;
+            return;
+        }
         let options = self.executor_options();
         if options.is_empty() {
             self.status = "Executor profiles are still loading".to_string();
@@ -489,6 +498,8 @@ impl App {
 mod tests {
     use std::collections::HashMap;
 
+    use chrono::{TimeZone, Utc};
+    use db::models::session::Session;
     use executors::{
         executor_discovery::ExecutorDiscoveredOptions,
         executors::BaseCodingAgent,
@@ -713,5 +724,55 @@ mod tests {
             }),
         ]);
         assert_eq!(selected, 2);
+    }
+
+    #[tokio::test]
+    async fn cycle_executor_is_blocked_for_existing_session() {
+        let mut app = test_app();
+        app.executor_profiles.executors = HashMap::from([
+            (
+                BaseCodingAgent::Codex,
+                ExecutorProfile {
+                    recently_used_models: None,
+                    configurations: HashMap::from([(
+                        "DEFAULT".to_string(),
+                        sample_agent(BaseCodingAgent::Codex),
+                    )]),
+                },
+            ),
+            (
+                BaseCodingAgent::ClaudeCode,
+                ExecutorProfile {
+                    recently_used_models: None,
+                    configurations: HashMap::from([(
+                        "DEFAULT".to_string(),
+                        sample_agent(BaseCodingAgent::ClaudeCode),
+                    )]),
+                },
+            ),
+        ]);
+        let session_id = uuid::Uuid::new_v4();
+        app.bundle.selected_session_id = Some(session_id);
+        app.bundle.sessions.push(Session {
+            id: session_id,
+            workspace_id: uuid::Uuid::new_v4(),
+            name: Some("Existing".to_string()),
+            executor: Some(BaseCodingAgent::Codex.to_string()),
+            agent_working_dir: None,
+            created_at: Utc.timestamp_opt(1, 0).unwrap(),
+            updated_at: Utc.timestamp_opt(1, 0).unwrap(),
+        });
+        app.composer_config = Some(ExecutorConfig::new(BaseCodingAgent::Codex));
+
+        app.cycle_executor().await;
+
+        assert_eq!(
+            app.composer_config.as_ref().map(|config| config.executor),
+            Some(BaseCodingAgent::Codex)
+        );
+        assert_eq!(
+            app.status,
+            "Executor cannot be changed for an existing session"
+        );
     }
 }

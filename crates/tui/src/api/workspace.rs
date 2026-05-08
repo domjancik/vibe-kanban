@@ -265,11 +265,6 @@ impl Api {
         Ok(())
     }
 
-    pub async fn stop_workspace(&self, workspace_id: Uuid) -> Result<()> {
-        self.post_empty(&format!("/api/workspaces/{workspace_id}/execution/stop"))
-            .await
-    }
-
     pub async fn start_dev_server(&self, workspace_id: Uuid) -> Result<()> {
         self.post_empty(&format!(
             "/api/workspaces/{workspace_id}/execution/dev-server/start"

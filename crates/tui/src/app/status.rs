@@ -14,6 +14,7 @@ impl App {
         let executor = config
             .map(|config| config.executor.to_string())
             .unwrap_or_else(|| "loading".to_string());
+        let executor_locked = !self.creating_new_session && self.current_session().is_some();
         let variant = config
             .map(|config| display_variant(config.variant.as_deref()).to_string())
             .unwrap_or_else(|| "loading".to_string());
@@ -37,6 +38,11 @@ impl App {
             Span::styled("E", shortcut_style),
             Span::styled("xec ", label_style),
             Span::styled(executor, Style::default().fg(Color::Cyan)),
+            if executor_locked {
+                Span::styled(" (locked)", Style::default().fg(Color::DarkGray))
+            } else {
+                Span::raw("")
+            },
             Span::raw("  "),
             Span::styled("V", shortcut_style),
             Span::styled("ar ", label_style),

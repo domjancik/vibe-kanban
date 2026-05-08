@@ -425,7 +425,6 @@ impl App {
             }
             NetEvent::WorkspaceActionFinished {
                 kind,
-                workspace_id,
                 success,
                 message,
             } => {
@@ -436,7 +435,10 @@ impl App {
                     WorkspaceActionKind::ToggleArchived => {
                         self.actions_in_flight.archive_toggle = false;
                     }
-                    WorkspaceActionKind::StopWorkspace | WorkspaceActionKind::StartDevServer => {
+                    WorkspaceActionKind::StopExecution => {
+                        self.actions_in_flight.stop_execution = false;
+                    }
+                    WorkspaceActionKind::StartDevServer => {
                         self.actions_in_flight.dev_server = false;
                     }
                     WorkspaceActionKind::RunCleanup => {
@@ -449,11 +451,6 @@ impl App {
                 if success {
                     self.status = message;
                     self.error = None;
-                    if matches!(kind, WorkspaceActionKind::StopWorkspace)
-                        && workspace_id == self.selected_workspace_id
-                    {
-                        self.refresh_queue_status();
-                    }
                 } else {
                     self.error = Some(message.clone());
                     self.status = message;
@@ -503,7 +500,7 @@ impl App {
             AppIntent::FocusNext => self.focus = next_focus(&self.focus),
             AppIntent::FocusPrev => self.focus = prev_focus(&self.focus),
             AppIntent::ShowHelp => {
-                self.status = "Keys: Tab focus, Ctrl+W maximize active panel, / search or filter, F workspace project filter, n/N next/prev chat match, [/ ] user turns, T compact tool runs, j/k nav, 1-6 panes, i edit, Enter open/send, r rename session, E executor, V variant, M model, R reasoning, A agent menu, P permission, p pin, x archive, n new session, s start dev, c cleanup, e editor, Esc/C-]/C-g leave terminal".to_string();
+                self.status = "Keys: Tab focus, Ctrl+W maximize active panel, / search or filter, F workspace project filter, n/N next/prev chat match, [/ ] user turns, T compact tool runs, j/k nav, 1-6 panes, i edit, Enter open/send, r rename session, E executor (new session only), V variant, M model, R reasoning, A agent menu, P permission, p pin, x archive, v stop execution, n new session, s start dev, c cleanup, e editor, Esc/C-]/C-g leave terminal".to_string();
             }
             AppIntent::OpenSearch => self.open_search(size),
             AppIntent::SelectPane(pane) => self.selected_pane = pane,
@@ -529,7 +526,7 @@ impl App {
             AppIntent::ToggleArchived => self.toggle_archived().await,
             AppIntent::StartDevServer => self.start_dev_server().await,
             AppIntent::RunCleanup => self.run_cleanup().await,
-            AppIntent::StopWorkspace => self.stop_workspace().await,
+            AppIntent::StopExecution => self.stop_current_execution().await,
             AppIntent::OpenEditor => self.open_editor().await,
             AppIntent::OpenSessionRename => self.open_session_rename(),
             AppIntent::CycleExecutor => self.cycle_executor().await,
@@ -680,11 +677,8 @@ impl App {
         let visible_lines = content_area.height.max(1) as usize;
         let requested_end_offset = self.chat_end_offset as usize;
         let cache = self.chat_render_cache(content_width);
-        let (clamped_end_offset, _, _, top_offset) = chat_window_bounds(
-            cache.lines.len(),
-            visible_lines,
-            requested_end_offset,
-        );
+        let (clamped_end_offset, _, _, top_offset) =
+            chat_window_bounds(cache.lines.len(), visible_lines, requested_end_offset);
 
         Some(ChatViewportMetrics {
             total_lines: cache.lines.len(),
