@@ -1,11 +1,19 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use db::models::workspace::WorkspaceWithStatus;
+use ratatui::layout::Rect;
 use uuid::Uuid;
 
 use crate::{
-    app::{App, SearchTarget},
+    app::{App, SearchTarget, WorkspaceProjectFilter, WorkspaceProjectFilterPickerState},
     model::workspace_title,
     workspace::WorkspaceRow,
 };
+
+#[derive(Clone)]
+pub(crate) struct WorkspaceProjectFilterOption {
+    pub(crate) value: WorkspaceProjectFilter,
+    pub(crate) label: String,
+}
 
 impl App {
     fn workspace_filter_query(&self) -> String {
@@ -31,12 +39,22 @@ impl App {
         self.all_workspaces()
             .into_iter()
             .filter(|workspace| {
+                if !self.workspace_matches_project_filters(workspace) {
+                    return false;
+                }
                 if filter.is_empty() {
                     return true;
                 }
                 let title = workspace_title(&workspace.workspace).to_lowercase();
                 let branch = workspace.branch.to_lowercase();
-                title.contains(&filter) || branch.contains(&filter)
+                let project = self
+                    .summaries
+                    .get(&workspace.id)
+                    .and_then(|summary| summary.project_name.as_deref())
+                    .unwrap_or("");
+                title.contains(&filter)
+                    || branch.contains(&filter)
+                    || project.to_lowercase().contains(&filter)
             })
             .collect()
     }
@@ -47,12 +65,22 @@ impl App {
             .archived_workspaces
             .values()
             .filter(|workspace| {
+                if !self.workspace_matches_project_filters(workspace) {
+                    return false;
+                }
                 if filter.is_empty() {
                     return true;
                 }
                 let title = workspace_title(&workspace.workspace).to_lowercase();
                 let branch = workspace.branch.to_lowercase();
-                title.contains(&filter) || branch.contains(&filter)
+                let project = self
+                    .summaries
+                    .get(&workspace.id)
+                    .and_then(|summary| summary.project_name.as_deref())
+                    .unwrap_or("");
+                title.contains(&filter)
+                    || branch.contains(&filter)
+                    || project.to_lowercase().contains(&filter)
             })
             .collect::<Vec<_>>();
         workspaces.sort_by(|left, right| {
@@ -62,6 +90,228 @@ impl App {
                 .then_with(|| right.created_at.cmp(&left.created_at))
         });
         workspaces
+    }
+
+    fn workspace_matches_project_filters(&self, workspace: &WorkspaceWithStatus) -> bool {
+        if self.workspace_project_filters.is_empty() {
+            return true;
+        }
+
+        let workspace_project = self
+            .summaries
+            .get(&workspace.id)
+            .and_then(|summary| summary.project_id)
+            .map(WorkspaceProjectFilter::Project)
+            .or_else(|| {
+                workspace
+                    .workspace
+                    .task_id
+                    .is_none()
+                    .then_some(WorkspaceProjectFilter::NoProject)
+            });
+
+        workspace_project
+            .as_ref()
+            .is_some_and(|project| self.workspace_project_filters.contains(project))
+    }
+
+    pub(crate) fn workspace_project_filter_options(&self) -> Vec<WorkspaceProjectFilterOption> {
+        let mut options = self
+            .active_workspaces
+            .values()
+            .chain(self.archived_workspaces.values())
+            .filter_map(|workspace| {
+                self.summaries
+                    .get(&workspace.id)
+                    .and_then(|summary| summary.project_id.zip(summary.project_name.clone()))
+            })
+            .collect::<std::collections::BTreeMap<_, _>>()
+            .into_iter()
+            .map(|(project_id, project_name)| WorkspaceProjectFilterOption {
+                value: WorkspaceProjectFilter::Project(project_id),
+                label: project_name,
+            })
+            .collect::<Vec<_>>();
+        options.sort_by(|left, right| left.label.cmp(&right.label));
+
+        let has_no_project = self
+            .active_workspaces
+            .values()
+            .chain(self.archived_workspaces.values())
+            .any(|workspace| workspace.workspace.task_id.is_none());
+        if has_no_project {
+            options.insert(
+                0,
+                WorkspaceProjectFilterOption {
+                    value: WorkspaceProjectFilter::NoProject,
+                    label: "No project".to_string(),
+                },
+            );
+        }
+        options
+    }
+
+    pub(crate) fn filtered_workspace_project_filter_options(
+        &self,
+    ) -> Vec<WorkspaceProjectFilterOption> {
+        let query = self
+            .workspace_project_filter_picker
+            .as_ref()
+            .map(|picker| picker.query.as_str())
+            .unwrap_or("");
+        self.workspace_project_filter_options()
+            .into_iter()
+            .filter(|option| crate::app::fuzzy_contains(query, &option.label))
+            .collect()
+    }
+
+    pub(crate) fn open_workspace_project_filter_picker(&mut self) {
+        let options = self.workspace_project_filter_options();
+        if options.is_empty() {
+            self.status = "No projects linked to workspaces".to_string();
+            return;
+        }
+        let mut picker = WorkspaceProjectFilterPickerState {
+            query: String::new(),
+            selected: 0,
+            staged_filters: self.workspace_project_filters.clone(),
+        };
+        if let Some(current) = picker.staged_filters.first()
+            && let Some(index) = options.iter().position(|option| &option.value == current)
+        {
+            picker.selected = index;
+        }
+        self.workspace_project_filter_picker = Some(picker);
+        self.status = "Filter workspaces by project".to_string();
+        self.error = None;
+    }
+
+    pub(crate) fn handle_workspace_project_filter_picker_key(&mut self, key: KeyEvent, size: Rect) {
+        let options_len = self.filtered_workspace_project_filter_options().len();
+        let Some(picker) = self.workspace_project_filter_picker.as_mut() else {
+            return;
+        };
+
+        match key {
+            KeyEvent {
+                code: KeyCode::Esc, ..
+            } => {
+                self.workspace_project_filter_picker = None;
+                self.status = "Closed project filter".to_string();
+            }
+            KeyEvent {
+                code: KeyCode::Enter,
+                ..
+            } => {
+                self.apply_workspace_project_filter(size);
+            }
+            KeyEvent {
+                code: KeyCode::Char(' '),
+                ..
+            } => {
+                self.toggle_workspace_project_filter_selection();
+            }
+            KeyEvent {
+                code: KeyCode::Backspace,
+                ..
+            } => {
+                if !picker.query.is_empty() {
+                    picker.query.pop();
+                    picker.selected = 0;
+                }
+            }
+            KeyEvent {
+                code: KeyCode::Char('j') | KeyCode::Down,
+                ..
+            } => {
+                if options_len > 0 {
+                    picker.selected = (picker.selected + 1).min(options_len.saturating_sub(1));
+                }
+            }
+            KeyEvent {
+                code: KeyCode::Char('k') | KeyCode::Up,
+                ..
+            } => {
+                picker.selected = picker.selected.saturating_sub(1);
+            }
+            KeyEvent {
+                code: KeyCode::PageDown,
+                ..
+            } => {
+                if options_len > 0 {
+                    picker.selected = (picker.selected + 8).min(options_len.saturating_sub(1));
+                }
+            }
+            KeyEvent {
+                code: KeyCode::PageUp,
+                ..
+            } => {
+                picker.selected = picker.selected.saturating_sub(8);
+            }
+            KeyEvent {
+                code: KeyCode::Home,
+                ..
+            } => picker.selected = 0,
+            KeyEvent {
+                code: KeyCode::End, ..
+            } => {
+                if options_len > 0 {
+                    picker.selected = options_len.saturating_sub(1);
+                }
+            }
+            KeyEvent {
+                code: KeyCode::Char(ch),
+                modifiers,
+                ..
+            } if !modifiers.contains(KeyModifiers::CONTROL)
+                && !modifiers.contains(KeyModifiers::ALT)
+                && !modifiers.contains(KeyModifiers::SUPER) =>
+            {
+                picker.query.push(ch);
+                picker.selected = 0;
+            }
+            _ => {}
+        }
+    }
+
+    fn toggle_workspace_project_filter_selection(&mut self) {
+        let options = self.filtered_workspace_project_filter_options();
+        let Some(picker) = self.workspace_project_filter_picker.as_mut() else {
+            return;
+        };
+        let Some(option) = options.get(picker.selected) else {
+            return;
+        };
+        if let Some(index) = picker
+            .staged_filters
+            .iter()
+            .position(|value| value == &option.value)
+        {
+            picker.staged_filters.remove(index);
+        } else {
+            picker.staged_filters.push(option.value.clone());
+        }
+    }
+
+    fn apply_workspace_project_filter(&mut self, size: Rect) {
+        let Some(picker) = self.workspace_project_filter_picker.take() else {
+            return;
+        };
+        let previous = self.selected_workspace_id;
+        self.workspace_project_filters = picker.staged_filters;
+        self.mark_workspace_list_dirty();
+        self.sync_workspace_selection_to_filter();
+        if self.selected_workspace_id != previous {
+            self.load_selected_workspace(size);
+        }
+        self.status = if self.workspace_project_filters.is_empty() {
+            "Workspace project filter cleared".to_string()
+        } else {
+            format!(
+                "Workspace project filters: {}",
+                self.workspace_project_filters.len()
+            )
+        };
     }
 
     pub(crate) fn workspace_rows(&self) -> Vec<WorkspaceRow<'_>> {
@@ -161,7 +411,7 @@ mod tests {
 
     use crate::{
         api::{Api, WorkspaceSubscriptions},
-        app::{App, SearchPromptState, SearchTarget},
+        app::{App, SearchPromptState, SearchTarget, WorkspaceProjectFilter},
         editor::ComposerEditorMode,
         model::{Focus, Pane, QueueStatus, WorkspaceBundle, WorkspaceSummary},
         workspace::WorkspaceRow,
@@ -186,6 +436,7 @@ mod tests {
             maximized_panel: false,
             show_archived: false,
             filter: String::new(),
+            workspace_project_filters: Vec::new(),
             session_filter: String::new(),
             workspace_list_revision: 0,
             detail_revision: 0,
@@ -229,6 +480,7 @@ mod tests {
             notes_edit_revision: 0,
             notes_save_in_flight: false,
             agent_picker: None,
+            workspace_project_filter_picker: None,
             session_rename: None,
             search_prompt: None,
             conversation_search: None,
@@ -268,6 +520,9 @@ mod tests {
     ) -> WorkspaceSummary {
         WorkspaceSummary {
             workspace_id,
+            project_id: None,
+            project_name: None,
+            remote_project_id: None,
             latest_session_id: None,
             has_pending_approval: pending,
             files_changed: None,
@@ -337,6 +592,76 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![archived_id]
         );
+    }
+
+    #[test]
+    fn workspace_rows_respect_project_filters() {
+        let mut app = test_app();
+        let alpha = workspace("alpha", false, false, 1);
+        let beta = workspace("beta", false, false, 2);
+        let orphan = workspace("orphan", false, false, 3);
+        let alpha_id = alpha.id;
+        let beta_id = beta.id;
+        let orphan_id = orphan.id;
+
+        app.active_workspaces.insert(alpha_id, alpha);
+        app.active_workspaces.insert(beta_id, beta);
+        let mut orphan_workspace = orphan;
+        orphan_workspace.workspace.task_id = None;
+        app.active_workspaces.insert(orphan_id, orphan_workspace);
+
+        let alpha_project = Uuid::new_v4();
+        let beta_project = Uuid::new_v4();
+        app.summaries.insert(
+            alpha_id,
+            WorkspaceSummary {
+                workspace_id: alpha_id,
+                project_id: Some(alpha_project),
+                project_name: Some("Alpha".to_string()),
+                remote_project_id: None,
+                latest_session_id: None,
+                has_pending_approval: false,
+                files_changed: None,
+                lines_added: None,
+                lines_removed: None,
+                latest_process_completed_at: None,
+                latest_process_status: None,
+                has_running_dev_server: false,
+                has_unseen_turns: false,
+                pr_status: None,
+                pr_number: None,
+                pr_url: None,
+            },
+        );
+        app.summaries.insert(
+            beta_id,
+            WorkspaceSummary {
+                workspace_id: beta_id,
+                project_id: Some(beta_project),
+                project_name: Some("Beta".to_string()),
+                remote_project_id: None,
+                latest_session_id: None,
+                has_pending_approval: false,
+                files_changed: None,
+                lines_added: None,
+                lines_removed: None,
+                latest_process_completed_at: None,
+                latest_process_status: None,
+                has_running_dev_server: false,
+                has_unseen_turns: false,
+                pr_status: None,
+                pr_number: None,
+                pr_url: None,
+            },
+        );
+
+        app.workspace_project_filters = vec![WorkspaceProjectFilter::Project(alpha_project)];
+        let visible = app.visible_workspace_ids();
+        assert_eq!(visible, vec![alpha_id]);
+
+        app.workspace_project_filters = vec![WorkspaceProjectFilter::NoProject];
+        let visible = app.visible_workspace_ids();
+        assert_eq!(visible, vec![orphan_id]);
     }
 
     #[test]

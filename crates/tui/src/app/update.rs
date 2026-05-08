@@ -488,7 +488,7 @@ impl App {
             AppIntent::FocusNext => self.focus = next_focus(&self.focus),
             AppIntent::FocusPrev => self.focus = prev_focus(&self.focus),
             AppIntent::ShowHelp => {
-                self.status = "Keys: Tab focus, Ctrl+W maximize active panel, / search or filter, n/N next/prev chat match, [/ ] user turns, T compact tool runs, j/k nav, 1-6 panes, i edit, Enter open/send, r rename session, E executor, V variant, M model, R reasoning, A agent menu, P permission, p pin, x archive, n new session, s start dev, c cleanup, e editor, Esc/C-]/C-g leave terminal".to_string();
+                self.status = "Keys: Tab focus, Ctrl+W maximize active panel, / search or filter, F workspace project filter, n/N next/prev chat match, [/ ] user turns, T compact tool runs, j/k nav, 1-6 panes, i edit, Enter open/send, r rename session, E executor, V variant, M model, R reasoning, A agent menu, P permission, p pin, x archive, n new session, s start dev, c cleanup, e editor, Esc/C-]/C-g leave terminal".to_string();
             }
             AppIntent::OpenSearch => self.open_search(size),
             AppIntent::SelectPane(pane) => self.selected_pane = pane,
@@ -496,6 +496,7 @@ impl App {
                 self.show_archived = !self.show_archived;
                 self.mark_workspace_list_dirty();
             }
+            AppIntent::OpenWorkspaceProjectFilter => self.open_workspace_project_filter_picker(),
             AppIntent::EnterEditMode => {
                 if matches!(self.selected_pane, Pane::Chat | Pane::Notes) {
                     self.focus = Focus::Composer;
@@ -626,6 +627,7 @@ mod tests {
             maximized_panel: false,
             show_archived: false,
             filter: String::new(),
+            workspace_project_filters: Vec::new(),
             session_filter: String::new(),
             workspace_list_revision: 0,
             detail_revision: 0,
@@ -671,6 +673,7 @@ mod tests {
             notes_edit_revision: 0,
             notes_save_in_flight: false,
             agent_picker: None,
+            workspace_project_filter_picker: None,
             session_rename: None,
             search_prompt: None,
             conversation_search: None,
@@ -1120,6 +1123,9 @@ mod tests {
         let workspace_id = Uuid::new_v4();
         let summary = WorkspaceSummary {
             workspace_id,
+            project_id: None,
+            project_name: None,
+            remote_project_id: None,
             latest_session_id: Some(Uuid::new_v4()),
             has_pending_approval: true,
             files_changed: Some(3),
@@ -1150,6 +1156,9 @@ mod tests {
         let workspace_id = Uuid::new_v4();
         let existing = WorkspaceSummary {
             workspace_id,
+            project_id: None,
+            project_name: None,
+            remote_project_id: None,
             latest_session_id: Some(Uuid::new_v4()),
             has_pending_approval: false,
             files_changed: Some(1),

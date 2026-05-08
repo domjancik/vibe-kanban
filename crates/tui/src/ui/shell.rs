@@ -53,6 +53,9 @@ impl App {
         if self.agent_picker.is_some() {
             self.render_agent_picker(frame, frame.area());
         }
+        if self.workspace_project_filter_picker.is_some() {
+            self.render_workspace_project_filter_picker(frame, frame.area());
+        }
     }
 
     fn header(&self) -> Paragraph<'_> {

@@ -29,6 +29,9 @@ pub struct WorkspaceStreamState {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct WorkspaceSummary {
     pub workspace_id: Uuid,
+    pub project_id: Option<Uuid>,
+    pub project_name: Option<String>,
+    pub remote_project_id: Option<Uuid>,
     pub latest_session_id: Option<Uuid>,
     pub has_pending_approval: bool,
     pub files_changed: Option<usize>,

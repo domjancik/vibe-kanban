@@ -21,6 +21,18 @@ pub(crate) struct AgentPickerState {
     pub(crate) selected: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum WorkspaceProjectFilter {
+    NoProject,
+    Project(Uuid),
+}
+
+pub(crate) struct WorkspaceProjectFilterPickerState {
+    pub(crate) query: String,
+    pub(crate) selected: usize,
+    pub(crate) staged_filters: Vec<WorkspaceProjectFilter>,
+}
+
 pub(crate) struct SessionRenameState {
     pub(crate) session_id: Uuid,
     pub(crate) name: String,
@@ -110,6 +122,7 @@ pub struct App {
     pub(crate) maximized_panel: bool,
     pub(crate) show_archived: bool,
     pub(crate) filter: String,
+    pub(crate) workspace_project_filters: Vec<WorkspaceProjectFilter>,
     pub(crate) session_filter: String,
     pub(crate) workspace_list_revision: u64,
     pub(crate) detail_revision: u64,
@@ -151,6 +164,7 @@ pub struct App {
     pub(crate) notes_edit_revision: u64,
     pub(crate) notes_save_in_flight: bool,
     pub(crate) agent_picker: Option<AgentPickerState>,
+    pub(crate) workspace_project_filter_picker: Option<WorkspaceProjectFilterPickerState>,
     pub(crate) session_rename: Option<SessionRenameState>,
     pub(crate) search_prompt: Option<SearchPromptState>,
     pub(crate) conversation_search: Option<ConversationSearchState>,
@@ -182,6 +196,7 @@ impl App {
             maximized_panel: false,
             show_archived: false,
             filter: String::new(),
+            workspace_project_filters: Vec::new(),
             session_filter: String::new(),
             workspace_list_revision: 0,
             detail_revision: 0,
@@ -225,6 +240,7 @@ impl App {
             notes_edit_revision: 0,
             notes_save_in_flight: false,
             agent_picker: None,
+            workspace_project_filter_picker: None,
             session_rename: None,
             search_prompt: None,
             conversation_search: None,

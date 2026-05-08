@@ -14,6 +14,7 @@ pub enum AppIntent {
     OpenSearch,
     SelectPane(Pane),
     ToggleShowArchived,
+    OpenWorkspaceProjectFilter,
     EnterEditMode,
     StartNewSession,
     TogglePinned,
@@ -111,6 +112,10 @@ pub fn map_app_key(
             code: KeyCode::Char('a'),
             ..
         } => Some(AppIntent::ToggleShowArchived),
+        KeyEvent {
+            code: KeyCode::Char('F'),
+            ..
+        } => Some(AppIntent::OpenWorkspaceProjectFilter),
         KeyEvent {
             code: KeyCode::Char('i'),
             ..

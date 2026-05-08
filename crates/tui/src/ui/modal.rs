@@ -87,4 +87,59 @@ impl App {
             &mut state,
         );
     }
+
+    pub(crate) fn render_workspace_project_filter_picker(&self, frame: &mut Frame, area: Rect) {
+        let Some(picker) = self.workspace_project_filter_picker.as_ref() else {
+            return;
+        };
+        let popup = centered_rect(72, 55, area);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(6)])
+            .split(popup);
+        let options = self.filtered_workspace_project_filter_options();
+        let selected = picker.selected.min(options.len().saturating_sub(1));
+        let items = options
+            .iter()
+            .map(|option| {
+                let selected_marker = if picker.staged_filters.contains(&option.value) {
+                    "[x]"
+                } else {
+                    "[ ]"
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(selected_marker, Style::default().fg(Color::Yellow)),
+                    Span::raw(" "),
+                    Span::styled(option.label.clone(), Style::default().fg(Color::LightBlue)),
+                ]))
+            })
+            .collect::<Vec<_>>();
+        let mut state = ListState::default().with_selected(Some(selected));
+        let title = if picker.staged_filters.is_empty() {
+            "Project Filter"
+        } else {
+            "Project Filter (active)"
+        };
+
+        frame.render_widget(Clear, popup);
+        frame.render_widget(panel_block(title, true), popup);
+        frame.render_widget(
+            Paragraph::new(format!("Search: {}", picker.query))
+                .block(panel_block("Filter", false))
+                .wrap(Wrap { trim: false }),
+            chunks[0],
+        );
+        frame.render_stateful_widget(
+            List::new(items)
+                .block(panel_block("Projects", false))
+                .highlight_style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .highlight_symbol(">> "),
+            chunks[1],
+            &mut state,
+        );
+    }
 }

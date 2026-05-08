@@ -5,7 +5,9 @@ use db::models::{
     coding_agent_turn::CodingAgentTurn,
     execution_process::{ExecutionProcess, ExecutionProcessStatus},
     merge::MergeStatus,
+    project::Project,
     pull_request::PullRequest,
+    task::Task,
     workspace::Workspace,
 };
 use deployment::Deployment;
@@ -26,6 +28,12 @@ pub struct WorkspaceSummaryRequest {
 #[derive(Debug, Serialize, TS)]
 pub struct WorkspaceSummary {
     pub workspace_id: Uuid,
+    /// Local project ID for this workspace's task, if linked
+    pub project_id: Option<Uuid>,
+    /// Local project name for this workspace's task, if linked
+    pub project_name: Option<String>,
+    /// Remote project ID, if the local project is linked to a remote project
+    pub remote_project_id: Option<Uuid>,
     /// Session ID of the latest execution process
     pub latest_session_id: Option<Uuid>,
     /// Is a tool approval currently pending?
@@ -89,6 +97,17 @@ pub async fn get_workspace_summaries(
         )));
     }
 
+    let tasks_by_id = Task::find_all(pool)
+        .await?
+        .into_iter()
+        .map(|task| (task.id, task))
+        .collect::<HashMap<_, _>>();
+    let projects_by_id = Project::find_all(pool)
+        .await?
+        .into_iter()
+        .map(|project| (project.id, project))
+        .collect::<HashMap<_, _>>();
+
     // 2. Fetch latest process info for workspaces with this archived status
     let latest_processes = ExecutionProcess::find_latest_for_workspaces(pool, archived).await?;
 
@@ -139,6 +158,10 @@ pub async fn get_workspace_summaries(
         .iter()
         .map(|ws| {
             let id = ws.id;
+            let project = ws
+                .task_id
+                .and_then(|task_id| tasks_by_id.get(&task_id))
+                .and_then(|task| projects_by_id.get(&task.project_id));
             let latest = latest_processes.get(&id);
             let has_pending = latest
                 .map(|p| pending_approval_eps.contains(&p.execution_process_id))
@@ -147,6 +170,9 @@ pub async fn get_workspace_summaries(
 
             WorkspaceSummary {
                 workspace_id: id,
+                project_id: project.map(|project| project.id),
+                project_name: project.map(|project| project.name.clone()),
+                remote_project_id: project.and_then(|project| project.remote_project_id),
                 latest_session_id: latest.map(|p| p.session_id),
                 has_pending_approval: has_pending,
                 files_changed: stats.map(|s| s.files_changed),

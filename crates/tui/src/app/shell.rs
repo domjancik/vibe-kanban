@@ -112,6 +112,10 @@ impl App {
             self.handle_agent_picker_key(key);
             return;
         }
+        if self.workspace_project_filter_picker.is_some() {
+            self.handle_workspace_project_filter_picker_key(key, size);
+            return;
+        }
         if self.session_rename.is_some() {
             self.handle_session_rename_key(key).await;
             return;
