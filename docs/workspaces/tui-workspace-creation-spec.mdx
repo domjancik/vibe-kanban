@@ -1,0 +1,802 @@
+---
+title: "TUI Workspace Creation Spec"
+description: "Detailed implementation specification for the Ratatui workspace creation flow"
+---
+
+# Ratatui Workspace Creation Flow
+
+This document specifies the correct terminal-native workspace creation flow for Vibe Kanban, based on the current web implementation and server behaviour.
+
+It is intentionally narrower than the main Workspaces TUI spec. This document focuses only on:
+
+- entering create mode
+- bootstrapping and restoring create state
+- selecting repositories and target branches
+- composing the initial prompt
+- choosing the executor
+- attaching files
+- creating and starting the workspace
+
+## Goals
+
+The TUI workspace creation flow should:
+
+- feel fast and keyboard-native
+- preserve partially completed drafts
+- support both standalone creation and issue-linked creation
+- reuse the existing scratch and workspace creation APIs
+- keep repository and branch selection explicit
+- avoid surprising state loss on navigation or restart
+
+## Non-goals
+
+The first version should not attempt to replicate every visual affordance from the web UI:
+
+- drag-and-drop attachments
+- WYSIWYG prompt editing parity
+- every dialog and picker exactly as rendered in React
+
+The TUI should preserve behaviour and state semantics, not component-level parity.
+
+## Existing implementation summary
+
+The current web flow is split across:
+
+- create-mode state bootstrap and persistence
+- repository and branch selection
+- create chat input and model selection
+- `createAndStartWorkspace`
+- optional post-create issue linking
+
+### Key client primitives
+
+- `CreateModeProvider`
+- `useCreateModeState`
+- `CreateChatBoxContainer`
+- `CreateModeRepoPickerBar`
+- `useCreateWorkspace`
+- `persistWorkspaceCreateDraft(...)`
+
+### Key server primitives
+
+- `POST /api/workspaces/start`
+- server-side draft scratch for `DRAFT_WORKSPACE`
+- optional issue attachment import during create
+- optional post-create workspace-to-issue linking
+
+## Current web flow review
+
+The TUI should preserve the behavioural shape of the current web flow because the existing implementation already encodes a few important product decisions.
+
+### Review findings
+
+- create mode is stateful and recoverable, not a fire-and-forget modal
+- repository selection is explicit and front-loaded before prompt submission
+- target branches are required per repo rather than inferred implicitly
+- issue-linked workspace creation is a seeded variant of the same flow, not a separate feature
+- workspace creation is a combined create-and-start mutation
+- issue linking after create is currently best-effort, not transactional
+
+### Web interaction pattern
+
+The current UI behaves like a two-stage composer:
+
+1. select repos and branches
+2. compose prompt, choose executor, attach files, and submit
+
+The TUI should keep that same coarse structure. It is simpler than a many-step wizard while still keeping repo selection explicit.
+
+## Current behavioural model
+
+## Create mode identity
+
+There are two creation entry patterns today:
+
+### Global or default draft
+
+Uses a fixed draft id:
+
+- `00000000-0000-0000-0000-000000000001`
+
+This is used for the main Workspaces create flow.
+
+### Project or issue-scoped draft
+
+Uses a generated draft id:
+
+- `crypto.randomUUID()`
+
+This is used when opening create mode from the Projects or Issue flows, then navigating to a workspace-create route containing the draft id.
+
+The TUI should preserve this distinction:
+
+- one stable default draft for ad hoc workspace creation
+- generated draft ids for project- and issue-seeded create flows
+
+## Bootstrap precedence
+
+The current implementation resolves create-mode state in this order:
+
+1. explicit seed state
+2. persisted `DRAFT_WORKSPACE` scratch
+3. fresh defaults from user config
+
+The TUI should preserve that exact precedence.
+
+### Seed state may include
+
+- initial prompt
+- preferred repos and target branches
+- linked issue
+- executor config
+
+### Scratch state may include
+
+- prompt text
+- repos and target branches
+- linked issue
+- executor config
+- attachments
+
+## Data model
+
+The TUI create flow should expose this logical draft state:
+
+```ts
+type WorkspaceCreateDraft = {
+  phase: 'loading' | 'ready' | 'error';
+  message: string;
+  repos: Array<{
+    repo: Repo;
+    targetBranch: string | null;
+  }>;
+  linkedIssue: {
+    issueId: string;
+    simpleId?: string;
+    title?: string;
+    remoteProjectId: string;
+  } | null;
+  executorConfig: ExecutorConfig | null;
+  attachments: DraftWorkspaceAttachment[];
+  error: string | null;
+};
+```
+
+## TUI route model
+
+The TUI should support these creation entry contexts:
+
+- `Workspaces -> New Workspace`
+- `Projects -> Create Workspace from Project`
+- `Issue -> Create Workspace from Issue`
+- `PR or linked action -> Create Workspace from seeded state`
+
+Internally, these all resolve to the same creation engine with different seed state and draft id.
+
+## UX model
+
+## High-level phases
+
+The creation flow should be modelled as a compact staged process:
+
+1. draft bootstrap
+2. repository and branch selection
+3. prompt and executor composition
+4. submit
+
+Internally, repository and branch selection can still use separate pickers, but they should feel like one stage to the user.
+
+The user should be able to move backwards without losing draft state.
+
+## TUI state machine
+
+The TUI implementation should use an explicit state machine instead of a loose collection of booleans.
+
+```rust
+enum WorkspaceCreateStage {
+    Bootstrapping,
+    SelectingRepos,
+    Composing,
+    Submitting,
+    Created,
+    FatalError,
+}
+```
+
+### Transition rules
+
+- `Bootstrapping -> SelectingRepos` when no repos are currently selected
+- `Bootstrapping -> Composing` when restored or seeded repos are already complete
+- `SelectingRepos -> Composing` when at least one repo exists and every repo has a branch
+- `Composing -> SelectingRepos` when the user edits repo selection
+- `Composing -> Submitting` only after local validation succeeds
+- `Submitting -> Created` on successful create/start
+- `Submitting -> Composing` on recoverable server failure
+- any stage -> `FatalError` only for unrecoverable bootstrap failure
+
+Fatal bootstrap errors should be rare. Missing repos, missing branches, invalid executor configuration, and scratch deserialisation failures should degrade into recoverable state rather than ejecting the user from the flow.
+
+## Recommended layout
+
+### Wide terminals
+
+For terminals `>= 140` columns:
+
+- left: selected repositories and branch state
+- centre: prompt composer
+- right: executor summary, linked issue, attachments, and submit status
+
+### Medium terminals
+
+For terminals `< 140` columns:
+
+- top: step header
+- body: current step content
+- footer: shared actions
+
+### Narrow terminals
+
+For terminals `< 110` columns:
+
+- single-step full-screen flow
+- explicit next and back actions
+
+## Step 1: bootstrap and restore
+
+When create mode opens, the TUI should:
+
+1. resolve seed state
+2. load `DRAFT_WORKSPACE` scratch for the correct draft id
+3. validate executor config against available profiles
+4. restore repos if they still exist
+5. restore linked issue metadata
+6. restore attachments
+
+### Recommended bootstrap requests
+
+The bootstrap stage should fetch or derive:
+
+- draft scratch payload for the active draft id
+- recent repos
+- default executor profile
+- existing repo details for restored repo ids
+- linked issue metadata when seeded from issue context
+- repo defaults from linked project or prior workspace when available
+
+### Executor validation
+
+The current flow only restores an executor config if the profile still exists.
+
+The TUI should do the same:
+
+- if valid, restore it
+- if invalid, drop it and fall back to user default
+
+Do not keep a stale executor variant in draft state.
+
+## Step 2: repository selection
+
+The current web flow makes repository selection explicit and forces branch selection per repo.
+
+The TUI should expose these acquisition paths:
+
+- choose from recent repositories
+- browse for a repo on disk
+- create a new repository on disk
+
+### Required backend primitives
+
+- `repoApi.listRecent()`
+- `repoApi.register({ path })`
+- `repoApi.init({ parent_path, folder_name })`
+
+### Required behaviour
+
+- prevent duplicate repo selection
+- show selected repos immediately
+- stay in the repo stage until every selected repo has a branch
+
+### Terminal UX recommendation
+
+Use a split list:
+
+- left pane: repo source list or repo actions
+- right pane: selected repos with branch state
+
+The selected-repo pane should support:
+
+- `Enter` to change branch
+- `d` or `Backspace` to remove repo
+- `c` to clear all repos
+- inline warning styling for rows missing branches
+
+### Recommendation
+
+Keep repo picking and branch picking coupled:
+
+- when a repo is added, immediately require branch selection
+
+This mirrors the current flow and avoids hidden incomplete repo state.
+
+## Step 3: target branch selection
+
+Each selected repo must have a target branch before submit is enabled.
+
+### Required backend primitive
+
+- `repoApi.getBranches(repo.id)`
+
+### UX rules
+
+- branch selection is required, not optional
+- branch state is shown inline with each repo
+- missing branches block submit
+- branch changes are independent per repo
+
+### Validation rule
+
+The create action must remain disabled until every selected repo has a target branch.
+
+## Step 4: prompt composition
+
+Once at least one repo exists, the user enters the composition step.
+
+### Prompt editor
+
+The TUI should use a plain-text or markdown-capable editor, not a rich text editor.
+
+Required behaviour:
+
+- restore draft prompt
+- autosave to `DRAFT_WORKSPACE`
+- preserve attachments as logical references
+- support multiline input
+
+### Immediate feedback while composing
+
+The compose stage should always render:
+
+- current repo count
+- per-repo branch summary
+- active executor summary
+- linked issue summary if present
+- attachment count
+- validation state for submit readiness
+
+This avoids the web problem space where important create preconditions can end up visually distant from the composer.
+
+### Linked issue display
+
+If the create flow is issue-seeded, the TUI should show:
+
+- issue simple id when known
+- issue title when known
+- clear or unlink action when the flow allows it
+
+If linked issue metadata is incomplete on bootstrap, the TUI may lazily resolve it using existing project issue data just as the web flow does.
+
+## Step 5: executor selection
+
+The executor selection flow should reuse the existing executor-config model.
+
+### Inputs
+
+- available executors from profiles
+- variants per executor
+- default user-configured executor profile
+- draft-restored executor config
+
+### Behaviour
+
+- if draft config is valid, use it
+- else if preferred config exists from recent workspace defaults, use it
+- else use configured default
+
+### TUI controls
+
+At minimum support:
+
+- executor picker
+- variant picker
+- advanced settings handoff
+
+Advanced agent configuration editing should hand off to the settings flow rather than duplicating full agent configuration inside create mode.
+
+## Attachments
+
+The current create flow supports attachments and can also import issue attachments during server-side create.
+
+### Client-side draft attachments
+
+The TUI should support:
+
+- adding local files
+- listing attached files
+- removing attached files before submit
+
+### TUI flow for file attachment
+
+The first version should prefer deterministic file-picking flows:
+
+- attach from explicit filesystem path input
+- attach from a file browser panel if the TUI already has one
+- reject directories unless the backend already supports them
+
+Do not spec drag-and-drop or shell paste detection into the first implementation.
+
+### Submit payload
+
+The client sends attachment ids with create request:
+
+- `attachment_ids`
+
+### Issue attachment import
+
+If `linked_issue` is present, the server may import issue attachments and rewrite attachment markdown to workspace attachment paths.
+
+This is server-owned behaviour and should remain there. The TUI should not try to replicate attachment import logic locally.
+
+## Defaults and auto-seeding
+
+The current implementation seeds repos from multiple sources:
+
+- linked issue project repo defaults
+- recent workspace defaults
+- stored per-project repo defaults
+
+The TUI should preserve the same principle:
+
+- defaults should help, but never hide current draft state
+
+### Ordering rule
+
+Recommended precedence for initial repo defaults:
+
+1. explicit draft repos
+2. linked project repo defaults
+3. recent workspace defaults
+
+The TUI should apply defaults only when the repo list is still empty.
+
+## Draft persistence
+
+The workspace creation flow must persist draft state.
+
+### Backing storage
+
+Reuse existing `DRAFT_WORKSPACE` scratch storage.
+
+For local runtime:
+
+- server-backed scratch API and websocket stream
+
+For remote runtime:
+
+- localStorage scratch fallback
+
+### Debounce
+
+Preserve current semantics:
+
+- immediate local updates
+- debounced persistence around `500ms`
+
+### What must be persisted
+
+- message
+- repos and target branches
+- executor config
+- linked issue
+- attachments
+
+### When draft should be cleared
+
+Clear the draft after successful creation and navigation to the created workspace.
+
+Do not clear on:
+
+- validation failure
+- creation error
+- user navigating backwards within the flow
+
+## Submit flow
+
+The client should build a `CreateAndStartWorkspaceRequest` with:
+
+- `executor_config`
+- `name` derived from prompt title
+- `prompt`
+- `repos`
+- `linked_issue`
+- `attachment_ids`
+
+### Request path
+
+- `POST /api/workspaces/start`
+
+### Current server behaviour
+
+The server:
+
+1. validates prompt is non-empty
+2. validates at least one repo exists
+3. creates workspace record
+4. creates worktree and adds repositories
+5. associates attachments
+6. optionally imports linked-issue attachments
+7. starts the workspace execution immediately
+
+The TUI should assume create is a combined “create and start” operation, not a dry record-creation step.
+
+### Immediate post-submit behaviour
+
+Once submit begins, the TUI should:
+
+1. freeze duplicate submits
+2. keep the composed prompt visible
+3. show a create/start progress indicator
+4. preserve the draft until the server confirms success
+5. navigate directly into the created workspace once the server returns the workspace id
+
+If the create request fails, the TUI should drop back to compose state with all user-entered data intact.
+
+## Post-create linking
+
+The current client performs issue linking after successful workspace creation.
+
+### Current flow
+
+1. create workspace via `/api/workspaces/start`
+2. if `linkToIssue` exists, call `workspacesApi.linkToIssue(...)`
+
+### TUI recommendation
+
+Preserve that model for now:
+
+- create/start remains primary mutation
+- issue link remains best-effort post-create mutation
+
+### UX requirement
+
+If workspace creation succeeds but issue linking fails:
+
+- still navigate to the created workspace
+- show a warning toast or banner
+- do not present the whole create flow as failed
+
+## Validation model
+
+The TUI should validate before submit:
+
+- at least one repo selected
+- every selected repo has a branch
+- prompt is non-empty
+- executor is selected
+
+### Error presentation
+
+Errors should be local and specific:
+
+- `Add at least one repository`
+- `Select a branch for every repository`
+- `Enter a prompt`
+- `Choose an executor`
+
+Do not wait for server rejection when these can be validated client-side.
+
+## Navigation behaviour
+
+### Entering create mode
+
+When entering create mode:
+
+- focus the first incomplete step
+- if repos are unresolved, start on repo step
+- if repos are ready, open prompt step
+
+This mirrors the current web behaviour where the initial step depends on whether repos already exist in restored state.
+
+### Exiting create mode
+
+On exit:
+
+- keep draft by default
+- only discard via explicit user action
+
+### Successful creation
+
+On success:
+
+- clear attachments local cache
+- clear `DRAFT_WORKSPACE`
+- navigate to new workspace
+
+### Resume behaviour
+
+If the user re-enters create mode while a draft exists, the TUI should:
+
+- restore the draft automatically for the default create flow
+- restore the draft tied to the route draft id for issue- or project-seeded flows
+- show a lightweight restored-draft notice without forcing a modal
+
+Do not require an explicit “resume draft?” confirmation unless the product later adds multiple saved drafts for the same entry context.
+
+## TUI command palette support
+
+The create flow should expose these command palette actions:
+
+- `New Workspace`
+- `Add Repository`
+- `Browse Repository`
+- `Create Repository`
+- `Change Target Branch`
+- `Clear Selected Repositories`
+- `Select Executor`
+- `Create Workspace`
+- `Discard Workspace Draft`
+
+## Rust architecture
+
+This flow should live inside the same `crates/tui` crate proposed by the broader TUI specs.
+
+### Suggested module structure
+
+```text
+crates/tui/src/workspace_create/
+  mod.rs
+  state.rs
+  actions.rs
+  bootstrap.rs
+  persistence.rs
+  repo_picker.rs
+  branch_picker.rs
+  composer.rs
+  submit.rs
+  validation.rs
+  view.rs
+```
+
+### Top-level state
+
+- draft id
+- bootstrap source
+- repos
+- target branches
+- prompt
+- linked issue
+- executor config
+- attachments
+- current step
+- validation errors
+- submit status
+
+## Rendering guidance
+
+## Repository step
+
+Show:
+
+- selected repos with branches
+- add, browse, create actions
+- clear remove actions
+
+Highlight incomplete rows where branch is missing.
+
+## Prompt step
+
+Show:
+
+- prompt editor
+- repo summary
+- linked issue summary
+- attachment summary
+- executor and variant summary
+- create action
+
+## Footer actions
+
+Use stable footer actions:
+
+- `Back`
+- `Next`
+- `Create`
+- `Discard`
+
+The available actions should depend on current step and validation state.
+
+## Error and retry behaviour
+
+### Client-side failures
+
+- draft persistence failure should not block local editing
+- repo browse failure should keep current selections intact
+
+### Server-side failures
+
+- create/start failure should preserve the draft
+- post-create issue-link failure should not destroy success state
+
+### Recovery
+
+After a failed submit, the TUI should:
+
+- keep all entered data
+- focus the first actionable error if validation failed
+- otherwise keep focus on submit status and allow retry
+
+## Background work and latency
+
+The create flow should remain responsive while:
+
+- loading repos
+- loading branches
+- resolving linked issue metadata
+- fetching default repo selections
+
+Use per-step loading indicators rather than blocking the entire create flow unless bootstrap itself is incomplete.
+
+## Backend gaps and recommendations
+
+The current primitives are sufficient for a first TUI implementation, but a few additions would improve it.
+
+### Recommended additions
+
+1. Add a single bootstrap endpoint for workspace creation that returns:
+   - available repos
+   - recent repos
+   - default executor profile
+   - project repo defaults when linked issue is present
+
+2. Add a typed validation or dry-run endpoint if future create rules become more complex.
+
+3. Consider folding issue-link creation into `/api/workspaces/start` if partial-success UX around post-create linking becomes a recurring problem.
+
+4. Consider adding an endpoint that returns branch options for multiple repos in one request to reduce picker latency in multi-repo create flows.
+
+## Testing strategy
+
+## Unit tests
+
+- bootstrap precedence
+- repo deduplication
+- branch validation
+- executor fallback selection
+- draft persistence payload generation
+- submit payload generation
+
+## Integration tests
+
+- restore draft and continue creating
+- create from issue-seeded state
+- create with attachments
+- create workspace successfully and clear draft
+- create succeeds but issue linking fails
+
+## Snapshot tests
+
+Use Ratatui buffer snapshots for:
+
+- repo selection step
+- branch-missing validation state
+- prompt step with linked issue
+- submit-in-progress state
+- narrow-screen flow
+
+## Success criteria
+
+The design is successful if:
+
+- a user can create a workspace entirely from the terminal without guessing hidden state
+- draft recovery is reliable
+- repo and branch selection are explicit and safe
+- issue-linked create flows work without becoming a separate codepath
+- successful creation transitions directly into the created workspace with minimal latency
+
+## Recommended implementation order
+
+1. Implement draft bootstrap, persistence, and validation in isolation.
+2. Implement repo selection and branch picking.
+3. Implement compose stage with executor picker and attachment list.
+4. Wire create/start mutation and post-create navigation.
+5. Add issue-seeded create flow and linked-issue restoration.
+6. Add project defaults and recent-workspace defaults.

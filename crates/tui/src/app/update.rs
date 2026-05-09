@@ -617,8 +617,8 @@ impl App {
             return;
         };
         let cache = self.chat_render_cache(metrics.content_width);
-        let restored_top_offset = find_chat_anchor_top_offset(&cache.lines, &anchor)
-            .unwrap_or(anchor.top_offset);
+        let restored_top_offset =
+            find_chat_anchor_top_offset(&cache.lines, &anchor).unwrap_or(anchor.top_offset);
         self.chat_end_offset = metrics
             .total_lines
             .saturating_sub(metrics.visible_lines.saturating_add(restored_top_offset))
