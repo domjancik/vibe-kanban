@@ -1,15 +1,19 @@
 use std::collections::HashMap;
 
 use db::models::{
-    execution_process::ExecutionProcess, scratch::DraftFollowUpData, session::Session,
-    workspace::Workspace, workspace_repo::RepoWithTargetBranch,
+    execution_process::ExecutionProcess,
+    repo::Repo,
+    scratch::{DraftFollowUpData, DraftWorkspaceData},
+    session::Session,
+    workspace::Workspace,
+    workspace_repo::RepoWithTargetBranch,
 };
 use executors::{executor_discovery::ExecutorDiscoveredOptions, executors::BaseCodingAgent};
 use uuid::Uuid;
 
 use crate::model::{
-    LocalDiff, PatchType, QueueStatus, RepoBranchStatus, UserSystemInfo, WorkspaceStreamState,
-    WorkspaceSummary,
+    GitBranch, LocalDiff, PatchType, QueueStatus, RepoBranchStatus, UserSystemInfo,
+    WorkspaceStreamState, WorkspaceSummary,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +79,29 @@ pub enum NetEvent {
     DraftLoaded {
         scratch_id: Uuid,
         draft: Option<DraftFollowUpData>,
+    },
+    WorkspaceCreateReposLoaded {
+        repos: Vec<Repo>,
+    },
+    WorkspaceCreateDraftLoaded {
+        draft: Option<DraftWorkspaceData>,
+    },
+    WorkspaceCreateDraftSaved {
+        revision: u64,
+    },
+    WorkspaceCreateDraftSaveFailed {
+        revision: u64,
+        message: String,
+    },
+    WorkspaceCreateBranchesLoaded {
+        repo_id: Uuid,
+        branches: Vec<GitBranch>,
+    },
+    WorkspaceCreateSubmitted {
+        workspace: Workspace,
+    },
+    WorkspaceCreateSubmitFailed {
+        message: String,
     },
     DraftSaved {
         scratch_id: Uuid,

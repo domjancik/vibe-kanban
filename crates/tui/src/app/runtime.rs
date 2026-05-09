@@ -9,11 +9,15 @@ use crate::{
     conversation::render_log_entry,
     model::{Focus, NetEvent, Pane},
     ui::terminal_content_area,
-    workspace::session_target,
+    workspace::{WorkspaceRow, session_target},
 };
 
 impl App {
     pub(crate) async fn submit_prompt(&mut self) {
+        if self.creating_workspace {
+            self.submit_workspace_create().await;
+            return;
+        }
         let Some(workspace_id) = self.selected_workspace_id else {
             self.status = "No workspace selected".to_string();
             return;
@@ -139,7 +143,35 @@ impl App {
     pub(crate) async fn handle_enter(&mut self, size: Rect) {
         match self.focus {
             Focus::WorkspaceList => {
-                self.ensure_workspace_selected(size);
+                let rows = self.workspace_rows();
+                let selected_index = if self.creating_workspace {
+                    rows.iter()
+                        .position(|row| matches!(row, WorkspaceRow::NewWorkspace))
+                        .unwrap_or(0)
+                } else {
+                    self.selected_workspace_id
+                        .and_then(|selected_id| {
+                            rows.iter().position(|row| match row {
+                                WorkspaceRow::NewWorkspace | WorkspaceRow::Header(_) => false,
+                                WorkspaceRow::Workspace(workspace) => workspace.id == selected_id,
+                            })
+                        })
+                        .unwrap_or(0)
+                };
+                let target = rows.get(selected_index).map(|row| match row {
+                    WorkspaceRow::NewWorkspace => None,
+                    WorkspaceRow::Header(_) => None,
+                    WorkspaceRow::Workspace(workspace) => Some(workspace.id),
+                });
+                match target {
+                    Some(None) => self.enter_workspace_create_mode(),
+                    Some(Some(workspace_id)) => {
+                        self.creating_workspace = false;
+                        self.selected_workspace_id = Some(workspace_id);
+                        self.ensure_workspace_selected(size);
+                    }
+                    _ => {}
+                }
             }
             Focus::Main => {
                 if self.selected_pane == Pane::Terminal {
@@ -155,20 +187,62 @@ impl App {
     pub(crate) fn move_selection(&mut self, delta: i32, size: Rect) {
         match self.focus {
             Focus::WorkspaceList => {
-                let ids = self.visible_workspace_ids();
-                if ids.is_empty() {
+                let rows = self.workspace_rows();
+                let selectable = rows
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, row)| match row {
+                        WorkspaceRow::NewWorkspace | WorkspaceRow::Workspace(_) => Some(index),
+                        WorkspaceRow::Header(_) => None,
+                    })
+                    .collect::<Vec<_>>();
+                if selectable.is_empty() {
                     return;
                 }
-                let current_index = self
-                    .selected_workspace_id
-                    .and_then(|id| ids.iter().position(|candidate| *candidate == id))
+                let current_row_index = if self.creating_workspace {
+                    rows.iter()
+                        .position(|row| matches!(row, WorkspaceRow::NewWorkspace))
+                        .unwrap_or(selectable[0])
+                } else {
+                    self.selected_workspace_id
+                        .and_then(|id| {
+                            rows.iter().position(|row| match row {
+                                WorkspaceRow::NewWorkspace | WorkspaceRow::Header(_) => false,
+                                WorkspaceRow::Workspace(workspace) => workspace.id == id,
+                            })
+                        })
+                        .unwrap_or(selectable[0])
+                };
+                let current_index = selectable
+                    .iter()
+                    .position(|index| *index == current_row_index)
                     .unwrap_or(0) as i32;
-                let next_index =
-                    (current_index + delta).clamp(0, ids.len().saturating_sub(1) as i32) as usize;
-                self.selected_workspace_id = Some(ids[next_index]);
-                self.load_selected_workspace(size);
+                let next_index = (current_index + delta)
+                    .clamp(0, selectable.len().saturating_sub(1) as i32)
+                    as usize;
+                let next_row = rows.get(selectable[next_index]).map(|row| match row {
+                    WorkspaceRow::NewWorkspace => None,
+                    WorkspaceRow::Header(_) => None,
+                    WorkspaceRow::Workspace(workspace) => Some(workspace.id),
+                });
+                match next_row {
+                    Some(None) => {
+                        self.enter_workspace_create_mode();
+                    }
+                    Some(Some(workspace_id)) => {
+                        self.creating_workspace = false;
+                        self.selected_workspace_id = Some(workspace_id);
+                        self.mark_workspace_list_dirty();
+                        self.load_selected_workspace(size);
+                    }
+                    _ => {}
+                }
             }
             Focus::Detail => match self.selected_pane {
+                Pane::Chat if self.creating_workspace => {
+                    self.move_workspace_create_selection(delta);
+                    self.mark_detail_dirty();
+                }
                 Pane::Chat | Pane::Logs => {
                     let rows = self.session_rows();
                     if rows.is_empty() {
@@ -221,18 +295,52 @@ impl App {
     pub(crate) fn jump_to_boundary(&mut self, to_end: bool, size: Rect) {
         match self.focus {
             Focus::WorkspaceList => {
-                let ids = self.visible_workspace_ids();
-                if ids.is_empty() {
+                let rows = self.workspace_rows();
+                let selectable = rows
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, row)| match row {
+                        WorkspaceRow::NewWorkspace | WorkspaceRow::Workspace(_) => Some(index),
+                        WorkspaceRow::Header(_) => None,
+                    })
+                    .collect::<Vec<_>>();
+                if selectable.is_empty() {
                     return;
                 }
-                self.selected_workspace_id = Some(if to_end {
-                    *ids.last().unwrap_or(&ids[0])
+                let row_index = if to_end {
+                    *selectable.last().unwrap_or(&selectable[0])
                 } else {
-                    ids[0]
+                    selectable[0]
+                };
+                let row_target = rows.get(row_index).map(|row| match row {
+                    WorkspaceRow::NewWorkspace => None,
+                    WorkspaceRow::Header(_) => None,
+                    WorkspaceRow::Workspace(workspace) => Some(workspace.id),
                 });
-                self.load_selected_workspace(size);
+                match row_target {
+                    Some(None) => self.enter_workspace_create_mode(),
+                    Some(Some(workspace_id)) => {
+                        self.creating_workspace = false;
+                        self.selected_workspace_id = Some(workspace_id);
+                        self.mark_workspace_list_dirty();
+                        self.load_selected_workspace(size);
+                    }
+                    _ => {}
+                }
             }
             Focus::Detail => match self.selected_pane {
+                Pane::Chat if self.creating_workspace => {
+                    if let Some(state) = self.workspace_create.as_mut()
+                        && !state.selected_repos.is_empty()
+                    {
+                        state.selected_repo_index = if to_end {
+                            state.selected_repos.len().saturating_sub(1)
+                        } else {
+                            0
+                        };
+                        self.mark_detail_dirty();
+                    }
+                }
                 Pane::Chat | Pane::Logs => {
                     let rows = self.session_rows();
                     if rows.is_empty() {

@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use db::models::scratch::DraftFollowUpData;
+use db::models::scratch::{DraftFollowUpData, DraftWorkspaceData, DraftWorkspaceRepo};
 use executors::{executors::BaseCodingAgent, profile::ExecutorConfig};
 use uuid::Uuid;
 
@@ -12,6 +12,58 @@ use crate::{
 
 impl App {
     pub(crate) async fn flush_draft_if_needed(&mut self) -> bool {
+        if self.creating_workspace {
+            if !self.composer_dirty || self.draft_save_in_flight {
+                return false;
+            }
+            let Some(last_edit) = self.last_composer_edit else {
+                return false;
+            };
+            if last_edit.elapsed() < std::time::Duration::from_millis(500) {
+                return false;
+            }
+            let Some(executor_config) = self.composer_config.clone() else {
+                return false;
+            };
+            self.draft_save_in_flight = true;
+            let api = self.api.clone();
+            let tx = self.tx.clone();
+            let draft = DraftWorkspaceData {
+                message: self.composer.clone(),
+                repos: self
+                    .workspace_create
+                    .as_ref()
+                    .map(|state| {
+                        state
+                            .selected_repos
+                            .iter()
+                            .map(|entry| DraftWorkspaceRepo {
+                                repo_id: entry.repo.id,
+                                target_branch: entry.target_branch.clone(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                executor_config: Some(executor_config),
+                linked_issue: None,
+                attachments: Vec::new(),
+            };
+            let revision = self.composer_edit_revision;
+            tokio::spawn(async move {
+                match api.save_workspace_create_draft(draft).await {
+                    Ok(()) => {
+                        let _ = tx.send(NetEvent::WorkspaceCreateDraftSaved { revision });
+                    }
+                    Err(error) => {
+                        let _ = tx.send(NetEvent::WorkspaceCreateDraftSaveFailed {
+                            revision,
+                            message: error.to_string(),
+                        });
+                    }
+                }
+            });
+            return true;
+        }
         let Some(scratch_id) = self.current_composer_scratch_id() else {
             let changed = self.composer_dirty
                 || self.draft_save_in_flight
@@ -69,6 +121,9 @@ impl App {
     }
 
     pub(crate) fn current_composer_scratch_id(&self) -> Option<Uuid> {
+        if self.creating_workspace {
+            return None;
+        }
         if self.creating_new_session {
             self.selected_workspace_id
         } else {
@@ -77,6 +132,9 @@ impl App {
     }
 
     pub(crate) fn current_queue_session_id(&self) -> Option<Uuid> {
+        if self.creating_workspace {
+            return None;
+        }
         if self.creating_new_session {
             None
         } else {
@@ -85,6 +143,11 @@ impl App {
     }
 
     pub(crate) fn sync_composer_context(&mut self) {
+        if self.creating_workspace {
+            self.queue_status = QueueStatus::Empty;
+            self.queue_pending = false;
+            return;
+        }
         let current_scope: Option<ConversationScope> = self.current_conversation_scope();
         let optimistic_before = self.optimistic_entries.len();
         self.optimistic_entries
@@ -136,7 +199,7 @@ impl App {
     }
 
     pub(crate) fn sync_composer_executor_with_session(&mut self) {
-        if self.creating_new_session {
+        if self.creating_new_session || self.creating_workspace {
             return;
         }
         if self.composer_dirty || !self.composer.is_empty() || self.is_queue_present() {
@@ -257,6 +320,23 @@ impl App {
         self.composer_dirty = false;
         self.last_composer_edit = None;
         self.composer_queue_conflict = false;
+        if self.creating_workspace {
+            if let Some(state) = self.workspace_create.as_mut() {
+                state.selected_repos.clear();
+                state.selected_repo_index = 0;
+            }
+            match self.api.clear_workspace_create_draft().await {
+                Ok(()) => {
+                    self.status = "Discarded workspace draft".to_string();
+                    self.error = None;
+                }
+                Err(error) => {
+                    self.error = Some(error.to_string());
+                    self.status = error.to_string();
+                }
+            }
+            return;
+        }
         if let Some(scratch_id) = self.current_composer_scratch_id() {
             self.actions_in_flight.queue_mutation = true;
             self.status = "Discarding follow-up draft".to_string();

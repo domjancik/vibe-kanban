@@ -18,6 +18,7 @@ use self::transport::{log_api, parse_api_response};
 use crate::model::{NetEvent, UserSystemInfo};
 
 pub(crate) const SCRATCH_TYPE_DRAFT_FOLLOW_UP: &str = "DRAFT_FOLLOW_UP";
+pub(crate) const SCRATCH_TYPE_DRAFT_WORKSPACE: &str = "DRAFT_WORKSPACE";
 pub(crate) const SCRATCH_TYPE_WORKSPACE_NOTES: &str = "WORKSPACE_NOTES";
 
 #[derive(Clone)]

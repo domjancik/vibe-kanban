@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use db::models::{
     execution_process::{ExecutionProcess, ExecutionProcessStatus},
-    scratch::{DraftFollowUpData, WorkspaceNotesData},
+    scratch::{DraftFollowUpData, DraftWorkspaceData, WorkspaceNotesData},
 };
 use executors::{
     executor_discovery::ExecutorDiscoveredOptions,
@@ -85,6 +85,7 @@ pub struct ScratchRecord {
 #[serde(tag = "type", content = "data", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ScratchPayload {
     DraftFollowUp(DraftFollowUpData),
+    DraftWorkspace(DraftWorkspaceData),
     WorkspaceNotes(WorkspaceNotesData),
     #[serde(other)]
     Other,
@@ -99,7 +100,23 @@ pub struct UpdateScratchRequest {
 #[serde(tag = "type", content = "data", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum UpdateScratchPayload {
     DraftFollowUp(DraftFollowUpData),
+    DraftWorkspace(DraftWorkspaceData),
     WorkspaceNotes(WorkspaceNotesData),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GitBranch {
+    pub name: String,
+    pub is_current: bool,
+    pub is_remote: bool,
+    pub last_commit_date: DateTime<Utc>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateAndStartWorkspaceResponse {
+    pub workspace: db::models::workspace::Workspace,
+    pub execution_process: ExecutionProcess,
 }
 
 #[allow(dead_code)]

@@ -56,6 +56,12 @@ impl App {
         if self.workspace_project_filter_picker.is_some() {
             self.render_workspace_project_filter_picker(frame, frame.area());
         }
+        if self.workspace_create_repo_picker.is_some() {
+            self.render_workspace_create_repo_picker(frame, frame.area());
+        }
+        if self.workspace_create_branch_picker.is_some() {
+            self.render_workspace_create_branch_picker(frame, frame.area());
+        }
     }
 
     fn header(&self) -> Paragraph<'_> {
@@ -63,7 +69,13 @@ impl App {
             .selected_workspace_id
             .and_then(|id| self.find_workspace(id))
             .map(|workspace| workspace_title(&workspace.workspace))
-            .unwrap_or_else(|| "No workspace".to_string());
+            .unwrap_or_else(|| {
+                if self.creating_workspace {
+                    "New Workspace".to_string()
+                } else {
+                    "No workspace".to_string()
+                }
+            });
         Paragraph::new(Line::from(vec![
             Span::styled(
                 "Vibe Kanban TUI",

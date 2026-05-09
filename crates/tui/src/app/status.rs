@@ -14,7 +14,9 @@ impl App {
         let executor = config
             .map(|config| config.executor.to_string())
             .unwrap_or_else(|| "loading".to_string());
-        let executor_locked = !self.creating_new_session && self.current_session().is_some();
+        let executor_locked = !self.creating_new_session
+            && !self.creating_workspace
+            && self.current_session().is_some();
         let variant = config
             .map(|config| display_variant(config.variant.as_deref()).to_string())
             .unwrap_or_else(|| "loading".to_string());
@@ -67,6 +69,47 @@ impl App {
     }
 
     pub(crate) fn composer_status_line(&self) -> Line<'static> {
+        if self.creating_workspace {
+            let draft = self.draft_status_label();
+            let draft_style = if self.composer_dirty {
+                Style::default().fg(Color::LightBlue)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            return Line::from(vec![
+                Span::styled("Draft ", Style::default().fg(Color::Gray)),
+                Span::styled(draft, draft_style),
+                Span::raw("  "),
+                Span::styled(
+                    "Enter",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" create workspace ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    "a",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" add repo ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    "d",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" remove repo ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    "Esc",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+            ]);
+        }
         let draft = self.draft_status_label();
         let queue = self.queue_status_label();
         let draft_style = if self.composer_queue_conflict {
@@ -147,7 +190,15 @@ impl App {
     }
 
     pub(crate) fn draft_status_label(&self) -> String {
-        if self.composer_queue_conflict {
+        if self.creating_workspace {
+            if self.composer_dirty || self.draft_save_in_flight {
+                "saving...".to_string()
+            } else if self.workspace_create_loading() {
+                "loading".to_string()
+            } else {
+                "synced".to_string()
+            }
+        } else if self.composer_queue_conflict {
             "blocked by queued follow-up".to_string()
         } else if self.composer_dirty {
             "saving...".to_string()

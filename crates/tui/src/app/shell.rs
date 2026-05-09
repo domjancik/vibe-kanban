@@ -119,12 +119,25 @@ impl App {
             self.handle_workspace_project_filter_picker_key(key, size);
             return;
         }
+        if self.workspace_create_repo_picker.is_some() {
+            self.handle_workspace_create_repo_picker_key(key);
+            return;
+        }
+        if self.workspace_create_branch_picker.is_some() {
+            self.handle_workspace_create_branch_picker_key(key);
+            return;
+        }
         if self.session_rename.is_some() {
             self.handle_session_rename_key(key).await;
             return;
         }
         if self.search_prompt.is_some() {
             self.handle_search_prompt_key(key, size).await;
+            return;
+        }
+
+        if self.creating_workspace && key.code == crossterm::event::KeyCode::Esc {
+            self.cancel_workspace_create_mode(size);
             return;
         }
 
@@ -186,6 +199,34 @@ impl App {
             }
         }
 
+        if self.creating_workspace
+            && self.focus == Focus::Detail
+            && self.selected_pane == Pane::Chat
+        {
+            match key.code {
+                crossterm::event::KeyCode::Char('a') => {
+                    self.open_workspace_create_repo_picker();
+                    return;
+                }
+                crossterm::event::KeyCode::Enter => {
+                    if let Some(repo) = self
+                        .workspace_create_selected_repo()
+                        .map(|entry| entry.repo.clone())
+                    {
+                        self.open_workspace_create_branch_picker(repo);
+                    } else {
+                        self.open_workspace_create_repo_picker();
+                    }
+                    return;
+                }
+                crossterm::event::KeyCode::Char('d') | crossterm::event::KeyCode::Backspace => {
+                    self.remove_selected_workspace_create_repo();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         if let Some(intent) = map_app_key(key, self.creating_new_session, &self.selected_pane) {
             self.handle_app_intent(intent, size).await;
         }
@@ -221,6 +262,13 @@ impl App {
             | NetEvent::ConversationHistoryLoaded { .. }
             | NetEvent::ConversationBootstrapComplete { .. }
             | NetEvent::ConversationBackfillComplete { .. }
+            | NetEvent::WorkspaceCreateReposLoaded { .. }
+            | NetEvent::WorkspaceCreateDraftLoaded { .. }
+            | NetEvent::WorkspaceCreateDraftSaved { .. }
+            | NetEvent::WorkspaceCreateDraftSaveFailed { .. }
+            | NetEvent::WorkspaceCreateBranchesLoaded { .. }
+            | NetEvent::WorkspaceCreateSubmitted { .. }
+            | NetEvent::WorkspaceCreateSubmitFailed { .. }
             | NetEvent::DraftLoaded { .. }
             | NetEvent::QueueLoaded { .. } => true,
             NetEvent::TerminalConnected(_)

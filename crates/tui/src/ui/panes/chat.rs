@@ -15,7 +15,9 @@ use crate::{
 
 impl App {
     pub(crate) fn render_chat(&mut self, frame: &mut Frame, area: Rect) {
-        let title = if self.creating_new_session {
+        let title = if self.creating_workspace {
+            "Create Workspace"
+        } else if self.creating_new_session {
             "Conversation (new session)"
         } else {
             "Conversation"
@@ -24,6 +26,53 @@ impl App {
         let inner = block.inner(area);
         frame.render_widget(block, area);
         if inner.height == 0 || inner.width == 0 {
+            return;
+        }
+
+        if self.creating_workspace {
+            let selected_repos = self
+                .workspace_create
+                .as_ref()
+                .map(|state| {
+                    state
+                        .selected_repos
+                        .iter()
+                        .map(|entry| {
+                            format!("{} -> {}", entry.repo.display_name, entry.target_branch)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let summary = if selected_repos.is_empty() {
+                vec![
+                    Line::styled(
+                        "1. Press a to add repositories",
+                        Style::default().fg(Color::LightBlue),
+                    ),
+                    Line::styled(
+                        "2. Choose a branch for each repo",
+                        Style::default().fg(Color::LightBlue),
+                    ),
+                    Line::styled(
+                        "3. Write the prompt below and press Enter",
+                        Style::default().fg(Color::LightBlue),
+                    ),
+                ]
+            } else {
+                let mut lines = vec![Line::styled(
+                    format!("Selected repos: {}", selected_repos.len()),
+                    Style::default().fg(Color::Green),
+                )];
+                lines.extend(selected_repos.into_iter().map(Line::raw));
+                lines
+            };
+            frame.render_widget(
+                Paragraph::new(Text::from(summary)).wrap(Wrap { trim: false }),
+                inner.inner(Margin {
+                    vertical: 1,
+                    horizontal: 1,
+                }),
+            );
             return;
         }
 

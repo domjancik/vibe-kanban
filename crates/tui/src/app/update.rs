@@ -255,6 +255,82 @@ impl App {
                     }
                 }
             }
+            NetEvent::WorkspaceCreateReposLoaded { repos } => {
+                if let Some(state) = self.workspace_create.as_mut() {
+                    state.available_repos = repos;
+                    state.repos_loading = false;
+                    self.mark_detail_dirty();
+                }
+            }
+            NetEvent::WorkspaceCreateDraftLoaded { draft } => {
+                if self.creating_workspace {
+                    if let Some(draft) = draft {
+                        self.apply_workspace_create_draft(draft);
+                    } else if let Some(state) = self.workspace_create.as_mut() {
+                        state.draft_loading = false;
+                    }
+                    self.composer_scratch_loaded = true;
+                    self.mark_detail_dirty();
+                }
+            }
+            NetEvent::WorkspaceCreateDraftSaved { revision } => {
+                if self.creating_workspace {
+                    self.draft_save_in_flight = false;
+                    if revision == self.composer_edit_revision {
+                        self.composer_dirty = false;
+                        self.last_composer_edit = None;
+                    }
+                }
+            }
+            NetEvent::WorkspaceCreateDraftSaveFailed { revision, message } => {
+                if self.creating_workspace {
+                    self.draft_save_in_flight = false;
+                    if revision == self.composer_edit_revision {
+                        self.error = Some(message.clone());
+                        self.status = message;
+                    }
+                }
+            }
+            NetEvent::WorkspaceCreateBranchesLoaded { repo_id, branches } => {
+                if let Some(picker) = self.workspace_create_branch_picker.as_mut()
+                    && let Some(state) = self.workspace_create.as_mut()
+                    && state
+                        .selected_repos
+                        .get(picker.selected_repo_index)
+                        .is_some_and(|entry| entry.repo.id == repo_id)
+                {
+                    let default_branch = state.selected_repos[picker.selected_repo_index]
+                        .target_branch
+                        .clone();
+                    let selected = branches
+                        .iter()
+                        .position(|branch| branch.name == default_branch)
+                        .or_else(|| branches.iter().position(|branch| branch.is_current))
+                        .unwrap_or(0);
+                    picker.branches = branches;
+                    picker.selected = selected;
+                    self.status = "Select target branch".to_string();
+                }
+            }
+            NetEvent::WorkspaceCreateSubmitted { workspace } => {
+                self.creating_workspace = false;
+                self.workspace_create = None;
+                self.workspace_create_repo_picker = None;
+                self.workspace_create_branch_picker = None;
+                self.selected_workspace_id = Some(workspace.id);
+                self.mark_workspace_list_dirty();
+                self.load_selected_workspace(size);
+                self.status = "Workspace created".to_string();
+                self.error = None;
+            }
+            NetEvent::WorkspaceCreateSubmitFailed { message } => {
+                if let Some(state) = self.workspace_create.as_mut() {
+                    state.submitting = false;
+                }
+                self.error = Some(message.clone());
+                self.status = message;
+                self.focus = Focus::Composer;
+            }
             NetEvent::DraftSaved {
                 scratch_id,
                 revision,
@@ -507,10 +583,16 @@ impl App {
             AppIntent::FocusNext => self.focus = next_focus(&self.focus),
             AppIntent::FocusPrev => self.focus = prev_focus(&self.focus),
             AppIntent::ShowHelp => {
-                self.status = "Keys: Tab focus, Ctrl+W maximize active panel, / search or filter, F workspace project filter, n/N next/prev chat match, [/ ] user turns, T compact tool runs, j/k nav, 1-6 panes, i edit, Enter open/send, r rename session, E executor (new session only), V variant, M model, R reasoning, A agent menu, P permission, p pin, x archive, v stop execution, n new session, s start dev, c cleanup, e editor, Esc/C-]/C-g leave terminal".to_string();
+                self.status = "Keys: Tab focus, Ctrl+W maximize active panel, / search or filter, F workspace project filter, n/N next/prev chat match, [/ ] user turns, T compact tool runs, j/k nav, 1-6 panes, i edit, Enter open/send, r rename session, E executor (new session only), V variant, M model, R reasoning, A agent menu, P permission, p pin, x archive, v stop execution, n new session, s start dev, c cleanup, e editor, create mode: a add repo, Enter branch, d remove, Esc cancel, Esc/C-]/C-g leave terminal".to_string();
             }
             AppIntent::OpenSearch => self.open_search(size),
-            AppIntent::SelectPane(pane) => self.selected_pane = pane,
+            AppIntent::SelectPane(pane) => {
+                if self.creating_workspace {
+                    self.selected_pane = Pane::Chat;
+                } else {
+                    self.selected_pane = pane;
+                }
+            }
             AppIntent::ToggleShowArchived => {
                 self.show_archived = !self.show_archived;
                 self.mark_workspace_list_dirty();
@@ -522,6 +604,10 @@ impl App {
                 }
             }
             AppIntent::StartNewSession => {
+                if self.creating_workspace {
+                    self.status = "Workspace creation is active".to_string();
+                    return;
+                }
                 self.creating_new_session = true;
                 self.selected_pane = Pane::Chat;
                 self.focus = Focus::Composer;
@@ -846,6 +932,11 @@ mod tests {
             conversation_search: None,
             tool_call_display_mode: crate::app::ToolCallDisplayMode::Expanded,
             actions_in_flight: Default::default(),
+            workspace_create: None,
+            workspace_create_repo_picker: None,
+            workspace_create_branch_picker: None,
+            creating_workspace: false,
+            workspace_create_previous_selection: None,
             creating_new_session: false,
             should_quit: false,
         }

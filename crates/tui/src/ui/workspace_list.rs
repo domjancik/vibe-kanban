@@ -25,9 +25,28 @@ impl App {
         if needs_rebuild {
             let rows = self.workspace_rows();
             let mut row_ids = Vec::with_capacity(rows.len());
+            let mut new_workspace_row_index = None;
             let items = rows
                 .iter()
-                .map(|row| match row {
+                .enumerate()
+                .map(|(index, row)| match row {
+                    WorkspaceRow::NewWorkspace => {
+                        new_workspace_row_index = Some(index);
+                        row_ids.push(None);
+                        ListItem::new(Text::from(vec![
+                            Line::styled(
+                                " + New Workspace",
+                                Style::default()
+                                    .fg(Color::LightGreen)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Line::styled(
+                                " Start a fresh workspace creation flow",
+                                Style::default().fg(Color::DarkGray),
+                            ),
+                            Line::raw(""),
+                        ]))
+                    }
                     WorkspaceRow::Header(title) => {
                         row_ids.push(None);
                         ListItem::new(Line::styled(
@@ -121,6 +140,7 @@ impl App {
                 query,
                 items,
                 row_ids,
+                new_workspace_row_index,
             });
         }
 
@@ -129,12 +149,16 @@ impl App {
             .expect("workspace list cache should be populated")
     }
 
-    fn selected_workspace_row_index_from_ids(
+    fn selected_workspace_row_index_from_cache(
         &self,
-        row_ids: &[Option<uuid::Uuid>],
+        cache: &WorkspaceListRenderCache,
     ) -> Option<usize> {
+        if self.creating_workspace {
+            return cache.new_workspace_row_index;
+        }
         let selected_id = self.selected_workspace_id?;
-        row_ids
+        cache
+            .row_ids
             .iter()
             .position(|row_id| row_id.is_some_and(|row_id| row_id == selected_id))
     }
@@ -176,7 +200,7 @@ impl App {
         let cache = self.workspace_list_cache().clone();
 
         let mut state = ListState::default();
-        if let Some(index) = self.selected_workspace_row_index_from_ids(&cache.row_ids) {
+        if let Some(index) = self.selected_workspace_row_index_from_cache(&cache) {
             state.select(Some(index));
         }
 
@@ -202,7 +226,7 @@ impl App {
             cache.row_ids.len(),
             crate::app::viewport_capacity(list_area, 3),
             crate::app::selected_list_offset(
-                self.selected_workspace_row_index_from_ids(&cache.row_ids)
+                self.selected_workspace_row_index_from_cache(&cache)
                     .unwrap_or(0),
                 cache.row_ids.len(),
                 crate::app::viewport_capacity(list_area, 3),

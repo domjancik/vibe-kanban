@@ -336,6 +336,7 @@ impl App {
         }
 
         let mut rows = Vec::new();
+        rows.push(WorkspaceRow::NewWorkspace);
         self.push_workspace_group(&mut rows, "Needs Attention", &needs_attention);
         self.push_workspace_group(&mut rows, "Running", &running);
         self.push_workspace_group(&mut rows, "Idle", &idle);
@@ -363,8 +364,14 @@ impl App {
 
     #[cfg(test)]
     fn selected_workspace_row_index(&self, rows: &[WorkspaceRow<'_>]) -> Option<usize> {
+        if self.creating_workspace {
+            return rows
+                .iter()
+                .position(|row| matches!(row, WorkspaceRow::NewWorkspace));
+        }
         let selected_id = self.selected_workspace_id?;
         rows.iter().position(|row| match row {
+            WorkspaceRow::NewWorkspace => false,
             WorkspaceRow::Header(_) => false,
             WorkspaceRow::Workspace(workspace) => workspace.id == selected_id,
         })
@@ -374,6 +381,7 @@ impl App {
         self.workspace_rows()
             .into_iter()
             .filter_map(|row| match row {
+                WorkspaceRow::NewWorkspace => None,
                 WorkspaceRow::Header(_) => None,
                 WorkspaceRow::Workspace(workspace) => Some(workspace.id),
             })
@@ -387,6 +395,9 @@ impl App {
     }
 
     pub(crate) fn sync_workspace_selection_to_filter(&mut self) {
+        if self.creating_workspace {
+            return;
+        }
         let visible = self.visible_workspace_ids();
         if visible.is_empty() {
             return;
@@ -487,6 +498,11 @@ mod tests {
             conversation_search: None,
             tool_call_display_mode: crate::app::ToolCallDisplayMode::Expanded,
             actions_in_flight: Default::default(),
+            workspace_create: None,
+            workspace_create_repo_picker: None,
+            workspace_create_branch_picker: None,
+            creating_workspace: false,
+            workspace_create_previous_selection: None,
             creating_new_session: false,
             should_quit: false,
         }
@@ -568,6 +584,7 @@ mod tests {
         let headers = rows
             .iter()
             .filter_map(|row| match row {
+                WorkspaceRow::NewWorkspace => None,
                 WorkspaceRow::Header(title) => Some(*title),
                 WorkspaceRow::Workspace(_) => None,
             })
@@ -587,6 +604,7 @@ mod tests {
             filtered
                 .into_iter()
                 .filter_map(|row| match row {
+                    WorkspaceRow::NewWorkspace => None,
                     WorkspaceRow::Header(_) => None,
                     WorkspaceRow::Workspace(workspace) => Some(workspace.id),
                 })
@@ -679,6 +697,7 @@ mod tests {
             .workspace_rows()
             .into_iter()
             .filter_map(|row| match row {
+                WorkspaceRow::NewWorkspace => None,
                 WorkspaceRow::Header(_) => None,
                 WorkspaceRow::Workspace(workspace) => Some(workspace.id),
             })

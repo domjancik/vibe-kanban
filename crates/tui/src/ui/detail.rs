@@ -192,6 +192,10 @@ impl App {
     }
 
     pub(crate) fn render_detail(&mut self, frame: &mut Frame, area: Rect) {
+        if self.creating_workspace {
+            self.render_workspace_create_detail(frame, area);
+            return;
+        }
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -251,6 +255,79 @@ impl App {
         frame.render_widget(
             List::new(cache.process_items.clone()).block(panel_block("Processes", false)),
             chunks[2],
+        );
+    }
+
+    fn render_workspace_create_detail(&mut self, frame: &mut Frame, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(9), Constraint::Min(8)])
+            .split(area);
+
+        let info_lines = if let Some(state) = self.workspace_create.as_ref() {
+            vec![
+                Line::raw("Create a workspace from selected repositories"),
+                Line::raw(format!("repos loaded: {}", state.available_repos.len())),
+                Line::raw(format!("selected repos: {}", state.selected_repos.len())),
+                Line::styled(
+                    format!("draft: {}", self.draft_status_label()),
+                    Style::default().fg(Color::LightBlue),
+                ),
+                Line::styled(
+                    "a add repo  Enter change branch  d remove repo  Esc cancel".to_string(),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]
+        } else {
+            vec![Line::raw("Workspace creation is unavailable")]
+        };
+        frame.render_widget(
+            Paragraph::new(Text::from(info_lines)).block(panel_block("Workspace Create", false)),
+            chunks[0],
+        );
+
+        let items = self
+            .workspace_create
+            .as_ref()
+            .map(|state| {
+                if state.selected_repos.is_empty() {
+                    vec![ListItem::new(Line::styled(
+                        "No repositories selected yet",
+                        Style::default().fg(Color::DarkGray),
+                    ))]
+                } else {
+                    state
+                        .selected_repos
+                        .iter()
+                        .map(|entry| {
+                            ListItem::new(Text::from(vec![
+                                Line::styled(
+                                    entry.repo.display_name.clone(),
+                                    Style::default().fg(Color::LightBlue),
+                                ),
+                                Line::styled(
+                                    format!("branch: {}", entry.target_branch),
+                                    Style::default().fg(Color::DarkGray),
+                                ),
+                            ]))
+                        })
+                        .collect::<Vec<_>>()
+                }
+            })
+            .unwrap_or_default();
+        let selected = self
+            .workspace_create_rows_selected_index()
+            .filter(|_| !items.is_empty());
+        let mut state = ListState::default().with_selected(selected);
+        frame.render_stateful_widget(
+            List::new(items)
+                .block(panel_block(
+                    "Selected Repositories",
+                    self.focus == Focus::Detail,
+                ))
+                .highlight_style(Style::default().fg(Color::Cyan).bg(Color::Rgb(28, 38, 48))),
+            chunks[1],
+            &mut state,
         );
     }
 
@@ -404,6 +481,11 @@ mod tests {
             conversation_search: None,
             tool_call_display_mode: crate::app::ToolCallDisplayMode::Expanded,
             actions_in_flight: Default::default(),
+            workspace_create: None,
+            workspace_create_repo_picker: None,
+            workspace_create_branch_picker: None,
+            creating_workspace: false,
+            workspace_create_previous_selection: None,
             creating_new_session: false,
             should_quit: false,
         }

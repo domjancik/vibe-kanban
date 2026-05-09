@@ -10,6 +10,9 @@ use crate::{
 
 impl App {
     pub(crate) fn ensure_workspace_selected(&mut self, size: Rect) {
+        if self.creating_workspace {
+            return;
+        }
         if self.selected_workspace_id.is_some() {
             return;
         }
@@ -19,6 +22,9 @@ impl App {
     }
 
     pub(crate) fn load_selected_workspace(&mut self, size: Rect) {
+        if self.creating_workspace {
+            return;
+        }
         let Some(workspace_id) = self.selected_workspace_id else {
             return;
         };

@@ -584,6 +584,11 @@ mod tests {
             conversation_search: None,
             tool_call_display_mode: crate::app::ToolCallDisplayMode::Expanded,
             actions_in_flight: Default::default(),
+            workspace_create: None,
+            workspace_create_repo_picker: None,
+            workspace_create_branch_picker: None,
+            creating_workspace: false,
+            workspace_create_previous_selection: None,
             creating_new_session: false,
             should_quit: false,
         }

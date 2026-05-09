@@ -2,6 +2,7 @@ use db::models::{session::Session, workspace::WorkspaceWithStatus};
 use uuid::Uuid;
 
 pub(crate) enum WorkspaceRow<'a> {
+    NewWorkspace,
     Header(&'static str),
     Workspace(&'a WorkspaceWithStatus),
 }
@@ -25,6 +26,7 @@ pub(crate) fn session_target(row: &SessionRow<'_>) -> Option<SessionTarget> {
 }
 
 pub mod actions;
+pub mod create;
 pub mod list;
 pub mod session;
 

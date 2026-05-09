@@ -142,4 +142,118 @@ impl App {
             &mut state,
         );
     }
+
+    pub(crate) fn render_workspace_create_repo_picker(&self, frame: &mut Frame, area: Rect) {
+        let Some(picker) = self.workspace_create_repo_picker.as_ref() else {
+            return;
+        };
+        let popup = centered_rect(72, 60, area);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(6)])
+            .split(popup);
+        let options = self.workspace_create_filtered_repo_options();
+        let selected = picker.selected.min(options.len().saturating_sub(1));
+        let items = options
+            .iter()
+            .map(|repo| {
+                ListItem::new(vec![
+                    Line::styled(
+                        repo.display_name.clone(),
+                        Style::default()
+                            .fg(Color::LightBlue)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Line::styled(
+                        repo.path.display().to_string(),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ])
+            })
+            .collect::<Vec<_>>();
+        let mut state = ListState::default().with_selected(Some(selected));
+
+        frame.render_widget(Clear, popup);
+        frame.render_widget(panel_block("Add Repository", true), popup);
+        frame.render_widget(
+            Paragraph::new(format!("Search: {}", picker.query))
+                .block(panel_block("Filter", false))
+                .wrap(Wrap { trim: false }),
+            chunks[0],
+        );
+        frame.render_stateful_widget(
+            List::new(items)
+                .block(panel_block("Repositories", false))
+                .highlight_style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .highlight_symbol(">> "),
+            chunks[1],
+            &mut state,
+        );
+    }
+
+    pub(crate) fn render_workspace_create_branch_picker(&self, frame: &mut Frame, area: Rect) {
+        let Some(picker) = self.workspace_create_branch_picker.as_ref() else {
+            return;
+        };
+        let popup = centered_rect(64, 55, area);
+        let items = if picker.branches.is_empty() {
+            vec![ListItem::new(Line::styled(
+                "Loading branches...",
+                Style::default().fg(Color::DarkGray),
+            ))]
+        } else {
+            picker
+                .branches
+                .iter()
+                .map(|branch| {
+                    let mut suffix = String::new();
+                    if branch.is_current {
+                        suffix.push_str("  current");
+                    }
+                    if branch.is_remote {
+                        suffix.push_str("  remote");
+                    }
+                    ListItem::new(vec![
+                        Line::styled(
+                            branch.name.clone(),
+                            Style::default()
+                                .fg(Color::LightBlue)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Line::styled(
+                            format!(
+                                "{}  {}",
+                                suffix.trim(),
+                                branch.last_commit_date.format("%Y-%m-%d")
+                            )
+                            .trim()
+                            .to_string(),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ])
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut state = ListState::default()
+            .with_selected(Some(picker.selected.min(items.len().saturating_sub(1))));
+
+        frame.render_widget(Clear, popup);
+        frame.render_widget(panel_block("Select Branch", true), popup);
+        frame.render_stateful_widget(
+            List::new(items)
+                .block(panel_block("Branches", false))
+                .highlight_style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .highlight_symbol(">> "),
+            popup,
+            &mut state,
+        );
+    }
 }

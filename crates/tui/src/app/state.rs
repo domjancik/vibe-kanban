@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use db::models::workspace::WorkspaceWithStatus;
+use db::models::{repo::Repo, workspace::WorkspaceWithStatus};
 use executors::{
     executor_discovery::ExecutorDiscoveredOptions,
     profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},
@@ -37,6 +37,32 @@ pub(crate) struct SessionRenameState {
     pub(crate) session_id: Uuid,
     pub(crate) name: String,
     pub(crate) cursor: usize,
+}
+
+#[derive(Clone)]
+pub(crate) struct WorkspaceCreateSelectedRepo {
+    pub(crate) repo: Repo,
+    pub(crate) target_branch: String,
+}
+
+pub(crate) struct WorkspaceCreateState {
+    pub(crate) repos_loading: bool,
+    pub(crate) draft_loading: bool,
+    pub(crate) submitting: bool,
+    pub(crate) available_repos: Vec<Repo>,
+    pub(crate) selected_repos: Vec<WorkspaceCreateSelectedRepo>,
+    pub(crate) selected_repo_index: usize,
+}
+
+pub(crate) struct WorkspaceCreateRepoPickerState {
+    pub(crate) query: String,
+    pub(crate) selected: usize,
+}
+
+pub(crate) struct WorkspaceCreateBranchPickerState {
+    pub(crate) selected_repo_index: usize,
+    pub(crate) selected: usize,
+    pub(crate) branches: Vec<crate::model::GitBranch>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +120,7 @@ pub(crate) struct WorkspaceListRenderCache {
     pub(crate) query: String,
     pub(crate) items: Vec<ListItem<'static>>,
     pub(crate) row_ids: Vec<Option<Uuid>>,
+    pub(crate) new_workspace_row_index: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -166,11 +193,16 @@ pub struct App {
     pub(crate) notes_save_in_flight: bool,
     pub(crate) agent_picker: Option<AgentPickerState>,
     pub(crate) workspace_project_filter_picker: Option<WorkspaceProjectFilterPickerState>,
+    pub(crate) workspace_create: Option<WorkspaceCreateState>,
+    pub(crate) workspace_create_repo_picker: Option<WorkspaceCreateRepoPickerState>,
+    pub(crate) workspace_create_branch_picker: Option<WorkspaceCreateBranchPickerState>,
     pub(crate) session_rename: Option<SessionRenameState>,
     pub(crate) search_prompt: Option<SearchPromptState>,
     pub(crate) conversation_search: Option<ConversationSearchState>,
     pub(crate) tool_call_display_mode: ToolCallDisplayMode,
     pub(crate) actions_in_flight: ActionInFlightState,
+    pub(crate) creating_workspace: bool,
+    pub(crate) workspace_create_previous_selection: Option<Uuid>,
     pub(crate) creating_new_session: bool,
     pub(crate) should_quit: bool,
 }
@@ -242,11 +274,16 @@ impl App {
             notes_save_in_flight: false,
             agent_picker: None,
             workspace_project_filter_picker: None,
+            workspace_create: None,
+            workspace_create_repo_picker: None,
+            workspace_create_branch_picker: None,
             session_rename: None,
             search_prompt: None,
             conversation_search: None,
             tool_call_display_mode: ToolCallDisplayMode::Expanded,
             actions_in_flight: ActionInFlightState::default(),
+            creating_workspace: false,
+            workspace_create_previous_selection: None,
             creating_new_session: false,
             should_quit: false,
         }

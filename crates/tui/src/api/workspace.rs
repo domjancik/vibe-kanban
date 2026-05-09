@@ -1,7 +1,13 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use db::models::{session::Session, workspace::Workspace};
+use db::models::{
+    repo::Repo,
+    requests::{CreateAndStartWorkspaceRequest, WorkspaceRepoInput},
+    scratch::{DraftWorkspaceData, DraftWorkspaceRepo},
+    session::Session,
+    workspace::Workspace,
+};
 use serde_json::json;
 use tokio::{
     sync::mpsc::{UnboundedSender, unbounded_channel},
@@ -16,13 +22,14 @@ use super::{
 };
 use crate::{
     api::{
-        Api, DiscoverySubscriptionKey, SCRATCH_TYPE_WORKSPACE_NOTES, WorkspaceSubscriptions,
-        net_error,
+        Api, DiscoverySubscriptionKey, SCRATCH_TYPE_DRAFT_WORKSPACE, SCRATCH_TYPE_WORKSPACE_NOTES,
+        WorkspaceSubscriptions, net_error,
     },
     model::{
-        DiffStreamState, ExecutionProcessesState, ExecutorDiscoveryStreamState, LogEntriesState,
-        NetEvent, PatchType, RepoBranchStatus, ScratchPayload, ScratchRecord, ScratchStreamState,
-        UpdateScratchPayload, UpdateScratchRequest, UpdateWorkspaceRequest, WorkspaceStreamState,
+        CreateAndStartWorkspaceResponse, DiffStreamState, ExecutionProcessesState,
+        ExecutorDiscoveryStreamState, GitBranch, LogEntriesState, NetEvent, PatchType,
+        RepoBranchStatus, ScratchPayload, ScratchRecord, ScratchStreamState, UpdateScratchPayload,
+        UpdateScratchRequest, UpdateWorkspaceRequest, WorkspaceStreamState,
         WorkspaceSummaryRequest, WorkspaceSummaryResponse,
     },
 };
@@ -290,6 +297,119 @@ impl Api {
             .await?;
         Ok(())
     }
+
+    pub fn load_workspace_create_bootstrap(&self, tx: UnboundedSender<NetEvent>) {
+        let api = self.clone();
+        let tx_repos = tx.clone();
+        tokio::spawn(async move {
+            let recent = api.get::<Vec<Repo>>("/api/repos/recent").await;
+            let all = api.get::<Vec<Repo>>("/api/repos").await;
+            match (recent, all) {
+                (Ok(recent), Ok(all)) => {
+                    let mut merged = Vec::with_capacity(recent.len() + all.len());
+                    let mut seen = std::collections::HashSet::new();
+                    for repo in recent.into_iter().chain(all.into_iter()) {
+                        if seen.insert(repo.id) {
+                            merged.push(repo);
+                        }
+                    }
+                    let _ = tx_repos.send(NetEvent::WorkspaceCreateReposLoaded { repos: merged });
+                }
+                (Err(error), _) | (_, Err(error)) => {
+                    let _ = tx_repos.send(net_error("load workspace create repos", error));
+                }
+            }
+        });
+
+        let api = self.clone();
+        tokio::spawn(async move {
+            match api
+                .get::<ScratchRecord>(&format!(
+                    "/api/scratch/{SCRATCH_TYPE_DRAFT_WORKSPACE}/00000000-0000-0000-0000-000000000001"
+                ))
+                .await
+            {
+                Ok(scratch) => {
+                    let draft = match scratch.payload {
+                        ScratchPayload::DraftWorkspace(data) => Some(data),
+                        _ => None,
+                    };
+                    let _ = tx.send(NetEvent::WorkspaceCreateDraftLoaded { draft });
+                }
+                Err(_) => {
+                    let _ = tx.send(NetEvent::WorkspaceCreateDraftLoaded { draft: None });
+                }
+            }
+        });
+    }
+
+    pub async fn save_workspace_create_draft(&self, draft: DraftWorkspaceData) -> Result<()> {
+        let request = UpdateScratchRequest {
+            payload: UpdateScratchPayload::DraftWorkspace(draft),
+        };
+        let _: ScratchRecord = self
+            .put(
+                &format!(
+                    "/api/scratch/{SCRATCH_TYPE_DRAFT_WORKSPACE}/00000000-0000-0000-0000-000000000001"
+                ),
+                &request,
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn clear_workspace_create_draft(&self) -> Result<()> {
+        self.delete_empty(&format!(
+            "/api/scratch/{SCRATCH_TYPE_DRAFT_WORKSPACE}/00000000-0000-0000-0000-000000000001"
+        ))
+        .await
+    }
+
+    pub fn load_workspace_create_branches(&self, repo_id: Uuid, tx: UnboundedSender<NetEvent>) {
+        let api = self.clone();
+        tokio::spawn(async move {
+            match api
+                .get::<Vec<GitBranch>>(&format!("/api/repos/{repo_id}/branches"))
+                .await
+            {
+                Ok(branches) => {
+                    let _ = tx.send(NetEvent::WorkspaceCreateBranchesLoaded { repo_id, branches });
+                }
+                Err(error) => {
+                    let _ = tx.send(net_error(
+                        format!("load workspace create branches for repo {repo_id}"),
+                        error,
+                    ));
+                }
+            }
+        });
+    }
+
+    pub async fn create_and_start_workspace(
+        &self,
+        name: Option<String>,
+        prompt: String,
+        repos: Vec<DraftWorkspaceRepo>,
+        executor_config: executors::profile::ExecutorConfig,
+    ) -> Result<Workspace> {
+        let request = CreateAndStartWorkspaceRequest {
+            name,
+            repos: repos
+                .into_iter()
+                .map(|repo| WorkspaceRepoInput {
+                    repo_id: repo.repo_id,
+                    target_branch: repo.target_branch,
+                })
+                .collect(),
+            linked_issue: None,
+            executor_config,
+            prompt,
+            attachment_ids: None,
+        };
+        let response: CreateAndStartWorkspaceResponse =
+            self.post("/api/workspaces/start", &request).await?;
+        Ok(response.workspace)
+    }
 }
 
 fn spawn_workspace_stream(
@@ -408,6 +528,7 @@ fn spawn_notes_stream(
                     .and_then(|scratch| match scratch.payload {
                         ScratchPayload::WorkspaceNotes(data) => Some(data.content),
                         ScratchPayload::DraftFollowUp(_) => None,
+                        ScratchPayload::DraftWorkspace(_) => None,
                         ScratchPayload::Other => None,
                     })
                     .unwrap_or_default();
