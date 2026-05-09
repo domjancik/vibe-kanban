@@ -308,6 +308,8 @@ For the TUI, the practical rule should be framed in end-anchored terms:
 - opening a session should start at the newest visible interaction
 - prepending older rows must not move the visible tail away from the user
 - the viewport should not jump to the top while recent history is already readable
+- appending newer rows must not move the visible content when the user is reading older history
+- if the user is already at the bottom, new rows should keep the viewport following the tail
 
 ### Anchor choice
 
@@ -315,6 +317,7 @@ When backfilling older history:
 
 - if the user is focused near the bottom, anchor to the first visible row in the recent tail
 - if the user is reading older content, anchor to the topmost visible row
+- in either case, preserve that anchor by visible content identity rather than by raw numeric offset alone
 
 ### Implementation requirement
 

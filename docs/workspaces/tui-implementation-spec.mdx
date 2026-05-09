@@ -187,7 +187,7 @@ On macOS terminals, the TUI should also support the common equivalents when the 
 - `Enter`: submit prompt
 - `/`: open conversation search
 - `n` and `N`: jump to the next or previous conversation search match
-- `E`: cycle executor when the selection strip is focused
+- `E`: cycle executor when the selection strip is focused and the user is composing a new session
 - `V`: cycle executor variant or preset when the selection strip is focused
 - `M`: cycle model when the selection strip is focused
 - `R`: cycle reasoning effort when the selection strip is focused
@@ -207,7 +207,7 @@ On macOS terminals, the TUI should also support the common equivalents when the 
 - `t`: terminal pane
 - `o`: notes pane
 - `/`: open a live sessions filter prompt when the Sessions list is focused
-- `v`: dev server controls
+- `v`: stop the current agent execution
 - `Space`: expand or collapse current section
 - `PageUp` and `PageDown`: page-scroll logs and git output, or page-jump list selections
 - `Home` and `End`: jump to the beginning or end of the focused list or scroll buffer
@@ -352,6 +352,13 @@ Defaults should follow this precedence:
 4. executor-defined default or preset values
 
 Changing executor or variant should refresh the preset baseline and discovery stream for the new selection.
+
+For an existing session, executor selection should be treated as locked to the session executor:
+
+- the executor field may still be shown in the selection strip for visibility
+- the UI should indicate that it is locked for the current session
+- the user should not be able to switch to a different executor mid-session
+- changing executor is only valid while preparing a new session before the first prompt is sent
 
 ### Draft persistence
 
@@ -611,6 +618,8 @@ The conversation viewport should be end-anchored rather than top-anchored:
 
 - opening a session should land on the newest visible interaction
 - prepending older history must not jump the viewport to the top
+- prepending older history or appending newer content must preserve the same visible conversation slice when the user is not following the tail
+- if the user is already at the bottom, the viewport should continue following the tail as new content arrives
 - rendering should be virtualised around the visible tail so long sessions remain responsive
 
 Conversation search should follow a terminal-vim style model:
