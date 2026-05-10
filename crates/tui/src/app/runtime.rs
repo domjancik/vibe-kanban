@@ -1,7 +1,6 @@
 use std::time::Duration;
 
-use db::models::scratch::DraftFollowUpData;
-use db::models::execution_process::ExecutionProcessStatus;
+use db::models::{execution_process::ExecutionProcessStatus, scratch::DraftFollowUpData};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::{

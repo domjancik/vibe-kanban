@@ -1,9 +1,8 @@
+use db::models::scratch::TuiComposerSnippet;
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
 };
-
-use db::models::scratch::TuiComposerSnippet;
 
 use crate::{
     editor::{ComposerEditorMode, VimMode, clamp_char_boundary},

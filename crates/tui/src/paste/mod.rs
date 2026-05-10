@@ -5,7 +5,10 @@ pub(crate) const PASTE_COLLAPSE_THRESHOLD_CHARS: usize = 1200;
 pub(crate) const PASTE_HARD_CEILING_CHARS: usize = 250_000;
 pub(crate) const SNIPPET_PLACEHOLDER_CHAR: char = '\u{FFFC}';
 
-pub(crate) fn compose_document(text: String, snippets: &[TuiComposerSnippet]) -> TuiComposerDocument {
+pub(crate) fn compose_document(
+    text: String,
+    snippets: &[TuiComposerSnippet],
+) -> TuiComposerDocument {
     TuiComposerDocument {
         text,
         snippets: snippets.to_vec(),

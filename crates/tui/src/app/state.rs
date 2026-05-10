@@ -1,10 +1,6 @@
 use std::collections::HashMap;
 
-use db::models::{
-    repo::Repo,
-    scratch::TuiComposerSnippet,
-    workspace::WorkspaceWithStatus,
-};
+use db::models::{repo::Repo, scratch::TuiComposerSnippet, workspace::WorkspaceWithStatus};
 use executors::{
     executor_discovery::ExecutorDiscoveredOptions,
     profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},

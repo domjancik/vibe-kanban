@@ -3,19 +3,18 @@ use db::models::scratch::{DraftFollowUpData, TuiComposerDocument, TuiComposerSni
 use ratatui::text::Text;
 
 use crate::{
-    app::{App, SessionRenameState},
-    app::state::PastedSnippetPreviewState,
+    app::{App, SessionRenameState, state::PastedSnippetPreviewState},
     editor::{
         ComposerEditorMode, VimMode, VimOperator, apply_text_edit_action, clamp_char_boundary,
         line_end_index, line_start_index, move_cursor_vertical, next_char_boundary,
-        next_word_start, prev_char_boundary, prev_word_start,
-        render_editor_buffer_with_snippets,
+        next_word_start, prev_char_boundary, prev_word_start, render_editor_buffer_with_snippets,
     },
     input::{TextInputEvent, TextInputOptions, map_text_input_key},
     model::{Focus, Pane},
     paste::{
-        PASTE_HARD_CEILING_CHARS, SNIPPET_PLACEHOLDER_CHAR, compose_document, exceeds_paste_ceiling,
-        expand_document, new_snippet, placeholder_count_before, should_collapse_paste,
+        PASTE_HARD_CEILING_CHARS, SNIPPET_PLACEHOLDER_CHAR, compose_document,
+        exceeds_paste_ceiling, expand_document, new_snippet, placeholder_count_before,
+        should_collapse_paste,
     },
 };
 
@@ -149,9 +148,8 @@ impl App {
 
     pub(crate) fn handle_composer_paste(&mut self, pasted: String) {
         if exceeds_paste_ceiling(&pasted) {
-            self.status = format!(
-                "Paste too large (>{PASTE_HARD_CEILING_CHARS} chars); use a file instead"
-            );
+            self.status =
+                format!("Paste too large (>{PASTE_HARD_CEILING_CHARS} chars); use a file instead");
             self.error = Some(self.status.clone());
             return;
         }
@@ -917,7 +915,7 @@ mod tests {
 
     use chrono::{TimeZone, Utc};
     use crossterm::event::{KeyCode, KeyEvent};
-    use db::models::session::Session;
+    use db::models::{scratch::DraftFollowUpData, session::Session};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
@@ -1155,6 +1153,46 @@ mod tests {
             .await;
         assert!(app.session_rename.is_none());
         assert_eq!(app.status, "Cancelled session rename");
+    }
+
+    #[test]
+    fn short_paste_stays_inline_in_composer() {
+        let mut app = test_app();
+        app.handle_composer_paste("hello\nworld".to_string());
+        assert_eq!(app.composer, "hello\nworld");
+        assert!(app.composer_snippets.is_empty());
+        assert_eq!(app.expanded_composer(), "hello\nworld");
+    }
+
+    #[test]
+    fn long_paste_becomes_atomic_snippet_and_expands_for_transport() {
+        let mut app = test_app();
+        let pasted = "x".repeat(1301);
+        app.handle_composer_paste(pasted.clone());
+        assert_eq!(app.composer.chars().count(), 1);
+        assert_eq!(app.composer_snippets.len(), 1);
+        assert_eq!(app.expanded_composer(), pasted);
+    }
+
+    #[tokio::test]
+    async fn follow_up_draft_restore_prefers_structured_tui_composer() {
+        let mut app = test_app();
+        let pasted = "x".repeat(1301);
+        app.handle_composer_paste(pasted.clone());
+        let draft = DraftFollowUpData {
+            message: app.expanded_composer(),
+            executor_config: executors::profile::ExecutorConfig::new(
+                executors::executors::BaseCodingAgent::Codex,
+            ),
+            tui_composer: app.composer_document(),
+        };
+
+        let mut restored = test_app();
+        restored.apply_follow_up_draft(draft);
+
+        assert_eq!(restored.composer.chars().count(), 1);
+        assert_eq!(restored.composer_snippets.len(), 1);
+        assert_eq!(restored.expanded_composer(), pasted);
     }
 
     #[test]
