@@ -196,10 +196,26 @@ Examples:
 
 The user should be able to open a fuller view of the current todo list.
 
+### Default placement
+
+The expanded todo list should live in the right-side detail panel by default.
+
+Recommended placement:
+
+- directly under `Processes`
+- above `Changes` or `Notes` when vertical space allows
+
+This keeps current-agent activity grouped in one place:
+
+- `Processes` shows what is executing
+- `Todos` shows what the agent believes it still needs to do
+
+The TUI should prefer this persistent side-panel model over a floating popup.
+
 ### Recommended affordances
 
-- `t`: toggle todo panel or popup
-- `Enter` on focused todo summary: open expanded list
+- `t`: focus or toggle the right-panel todos section
+- `Enter` on focused todo summary: jump focus to the right-panel todos section
 - command palette action: `Show Current Todos`
 
 ### Expanded view contents
@@ -239,6 +255,8 @@ If the expanded todo view is open and new updates arrive:
 - keep the view open
 - preserve the selected row if it still exists
 - do not force-scroll unless the selected row disappears
+
+If the right panel is currently showing another section, the compact summary should still update, but the TUI must not auto-switch the visible right-panel section.
 
 ## Relationship to transcript
 
@@ -379,4 +397,5 @@ The design is successful if:
 - the user can see what the agent is currently working on without opening raw logs
 - progress appears quickly from recent history rather than waiting for full session load
 - live updates do not steal focus from the composer or move the chat viewport
+- expanded todos feel like part of the persistent workspace chrome rather than an interruptive overlay
 - the same feature works across Codex, Claude, OpenCode, and other normalized executors without executor-specific UI forks
