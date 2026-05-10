@@ -3,10 +3,25 @@ use ratatui::{
     text::{Line, Span, Text},
 };
 
-use crate::editor::{ComposerEditorMode, VimMode, clamp_char_boundary};
+use db::models::scratch::TuiComposerSnippet;
+
+use crate::{
+    editor::{ComposerEditorMode, VimMode, clamp_char_boundary},
+    paste::{SNIPPET_PLACEHOLDER_CHAR, snippet_label},
+};
 
 pub fn render_editor_buffer(
     buffer: &str,
+    cursor: usize,
+    show_cursor: bool,
+    mode: ComposerEditorMode,
+) -> Text<'static> {
+    render_editor_buffer_with_snippets(buffer, &[], cursor, show_cursor, mode)
+}
+
+pub fn render_editor_buffer_with_snippets(
+    buffer: &str,
+    snippets: &[TuiComposerSnippet],
     cursor: usize,
     show_cursor: bool,
     mode: ComposerEditorMode,
@@ -30,13 +45,35 @@ pub fn render_editor_buffer(
     let mut current_spans = Vec::new();
     let mut index = 0usize;
     let mut plain_start = 0usize;
+    let mut snippet_iter = snippets.iter();
 
     while index < buffer.len() {
+        let ch = buffer[index..].chars().next().unwrap_or(' ');
+        if ch == SNIPPET_PLACEHOLDER_CHAR {
+            if plain_start < index {
+                current_spans.push(Span::raw(buffer[plain_start..index].to_string()));
+            }
+            let snippet = snippet_iter.next();
+            let label = snippet
+                .map(snippet_label)
+                .unwrap_or_else(|| "[Pasted Text]".to_string());
+            let snippet_style = if show_cursor && index == cursor {
+                cursor_style
+            } else {
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD)
+            };
+            current_spans.push(Span::styled(label, snippet_style));
+            index += ch.len_utf8();
+            plain_start = index;
+            continue;
+        }
+
         if show_cursor && index == cursor {
             if plain_start < index {
                 current_spans.push(Span::raw(buffer[plain_start..index].to_string()));
             }
-            let ch = buffer[index..].chars().next().unwrap_or(' ');
             if ch == '\n' {
                 current_spans.push(Span::styled(cursor_glyph, cursor_style));
                 lines.push(Line::from(std::mem::take(&mut current_spans)));
@@ -50,7 +87,6 @@ pub fn render_editor_buffer(
             continue;
         }
 
-        let ch = buffer[index..].chars().next().unwrap_or(' ');
         if ch == '\n' {
             if plain_start < index {
                 current_spans.push(Span::raw(buffer[plain_start..index].to_string()));

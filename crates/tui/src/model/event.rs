@@ -132,7 +132,7 @@ pub enum NetEvent {
     },
     PromptSubmissionFailed {
         message: String,
-        restored_message: String,
+        restored_draft: DraftFollowUpData,
         optimistic_id: Option<Uuid>,
     },
     QueuedPrompt {

@@ -1,3 +1,4 @@
+use db::models::scratch::DraftFollowUpData;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Rect},
     text::Line,
@@ -232,27 +233,21 @@ impl App {
                     if self.is_queue_present() && draft.is_some() {
                         return;
                     }
-                    self.composer = draft
-                        .as_ref()
-                        .map(|draft| draft.message.trim_end_matches('\n').to_string())
-                        .unwrap_or_default();
-                    self.invalidate_composer_layout_cache();
-                    self.composer_cursor = self.composer.len();
+                    if let Some(draft) = draft {
+                        let message = draft.message.trim_end_matches('\n').to_string();
+                        let executor_config = draft.executor_config.clone();
+                        self.apply_follow_up_draft(DraftFollowUpData {
+                            message,
+                            executor_config,
+                            tui_composer: draft.tui_composer,
+                        });
+                    } else {
+                        self.restore_composer_document(None, String::new());
+                    }
                     self.composer_scratch_loaded = true;
                     self.composer_dirty = false;
                     self.last_composer_edit = None;
                     self.composer_queue_conflict = false;
-                    if let Some(draft) = draft {
-                        let executor_changed = self
-                            .composer_config
-                            .as_ref()
-                            .map(|config| config.executor != draft.executor_config.executor)
-                            .unwrap_or(true);
-                        self.composer_config = Some(draft.executor_config);
-                        if executor_changed {
-                            self.rebind_discovery_stream();
-                        }
-                    }
                 }
             }
             NetEvent::WorkspaceCreateReposLoaded { repos } => {
@@ -423,16 +418,14 @@ impl App {
             }
             NetEvent::PromptSubmissionFailed {
                 message,
-                restored_message,
+                restored_draft,
                 optimistic_id,
             } => {
                 self.actions_in_flight.prompt_submit = false;
                 if let Some(local_id) = optimistic_id {
                     self.mark_optimistic_failed(local_id);
                 }
-                self.composer = restored_message;
-                self.invalidate_composer_layout_cache();
-                self.composer_cursor = self.composer.len();
+                self.apply_follow_up_draft(restored_draft);
                 self.composer_dirty = true;
                 self.last_composer_edit = Some(std::time::Instant::now());
                 self.focus = Focus::Composer;
@@ -446,6 +439,7 @@ impl App {
                     self.queue_pending = false;
                     self.mark_detail_dirty();
                     self.composer.clear();
+                    self.composer_snippets.clear();
                     self.invalidate_composer_layout_cache();
                     self.composer_cursor = 0;
                     self.composer_dirty = false;
@@ -471,21 +465,10 @@ impl App {
                     self.queue_pending = false;
                     self.mark_detail_dirty();
                     if let Some(queued) = restored {
-                        let executor_changed = self
-                            .composer_config
-                            .as_ref()
-                            .map(|config| config.executor != queued.executor_config.executor)
-                            .unwrap_or(true);
-                        self.composer = queued.message;
-                        self.invalidate_composer_layout_cache();
-                        self.composer_cursor = self.composer.len();
-                        self.composer_config = Some(queued.executor_config);
+                        self.apply_follow_up_draft(queued);
                         self.composer_dirty = true;
                         self.last_composer_edit = Some(std::time::Instant::now());
                         self.composer_queue_conflict = false;
-                        if executor_changed {
-                            self.rebind_discovery_stream();
-                        }
                     }
                     self.status = "Cancelled queued follow-up".to_string();
                     self.error = None;
@@ -898,6 +881,7 @@ mod tests {
             )),
             composer_options: None,
             composer: String::new(),
+            composer_snippets: Vec::new(),
             composer_cursor: 0,
             editor_mode: ComposerEditorMode::Standard,
             vim_pending_operator: None,
@@ -928,6 +912,7 @@ mod tests {
             agent_picker: None,
             workspace_project_filter_picker: None,
             session_rename: None,
+            snippet_preview: None,
             search_prompt: None,
             conversation_search: None,
             tool_call_display_mode: crate::app::ToolCallDisplayMode::Expanded,
@@ -1055,6 +1040,7 @@ mod tests {
                     executor_config: ExecutorConfig::new(
                         executors::executors::BaseCodingAgent::Codex,
                     ),
+                    tui_composer: None,
                 }),
             },
             Rect::new(0, 0, 80, 24),
@@ -1078,6 +1064,7 @@ mod tests {
                     executor_config: ExecutorConfig::new(
                         executors::executors::BaseCodingAgent::Codex,
                     ),
+                    tui_composer: None,
                 },
                 queued_at: chrono::Utc::now(),
             },
@@ -1092,6 +1079,7 @@ mod tests {
                     executor_config: ExecutorConfig::new(
                         executors::executors::BaseCodingAgent::Codex,
                     ),
+                    tui_composer: None,
                 }),
             },
             Rect::new(0, 0, 80, 24),
@@ -1112,7 +1100,13 @@ mod tests {
         app.handle_net_event(
             NetEvent::PromptSubmissionFailed {
                 message: "backend slow".to_string(),
-                restored_message: "retry me".to_string(),
+                restored_draft: DraftFollowUpData {
+                    message: "retry me".to_string(),
+                    executor_config: ExecutorConfig::new(
+                        executors::executors::BaseCodingAgent::Codex,
+                    ),
+                    tui_composer: None,
+                },
                 optimistic_id: Some(local_id),
             },
             Rect::new(0, 0, 80, 24),

@@ -8,6 +8,7 @@ use ratatui::{
 
 use crate::{
     app::App,
+    editor::render_editor_buffer,
     ui::{centered_rect, panel_block},
 };
 
@@ -254,6 +255,29 @@ impl App {
                 .highlight_symbol(">> "),
             popup,
             &mut state,
+        );
+    }
+
+    pub(crate) fn render_snippet_preview(&self, frame: &mut Frame, area: Rect) {
+        let Some(preview) = self.snippet_preview.as_ref() else {
+            return;
+        };
+        let popup = centered_rect(76, 70, area);
+        frame.render_widget(Clear, popup);
+        frame.render_widget(panel_block("Pasted Text", true), popup);
+        frame.render_widget(
+            Paragraph::new(render_editor_buffer(
+                &preview.text,
+                preview.cursor,
+                true,
+                self.editor_mode,
+            ))
+            .block(panel_block("Edit", false))
+            .wrap(Wrap { trim: false }),
+            popup.inner(ratatui::layout::Margin {
+                vertical: 1,
+                horizontal: 1,
+            }),
         );
     }
 }

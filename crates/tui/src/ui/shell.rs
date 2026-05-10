@@ -62,6 +62,9 @@ impl App {
         if self.workspace_create_branch_picker.is_some() {
             self.render_workspace_create_branch_picker(frame, frame.area());
         }
+        if self.snippet_preview.is_some() {
+            self.render_snippet_preview(frame, frame.area());
+        }
     }
 
     fn header(&self) -> Paragraph<'_> {

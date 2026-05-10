@@ -28,6 +28,7 @@ async fn queue_message(
     let data = DraftFollowUpData {
         message: payload.message,
         executor_config: payload.executor_config,
+        tui_composer: None,
     };
 
     let queued = deployment

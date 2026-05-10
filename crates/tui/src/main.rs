@@ -5,6 +5,7 @@ mod conversation;
 mod editor;
 mod input;
 mod model;
+mod paste;
 mod ui;
 mod workspace;
 

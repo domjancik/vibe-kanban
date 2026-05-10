@@ -36,6 +36,7 @@ impl App {
         self.bundle = crate::model::WorkspaceBundle::default();
         self.reset_conversation_state();
         self.composer.clear();
+        self.composer_snippets.clear();
         self.invalidate_composer_layout_cache();
         self.composer_cursor = 0;
         self.composer_dirty = false;
@@ -72,6 +73,7 @@ impl App {
         self.workspace_create_repo_picker = None;
         self.workspace_create_branch_picker = None;
         self.composer.clear();
+        self.composer_snippets.clear();
         self.invalidate_composer_layout_cache();
         self.composer_cursor = 0;
         self.composer_dirty = false;
@@ -389,9 +391,7 @@ impl App {
             .as_ref()
             .map(|state| state.available_repos.clone())
             .unwrap_or_default();
-        self.composer = draft.message;
-        self.invalidate_composer_layout_cache();
-        self.composer_cursor = self.composer.len();
+        self.restore_composer_document(draft.tui_composer, draft.message);
         self.composer_dirty = false;
         self.draft_save_in_flight = false;
         self.last_composer_edit = None;
@@ -448,7 +448,7 @@ impl App {
         {
             return Err("Select a branch for every repository");
         }
-        if self.composer.trim().is_empty() {
+        if self.expanded_composer().trim().is_empty() {
             return Err("Enter a prompt");
         }
         if self.composer_config.is_none() {
@@ -477,7 +477,7 @@ impl App {
         let Some(executor_config) = self.composer_config.clone() else {
             return;
         };
-        let prompt = self.composer.trim().to_string();
+        let prompt = self.expanded_composer().trim().to_string();
         let name = prompt
             .lines()
             .find(|line| !line.trim().is_empty())
@@ -584,6 +584,7 @@ mod tests {
             )),
             composer_options: None,
             composer: String::new(),
+            composer_snippets: Vec::new(),
             composer_cursor: 0,
             editor_mode: ComposerEditorMode::Standard,
             vim_pending_operator: None,
@@ -617,6 +618,7 @@ mod tests {
             workspace_create_repo_picker: None,
             workspace_create_branch_picker: None,
             session_rename: None,
+            snippet_preview: None,
             search_prompt: None,
             conversation_search: None,
             tool_call_display_mode: ToolCallDisplayMode::Expanded,
@@ -705,6 +707,7 @@ mod tests {
             executor_config: app.composer_config.clone(),
             linked_issue: None,
             attachments: Vec::new(),
+            tui_composer: None,
         });
 
         assert_eq!(app.composer, "Create a workspace");

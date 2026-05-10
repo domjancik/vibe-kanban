@@ -29,7 +29,7 @@ impl App {
             let api = self.api.clone();
             let tx = self.tx.clone();
             let draft = DraftWorkspaceData {
-                message: self.composer.clone(),
+                message: self.expanded_composer(),
                 repos: self
                     .workspace_create
                     .as_ref()
@@ -47,6 +47,7 @@ impl App {
                 executor_config: Some(executor_config),
                 linked_issue: None,
                 attachments: Vec::new(),
+                tui_composer: self.composer_document(),
             };
             let revision = self.composer_edit_revision;
             tokio::spawn(async move {
@@ -96,8 +97,9 @@ impl App {
         let api = self.api.clone();
         let tx = self.tx.clone();
         let draft = DraftFollowUpData {
-            message: self.composer.clone(),
+            message: self.expanded_composer(),
             executor_config,
+            tui_composer: self.composer_document(),
         };
         let revision = self.composer_edit_revision;
         tokio::spawn(async move {
@@ -161,6 +163,7 @@ impl App {
             self.composer_scratch_id = scratch_id;
             self.composer_scratch_loaded = scratch_id.is_none();
             self.composer.clear();
+            self.composer_snippets.clear();
             self.invalidate_composer_layout_cache();
             self.composer_cursor = 0;
             self.composer_dirty = false;
@@ -236,7 +239,7 @@ impl App {
             self.status = "Queueing is only available for an existing session".to_string();
             return;
         };
-        let prompt = self.composer.trim().to_string();
+        let prompt = self.expanded_composer().trim().to_string();
         if prompt.is_empty() {
             self.status = "Composer is empty".to_string();
             return;
@@ -248,6 +251,7 @@ impl App {
         let draft = DraftFollowUpData {
             message: prompt,
             executor_config,
+            tui_composer: self.composer_document(),
         };
         self.actions_in_flight.queue_mutation = true;
         self.status = "Queueing follow-up".to_string();
@@ -315,6 +319,7 @@ impl App {
             return;
         }
         self.composer.clear();
+        self.composer_snippets.clear();
         self.invalidate_composer_layout_cache();
         self.composer_cursor = 0;
         self.composer_dirty = false;
@@ -404,6 +409,7 @@ mod tests {
                 data: DraftFollowUpData {
                     message: "queued".to_string(),
                     executor_config: ExecutorConfig::new(BaseCodingAgent::Codex),
+                    tui_composer: None,
                 },
                 queued_at: Utc::now(),
             },

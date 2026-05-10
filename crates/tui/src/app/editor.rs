@@ -1,15 +1,22 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use db::models::scratch::{DraftFollowUpData, TuiComposerDocument, TuiComposerSnippet};
 use ratatui::text::Text;
 
 use crate::{
     app::{App, SessionRenameState},
+    app::state::PastedSnippetPreviewState,
     editor::{
         ComposerEditorMode, VimMode, VimOperator, apply_text_edit_action, clamp_char_boundary,
         line_end_index, line_start_index, move_cursor_vertical, next_char_boundary,
-        next_word_start, prev_char_boundary, prev_word_start, render_editor_buffer,
+        next_word_start, prev_char_boundary, prev_word_start,
+        render_editor_buffer_with_snippets,
     },
     input::{TextInputEvent, TextInputOptions, map_text_input_key},
     model::{Focus, Pane},
+    paste::{
+        PASTE_HARD_CEILING_CHARS, SNIPPET_PLACEHOLDER_CHAR, compose_document, exceeds_paste_ceiling,
+        expand_document, new_snippet, placeholder_count_before, should_collapse_paste,
+    },
 };
 
 #[derive(Clone, Copy)]
@@ -17,6 +24,7 @@ enum EditorTarget {
     Composer,
     Notes,
     SessionRename,
+    SnippetPreview,
 }
 
 impl App {
@@ -41,6 +49,11 @@ impl App {
                 enter_inserts_newline: false,
                 shift_enter_inserts_newline: false,
             },
+            EditorTarget::SnippetPreview => TextInputOptions {
+                submit_on_enter: true,
+                enter_inserts_newline: true,
+                shift_enter_inserts_newline: true,
+            },
         };
 
         let event = map_text_input_key(key, options);
@@ -48,19 +61,248 @@ impl App {
             Some(TextInputEvent::Submit) => match target {
                 EditorTarget::Composer => self.submit_prompt().await,
                 EditorTarget::SessionRename => self.submit_session_rename().await,
+                EditorTarget::SnippetPreview => self.save_snippet_preview(),
                 EditorTarget::Notes => {}
             },
             Some(TextInputEvent::Edit(action)) => {
-                let changed = {
-                    let (buffer, cursor): (&mut String, &mut usize) =
-                        self.editor_buffer_cursor_mut(target);
-                    apply_text_edit_action(buffer, cursor, action)
-                };
+                let changed = self.apply_editor_action(target, action);
                 if changed {
                     self.mark_editor_dirty(target);
                 }
             }
             None => {}
+        }
+    }
+
+    fn apply_editor_action(
+        &mut self,
+        target: EditorTarget,
+        action: crate::editor::TextEditAction,
+    ) -> bool {
+        if !matches!(target, EditorTarget::Composer) {
+            let (buffer, cursor): (&mut String, &mut usize) = self.editor_buffer_cursor_mut(target);
+            return apply_text_edit_action(buffer, cursor, action);
+        }
+
+        match action {
+            crate::editor::TextEditAction::Backspace => {
+                if let Some(snippet_index) = self.composer_snippet_index_before_cursor() {
+                    self.remove_composer_snippet(snippet_index, true)
+                } else {
+                    apply_text_edit_action(&mut self.composer, &mut self.composer_cursor, action)
+                }
+            }
+            crate::editor::TextEditAction::Delete => {
+                if let Some(snippet_index) = self.composer_snippet_index_at_cursor() {
+                    self.remove_composer_snippet(snippet_index, false)
+                } else {
+                    apply_text_edit_action(&mut self.composer, &mut self.composer_cursor, action)
+                }
+            }
+            _ => apply_text_edit_action(&mut self.composer, &mut self.composer_cursor, action),
+        }
+    }
+
+    pub(crate) fn expanded_composer(&self) -> String {
+        expand_document(&self.composer, &self.composer_snippets)
+    }
+
+    pub(crate) fn composer_document(&self) -> Option<TuiComposerDocument> {
+        if self.composer_snippets.is_empty() {
+            None
+        } else {
+            Some(compose_document(
+                self.composer.clone(),
+                &self.composer_snippets,
+            ))
+        }
+    }
+
+    pub(crate) fn apply_follow_up_draft(&mut self, draft: DraftFollowUpData) {
+        self.restore_composer_document(draft.tui_composer, draft.message);
+        let executor_changed = self
+            .composer_config
+            .as_ref()
+            .map(|config| config.executor != draft.executor_config.executor)
+            .unwrap_or(true);
+        self.composer_config = Some(draft.executor_config);
+        if executor_changed {
+            self.rebind_discovery_stream();
+        }
+    }
+
+    pub(crate) fn restore_composer_document(
+        &mut self,
+        document: Option<TuiComposerDocument>,
+        fallback_message: String,
+    ) {
+        if let Some(document) = document {
+            self.composer = document.text;
+            self.composer_snippets = document.snippets;
+        } else {
+            self.composer = fallback_message;
+            self.composer_snippets.clear();
+        }
+        self.invalidate_composer_layout_cache();
+        self.composer_cursor = self.composer.len();
+    }
+
+    pub(crate) fn handle_composer_paste(&mut self, pasted: String) {
+        if exceeds_paste_ceiling(&pasted) {
+            self.status = format!(
+                "Paste too large (>{PASTE_HARD_CEILING_CHARS} chars); use a file instead"
+            );
+            self.error = Some(self.status.clone());
+            return;
+        }
+        if should_collapse_paste(&pasted) {
+            self.insert_composer_snippet(new_snippet(pasted));
+            self.mark_editor_dirty(EditorTarget::Composer);
+            self.status = "Inserted pasted snippet".to_string();
+        } else {
+            self.insert_text_into_target(EditorTarget::Composer, &pasted);
+            self.mark_editor_dirty(EditorTarget::Composer);
+        }
+    }
+
+    pub(crate) fn handle_notes_paste(&mut self, pasted: String) {
+        self.insert_text_into_target(EditorTarget::Notes, &pasted);
+        self.mark_editor_dirty(EditorTarget::Notes);
+    }
+
+    pub(crate) fn handle_snippet_preview_paste(&mut self, pasted: String) {
+        self.insert_text_into_target(EditorTarget::SnippetPreview, &pasted);
+        self.mark_editor_dirty(EditorTarget::SnippetPreview);
+    }
+
+    pub(crate) fn open_snippet_preview(&mut self) {
+        let Some(index) = self.composer_snippet_index_at_cursor() else {
+            return;
+        };
+        let Some(snippet) = self.composer_snippets.get(index) else {
+            return;
+        };
+        self.snippet_preview = Some(PastedSnippetPreviewState {
+            snippet_id: snippet.id,
+            text: snippet.full_text.clone(),
+            cursor: snippet.full_text.len(),
+        });
+        self.status = "Preview pasted snippet".to_string();
+    }
+
+    pub(crate) fn save_snippet_preview(&mut self) {
+        let Some(preview) = self.snippet_preview.take() else {
+            return;
+        };
+        if let Some(snippet) = self
+            .composer_snippets
+            .iter_mut()
+            .find(|snippet| snippet.id == preview.snippet_id)
+        {
+            snippet.full_text = preview.text;
+            snippet.char_count = snippet.full_text.chars().count();
+            snippet.line_count = snippet.full_text.lines().count().max(1);
+            self.mark_editor_dirty(EditorTarget::Composer);
+            self.status = "Updated pasted snippet".to_string();
+        }
+    }
+
+    pub(crate) fn cancel_snippet_preview(&mut self) {
+        if self.snippet_preview.take().is_some() {
+            self.status = "Closed pasted snippet".to_string();
+        }
+    }
+
+    pub(crate) fn expand_composer_snippet_at_cursor(&mut self) -> bool {
+        let Some(index) = self.composer_snippet_index_at_cursor() else {
+            return false;
+        };
+        let Some(snippet) = self.composer_snippets.get(index).cloned() else {
+            return false;
+        };
+        let start = self.composer_cursor.min(self.composer.len());
+        let end = start.saturating_add(SNIPPET_PLACEHOLDER_CHAR.len_utf8());
+        if end > self.composer.len() || !self.composer.is_char_boundary(start) {
+            return false;
+        }
+        self.composer.replace_range(start..end, &snippet.full_text);
+        self.composer_snippets.remove(index);
+        self.composer_cursor = start + snippet.full_text.len();
+        self.mark_editor_dirty(EditorTarget::Composer);
+        self.status = "Expanded pasted snippet".to_string();
+        true
+    }
+
+    fn insert_text_into_target(&mut self, target: EditorTarget, text: &str) {
+        let (buffer, cursor): (&mut String, &mut usize) = self.editor_buffer_cursor_mut(target);
+        *cursor = clamp_char_boundary(buffer, *cursor);
+        buffer.insert_str(*cursor, text);
+        *cursor += text.len();
+    }
+
+    fn insert_composer_snippet(&mut self, snippet: TuiComposerSnippet) {
+        self.composer_cursor = clamp_char_boundary(&self.composer, self.composer_cursor);
+        let snippet_index = placeholder_count_before(&self.composer, self.composer_cursor);
+        self.composer
+            .insert(self.composer_cursor, SNIPPET_PLACEHOLDER_CHAR);
+        self.composer_snippets.insert(snippet_index, snippet);
+        self.composer_cursor += SNIPPET_PLACEHOLDER_CHAR.len_utf8();
+    }
+
+    fn remove_composer_snippet(&mut self, snippet_index: usize, backspace: bool) -> bool {
+        let placeholder_cursor = if backspace {
+            prev_char_boundary(&self.composer, self.composer_cursor)
+        } else {
+            self.composer_cursor
+        };
+        let end = placeholder_cursor.saturating_add(SNIPPET_PLACEHOLDER_CHAR.len_utf8());
+        if end > self.composer.len()
+            || !self.composer.is_char_boundary(placeholder_cursor)
+            || self.composer[placeholder_cursor..]
+                .chars()
+                .next()
+                .is_none_or(|ch| ch != SNIPPET_PLACEHOLDER_CHAR)
+        {
+            return false;
+        }
+        self.composer.drain(placeholder_cursor..end);
+        if snippet_index < self.composer_snippets.len() {
+            self.composer_snippets.remove(snippet_index);
+        }
+        self.composer_cursor = placeholder_cursor.min(self.composer.len());
+        true
+    }
+
+    pub(crate) fn composer_snippet_index_at_cursor(&self) -> Option<usize> {
+        let cursor = clamp_char_boundary(&self.composer, self.composer_cursor);
+        if cursor >= self.composer.len() {
+            return None;
+        }
+        if self.composer[cursor..]
+            .chars()
+            .next()
+            .is_some_and(|ch| ch == SNIPPET_PLACEHOLDER_CHAR)
+        {
+            Some(placeholder_count_before(&self.composer, cursor))
+        } else {
+            None
+        }
+    }
+
+    fn composer_snippet_index_before_cursor(&self) -> Option<usize> {
+        let cursor = clamp_char_boundary(&self.composer, self.composer_cursor);
+        if cursor == 0 {
+            return None;
+        }
+        let previous = prev_char_boundary(&self.composer, cursor);
+        if self.composer[previous..]
+            .chars()
+            .next()
+            .is_some_and(|ch| ch == SNIPPET_PLACEHOLDER_CHAR)
+        {
+            Some(placeholder_count_before(&self.composer, previous))
+        } else {
+            None
         }
     }
 
@@ -467,6 +709,13 @@ impl App {
                     .expect("session rename target requires active state");
                 (&mut rename.name, &mut rename.cursor)
             }
+            EditorTarget::SnippetPreview => {
+                let preview = self
+                    .snippet_preview
+                    .as_mut()
+                    .expect("snippet preview target requires active state");
+                (&mut preview.text, &mut preview.cursor)
+            }
         }
     }
 
@@ -484,6 +733,7 @@ impl App {
                 self.notes_edit_revision = self.notes_edit_revision.saturating_add(1);
             }
             EditorTarget::SessionRename => self.mark_detail_dirty(),
+            EditorTarget::SnippetPreview => self.mark_detail_dirty(),
         }
     }
 
@@ -518,8 +768,9 @@ impl App {
 
     pub(crate) fn render_composer_text(&self) -> Text<'static> {
         let show_cursor = self.focus == Focus::Composer && self.selected_pane == Pane::Chat;
-        render_editor_buffer(
+        render_editor_buffer_with_snippets(
             &self.composer,
+            &self.composer_snippets,
             clamp_char_boundary(&self.composer, self.composer_cursor),
             show_cursor,
             self.editor_mode,
@@ -599,6 +850,20 @@ impl App {
                 }
             }
         }
+    }
+
+    pub(crate) async fn handle_snippet_preview_key(&mut self, key: KeyEvent) {
+        if self.snippet_preview.is_none() {
+            return;
+        }
+
+        if matches!(key.code, KeyCode::Esc) {
+            self.cancel_snippet_preview();
+            return;
+        }
+
+        self.handle_target_text_input(key, EditorTarget::SnippetPreview)
+            .await;
     }
 
     async fn submit_session_rename(&mut self) {
@@ -703,6 +968,7 @@ mod tests {
             composer_config: None,
             composer_options: None,
             composer: String::new(),
+            composer_snippets: Vec::new(),
             composer_cursor: 0,
             editor_mode: ComposerEditorMode::Standard,
             vim_pending_operator: None,
@@ -733,6 +999,7 @@ mod tests {
             agent_picker: None,
             workspace_project_filter_picker: None,
             session_rename: None,
+            snippet_preview: None,
             search_prompt: None,
             conversation_search: None,
             tool_call_display_mode: crate::app::ToolCallDisplayMode::Expanded,

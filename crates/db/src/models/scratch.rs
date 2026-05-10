@@ -23,6 +23,29 @@ pub struct DraftFollowUpData {
     pub message: String,
     #[serde(alias = "executor_profile_id", alias = "config")]
     pub executor_config: ExecutorConfig,
+    #[serde(default)]
+    pub tui_composer: Option<TuiComposerDocument>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct TuiComposerDocument {
+    pub text: String,
+    #[serde(default)]
+    pub snippets: Vec<TuiComposerSnippet>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct TuiComposerSnippet {
+    pub id: Uuid,
+    pub full_text: String,
+    pub char_count: usize,
+    pub line_count: usize,
+    #[serde(default = "default_true")]
+    pub collapsed: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Data for preview settings scratch (URL override and screen size)
@@ -184,6 +207,8 @@ pub struct DraftWorkspaceData {
     pub linked_issue: Option<DraftWorkspaceLinkedIssue>,
     #[serde(default)]
     pub attachments: Vec<DraftWorkspaceAttachment>,
+    #[serde(default)]
+    pub tui_composer: Option<TuiComposerDocument>,
 }
 
 /// Repository entry in a draft workspace

@@ -44,14 +44,23 @@ impl App {
             select! {
                 biased;
                 Some(Ok(event)) = events.next() => {
-                    if let CrosstermEvent::Key(key) = event {
-                        if !should_process_key_event(key) {
-                            continue;
+                    match event {
+                        CrosstermEvent::Key(key) => {
+                            if !should_process_key_event(key) {
+                                continue;
+                            }
+                            self.handle_key(key, rect_from_size(terminal.size()?)).await;
+                            draw_requested = true;
+                            pending_background_redraw = false;
+                            last_key_event = Instant::now();
                         }
-                        self.handle_key(key, rect_from_size(terminal.size()?)).await;
-                        draw_requested = true;
-                        pending_background_redraw = false;
-                        last_key_event = Instant::now();
+                        CrosstermEvent::Paste(text) => {
+                            self.handle_paste(text);
+                            draw_requested = true;
+                            pending_background_redraw = false;
+                            last_key_event = Instant::now();
+                        }
+                        _ => {}
                     }
                 }
                 Some(event) = self.rx.recv() => {
@@ -127,6 +136,10 @@ impl App {
             self.handle_workspace_create_branch_picker_key(key);
             return;
         }
+        if self.snippet_preview.is_some() {
+            self.handle_snippet_preview_key(key).await;
+            return;
+        }
         if self.session_rename.is_some() {
             self.handle_session_rename_key(key).await;
             return;
@@ -166,6 +179,9 @@ impl App {
         if self.focus == Focus::Composer {
             match self.selected_pane {
                 Pane::Chat => {
+                    if self.handle_composer_snippet_key(key) {
+                        return;
+                    }
                     self.handle_editor_key(key, false).await;
                     return;
                 }
@@ -229,6 +245,35 @@ impl App {
 
         if let Some(intent) = map_app_key(key, self.creating_new_session, &self.selected_pane) {
             self.handle_app_intent(intent, size).await;
+        }
+    }
+
+    fn handle_paste(&mut self, pasted: String) {
+        if self.snippet_preview.is_some() {
+            self.handle_snippet_preview_paste(pasted);
+            return;
+        }
+        match (&self.focus, &self.selected_pane) {
+            (Focus::Composer, Pane::Chat) => self.handle_composer_paste(pasted),
+            (Focus::Composer, Pane::Notes) => self.handle_notes_paste(pasted),
+            _ => {}
+        }
+    }
+
+    fn handle_composer_snippet_key(&mut self, key: KeyEvent) -> bool {
+        if self.composer_snippet_index_at_cursor().is_none() {
+            return false;
+        }
+
+        match key.code {
+            crossterm::event::KeyCode::Enter | crossterm::event::KeyCode::Char('v') => {
+                self.open_snippet_preview();
+                true
+            }
+            crossterm::event::KeyCode::Char('e') | crossterm::event::KeyCode::Char('x') => {
+                self.expand_composer_snippet_at_cursor()
+            }
+            _ => false,
         }
     }
 

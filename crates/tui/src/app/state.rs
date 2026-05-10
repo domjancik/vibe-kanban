@@ -1,6 +1,10 @@
 use std::collections::HashMap;
 
-use db::models::{repo::Repo, workspace::WorkspaceWithStatus};
+use db::models::{
+    repo::Repo,
+    scratch::TuiComposerSnippet,
+    workspace::WorkspaceWithStatus,
+};
 use executors::{
     executor_discovery::ExecutorDiscoveredOptions,
     profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},
@@ -36,6 +40,12 @@ pub(crate) struct WorkspaceProjectFilterPickerState {
 pub(crate) struct SessionRenameState {
     pub(crate) session_id: Uuid,
     pub(crate) name: String,
+    pub(crate) cursor: usize,
+}
+
+pub(crate) struct PastedSnippetPreviewState {
+    pub(crate) snippet_id: Uuid,
+    pub(crate) text: String,
     pub(crate) cursor: usize,
 }
 
@@ -164,6 +174,7 @@ pub struct App {
     pub(crate) composer_config: Option<ExecutorConfig>,
     pub(crate) composer_options: Option<ExecutorDiscoveredOptions>,
     pub(crate) composer: String,
+    pub(crate) composer_snippets: Vec<TuiComposerSnippet>,
     pub(crate) composer_cursor: usize,
     pub(crate) editor_mode: ComposerEditorMode,
     pub(crate) vim_pending_operator: Option<VimOperator>,
@@ -197,6 +208,7 @@ pub struct App {
     pub(crate) workspace_create_repo_picker: Option<WorkspaceCreateRepoPickerState>,
     pub(crate) workspace_create_branch_picker: Option<WorkspaceCreateBranchPickerState>,
     pub(crate) session_rename: Option<SessionRenameState>,
+    pub(crate) snippet_preview: Option<PastedSnippetPreviewState>,
     pub(crate) search_prompt: Option<SearchPromptState>,
     pub(crate) conversation_search: Option<ConversationSearchState>,
     pub(crate) tool_call_display_mode: ToolCallDisplayMode,
@@ -245,6 +257,7 @@ impl App {
             composer_config: None,
             composer_options: None,
             composer: String::new(),
+            composer_snippets: Vec::new(),
             composer_cursor: 0,
             editor_mode: ComposerEditorMode::Standard,
             vim_pending_operator: None,
@@ -278,6 +291,7 @@ impl App {
             workspace_create_repo_picker: None,
             workspace_create_branch_picker: None,
             session_rename: None,
+            snippet_preview: None,
             search_prompt: None,
             conversation_search: None,
             tool_call_display_mode: ToolCallDisplayMode::Expanded,

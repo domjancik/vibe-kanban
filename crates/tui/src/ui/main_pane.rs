@@ -123,15 +123,21 @@ impl App {
 
     fn compute_chat_composer_height(&self, area_width: u16) -> u16 {
         let inner_width = area_width.saturating_sub(2).max(12) as usize;
-        let wrapped_lines = if self.composer.is_empty() {
-            1
-        } else {
-            self.composer
-                .split('\n')
-                .map(|line| line.chars().count().max(1).div_ceil(inner_width))
-                .sum::<usize>()
-                .max(1)
-        };
+        let rendered = self.render_composer_text();
+        let wrapped_lines = rendered
+            .lines
+            .iter()
+            .map(|line| {
+                let width = line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.chars().count())
+                    .sum::<usize>()
+                    .max(1);
+                width.div_ceil(inner_width)
+            })
+            .sum::<usize>()
+            .max(1);
         wrapped_lines.saturating_add(2).clamp(7, 16) as u16
     }
 }

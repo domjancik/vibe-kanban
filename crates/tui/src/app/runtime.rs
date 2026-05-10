@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use db::models::scratch::DraftFollowUpData;
 use db::models::execution_process::ExecutionProcessStatus;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
@@ -26,7 +27,7 @@ impl App {
             self.status = "Prompt submission already in progress".to_string();
             return;
         }
-        let prompt = self.composer.trim().to_string();
+        let prompt = self.expanded_composer().trim().to_string();
         if prompt.is_empty() {
             return;
         }
@@ -38,7 +39,11 @@ impl App {
             self.status = "Composer config is still loading".to_string();
             return;
         };
-        let restored_message = self.composer.clone();
+        let restored_draft = DraftFollowUpData {
+            message: self.expanded_composer(),
+            executor_config: executor_config.clone(),
+            tui_composer: self.composer_document(),
+        };
         let scratch_id = self.current_composer_scratch_id();
         let optimistic_scope = self.current_conversation_scope();
         let session = if self.creating_new_session {
@@ -47,6 +52,7 @@ impl App {
             self.current_session().cloned()
         };
         self.composer.clear();
+        self.composer_snippets.clear();
         self.invalidate_composer_layout_cache();
         self.composer_cursor = 0;
         self.composer_dirty = false;
@@ -81,7 +87,7 @@ impl App {
                 Err(error) => {
                     let _ = tx.send(NetEvent::PromptSubmissionFailed {
                         message: error.to_string(),
-                        restored_message,
+                        restored_draft,
                         optimistic_id,
                     });
                 }
