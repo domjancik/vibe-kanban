@@ -1,5 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use db::models::scratch::{DraftFollowUpData, TuiComposerDocument, TuiComposerSnippet};
+use db::models::scratch::DraftFollowUpData;
 use ratatui::text::Text;
 
 use crate::{
@@ -12,9 +12,9 @@ use crate::{
     input::{TextInputEvent, TextInputOptions, map_text_input_key},
     model::{Focus, Pane},
     paste::{
-        PASTE_HARD_CEILING_CHARS, SNIPPET_PLACEHOLDER_CHAR, compose_document,
+        PASTE_HARD_CEILING_CHARS, SNIPPET_PLACEHOLDER_CHAR, TuiComposerSnippet,
         exceeds_paste_ceiling, expand_document, new_snippet, placeholder_count_before,
-        should_collapse_paste,
+        restore_document_from_draft, serialize_document_for_draft, should_collapse_paste,
     },
 };
 
@@ -106,19 +106,12 @@ impl App {
         expand_document(&self.composer, &self.composer_snippets)
     }
 
-    pub(crate) fn composer_document(&self) -> Option<TuiComposerDocument> {
-        if self.composer_snippets.is_empty() {
-            None
-        } else {
-            Some(compose_document(
-                self.composer.clone(),
-                &self.composer_snippets,
-            ))
-        }
+    pub(crate) fn serialized_composer_for_draft(&self) -> String {
+        serialize_document_for_draft(&self.composer, &self.composer_snippets)
     }
 
     pub(crate) fn apply_follow_up_draft(&mut self, draft: DraftFollowUpData) {
-        self.restore_composer_document(draft.tui_composer, draft.message);
+        self.restore_composer_document(draft.message);
         let executor_changed = self
             .composer_config
             .as_ref()
@@ -130,18 +123,10 @@ impl App {
         }
     }
 
-    pub(crate) fn restore_composer_document(
-        &mut self,
-        document: Option<TuiComposerDocument>,
-        fallback_message: String,
-    ) {
-        if let Some(document) = document {
-            self.composer = document.text;
-            self.composer_snippets = document.snippets;
-        } else {
-            self.composer = fallback_message;
-            self.composer_snippets.clear();
-        }
+    pub(crate) fn restore_composer_document(&mut self, message: String) {
+        let (text, snippets) = restore_document_from_draft(&message);
+        self.composer = text;
+        self.composer_snippets = snippets;
         self.invalidate_composer_layout_cache();
         self.composer_cursor = self.composer.len();
     }
@@ -1175,16 +1160,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn follow_up_draft_restore_prefers_structured_tui_composer() {
+    async fn follow_up_draft_restore_reconstructs_from_serialized_message() {
         let mut app = test_app();
         let pasted = "x".repeat(1301);
         app.handle_composer_paste(pasted.clone());
         let draft = DraftFollowUpData {
-            message: app.expanded_composer(),
+            message: app.serialized_composer_for_draft(),
             executor_config: executors::profile::ExecutorConfig::new(
                 executors::executors::BaseCodingAgent::Codex,
             ),
-            tui_composer: app.composer_document(),
         };
 
         let mut restored = test_app();

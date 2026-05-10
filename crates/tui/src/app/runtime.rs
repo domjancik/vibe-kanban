@@ -39,9 +39,8 @@ impl App {
             return;
         };
         let restored_draft = DraftFollowUpData {
-            message: self.expanded_composer(),
+            message: self.serialized_composer_for_draft(),
             executor_config: executor_config.clone(),
-            tui_composer: self.composer_document(),
         };
         let scratch_id = self.current_composer_scratch_id();
         let optimistic_scope = self.current_conversation_scope();

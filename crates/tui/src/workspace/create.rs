@@ -391,7 +391,7 @@ impl App {
             .as_ref()
             .map(|state| state.available_repos.clone())
             .unwrap_or_default();
-        self.restore_composer_document(draft.tui_composer, draft.message);
+        self.restore_composer_document(draft.message);
         self.composer_dirty = false;
         self.draft_save_in_flight = false;
         self.last_composer_edit = None;
@@ -707,7 +707,6 @@ mod tests {
             executor_config: app.composer_config.clone(),
             linked_issue: None,
             attachments: Vec::new(),
-            tui_composer: None,
         });
 
         assert_eq!(app.composer, "Create a workspace");

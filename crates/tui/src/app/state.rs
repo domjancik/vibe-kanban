@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use db::models::{repo::Repo, scratch::TuiComposerSnippet, workspace::WorkspaceWithStatus};
+use db::models::{repo::Repo, workspace::WorkspaceWithStatus};
 use executors::{
     executor_discovery::ExecutorDiscoveredOptions,
     profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},
@@ -14,6 +14,7 @@ use crate::{
     conversation::{ChatRenderCache, OptimisticConversationEntry},
     editor::{ComposerEditorMode, VimOperator},
     model::{Focus, NetEvent, Pane, PatchType, QueueStatus, WorkspaceBundle, WorkspaceSummary},
+    paste::TuiComposerSnippet,
 };
 
 pub(crate) struct AgentPickerState {

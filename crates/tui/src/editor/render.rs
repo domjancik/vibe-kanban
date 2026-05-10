@@ -1,4 +1,3 @@
-use db::models::scratch::TuiComposerSnippet;
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
@@ -6,7 +5,7 @@ use ratatui::{
 
 use crate::{
     editor::{ComposerEditorMode, VimMode, clamp_char_boundary},
-    paste::{SNIPPET_PLACEHOLDER_CHAR, snippet_label},
+    paste::{SNIPPET_PLACEHOLDER_CHAR, TuiComposerSnippet, snippet_label},
 };
 
 pub fn render_editor_buffer(

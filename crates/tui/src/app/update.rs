@@ -239,10 +239,9 @@ impl App {
                         self.apply_follow_up_draft(DraftFollowUpData {
                             message,
                             executor_config,
-                            tui_composer: draft.tui_composer,
                         });
                     } else {
-                        self.restore_composer_document(None, String::new());
+                        self.restore_composer_document(String::new());
                     }
                     self.composer_scratch_loaded = true;
                     self.composer_dirty = false;
@@ -1040,7 +1039,6 @@ mod tests {
                     executor_config: ExecutorConfig::new(
                         executors::executors::BaseCodingAgent::Codex,
                     ),
-                    tui_composer: None,
                 }),
             },
             Rect::new(0, 0, 80, 24),
@@ -1064,7 +1062,6 @@ mod tests {
                     executor_config: ExecutorConfig::new(
                         executors::executors::BaseCodingAgent::Codex,
                     ),
-                    tui_composer: None,
                 },
                 queued_at: chrono::Utc::now(),
             },
@@ -1079,7 +1076,6 @@ mod tests {
                     executor_config: ExecutorConfig::new(
                         executors::executors::BaseCodingAgent::Codex,
                     ),
-                    tui_composer: None,
                 }),
             },
             Rect::new(0, 0, 80, 24),
@@ -1105,7 +1101,6 @@ mod tests {
                     executor_config: ExecutorConfig::new(
                         executors::executors::BaseCodingAgent::Codex,
                     ),
-                    tui_composer: None,
                 },
                 optimistic_id: Some(local_id),
             },

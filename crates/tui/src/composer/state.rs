@@ -29,7 +29,7 @@ impl App {
             let api = self.api.clone();
             let tx = self.tx.clone();
             let draft = DraftWorkspaceData {
-                message: self.expanded_composer(),
+                message: self.serialized_composer_for_draft(),
                 repos: self
                     .workspace_create
                     .as_ref()
@@ -47,7 +47,6 @@ impl App {
                 executor_config: Some(executor_config),
                 linked_issue: None,
                 attachments: Vec::new(),
-                tui_composer: self.composer_document(),
             };
             let revision = self.composer_edit_revision;
             tokio::spawn(async move {
@@ -97,9 +96,8 @@ impl App {
         let api = self.api.clone();
         let tx = self.tx.clone();
         let draft = DraftFollowUpData {
-            message: self.expanded_composer(),
+            message: self.serialized_composer_for_draft(),
             executor_config,
-            tui_composer: self.composer_document(),
         };
         let revision = self.composer_edit_revision;
         tokio::spawn(async move {
@@ -251,7 +249,6 @@ impl App {
         let draft = DraftFollowUpData {
             message: prompt,
             executor_config,
-            tui_composer: self.composer_document(),
         };
         self.actions_in_flight.queue_mutation = true;
         self.status = "Queueing follow-up".to_string();
@@ -409,7 +406,6 @@ mod tests {
                 data: DraftFollowUpData {
                     message: "queued".to_string(),
                     executor_config: ExecutorConfig::new(BaseCodingAgent::Codex),
-                    tui_composer: None,
                 },
                 queued_at: Utc::now(),
             },
