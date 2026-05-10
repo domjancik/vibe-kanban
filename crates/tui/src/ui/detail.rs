@@ -297,8 +297,13 @@ impl App {
         let viewport_lines = area.height.saturating_sub(2).max(1) as usize;
         let total_lines = self
             .current_todo_state()
-            .map_or(1, |state| state.total.max(1));
-        let selected_index = self.selected_todo_index.min(total_lines.saturating_sub(1));
+            .map_or(1, |state| state.total.max(1).saturating_mul(2));
+        let selected_index = self
+            .current_todo_state()
+            .map_or(0, |state| {
+                self.selected_todo_index.min(state.total.saturating_sub(1))
+            })
+            .saturating_mul(2);
         let max_offset = total_lines.saturating_sub(viewport_lines);
         let offset = selected_index
             .saturating_sub(viewport_lines.saturating_sub(1))
@@ -366,19 +371,27 @@ impl App {
             .iter()
             .map(|todo| {
                 let (marker, style) = match todo.status.to_ascii_lowercase().as_str() {
-                    "completed" => ("[x]", Style::default().fg(Color::Green)),
+                    "completed" => (
+                        "●",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     "in_progress" | "in-progress" => (
-                        "[>]",
+                        "◌",
                         Style::default()
                             .fg(Color::Yellow)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    "cancelled" => ("[-]", Style::default().fg(Color::DarkGray)),
-                    _ => ("[ ]", Style::default().fg(Color::White)),
+                    "cancelled" => ("●", Style::default().fg(Color::DarkGray)),
+                    _ => ("◌", Style::default().fg(Color::White)),
                 };
-                ListItem::new(Line::from(vec![
-                    Span::styled(format!("{marker} "), style),
-                    Span::styled(todo.content.clone(), style),
+                ListItem::new(Text::from(vec![
+                    Line::from(vec![
+                        Span::styled(format!("{marker} "), style),
+                        Span::styled(todo.content.clone(), style),
+                    ]),
+                    Line::raw(""),
                 ]))
             })
             .collect::<Vec<_>>();
