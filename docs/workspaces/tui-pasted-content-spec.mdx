@@ -1,0 +1,495 @@
+---
+title: "TUI Pasted Content Spec"
+description: "Implementation specification for collapsed pasted-text snippets in the Ratatui composer"
+---
+
+# Ratatui Pasted Content Flow
+
+This document specifies how the terminal UI should handle pasted content in workspace creation and follow-up composers.
+
+The goal is to keep large pasted input editable and durable without forcing the user to stare at thousands of inline characters in the terminal. Long pasted content should collapse into a placeholder such as `[Pasted Text]`, but the full text must still be preserved and expanded into the real prompt at send or queue time.
+
+## Scope
+
+This spec applies to:
+
+- the follow-up composer for existing sessions
+- the new-session composer
+- the workspace-creation prompt composer
+
+It does not apply to:
+
+- file attachments
+- pasted images
+- terminal PTY input outside the Vibe Kanban composer
+
+## Problem statement
+
+The current TUI composer stores prompt text as a plain `String` and serialises that same string directly into:
+
+- follow-up draft scratch payloads
+- workspace-create draft scratch payloads
+- send payloads
+- queue payloads
+
+That is sufficient for plain typing, but it is not sufficient for collapsed pasted snippets. If the UI literally replaces a pasted block with `[Pasted Text]` inside the canonical composer string, the real content is lost unless the full text is stored somewhere else.
+
+## Existing implementation review
+
+The current TUI behaviour is string-based end to end.
+
+### Current primitives
+
+- `App.composer: String`
+- `flush_draft_if_needed()` persists `DraftFollowUpData.message` and `DraftWorkspaceData.message`
+- `submit_prompt()` sends `self.composer.trim().to_string()`
+- `queue_prompt()` queues `self.composer.trim().to_string()`
+- `submit_workspace_create()` sends `self.composer.trim().to_string()`
+
+### Consequence
+
+Any collapsed-paste feature implemented only as a visual transformation on top of the existing plain string model would be fragile. It would either:
+
+- lose the original pasted text
+- restore incorrectly after a restart
+- or accidentally send the placeholder text instead of the real content
+
+## Behavioural goals
+
+The TUI pasted-content system should:
+
+- keep small pastes inline and editable as normal text
+- collapse large pastes into a compact placeholder
+- preserve the original pasted text without loss
+- allow preview and editing before send
+- expand back to plain text only at send and queue boundaries
+- survive draft persistence and restore
+- avoid changing existing backend send and queue APIs unless necessary
+
+## Non-goals
+
+The first version should not:
+
+- summarise pasted content semantically
+- automatically convert pasted text into a file attachment
+- run model-side compression on pasted content
+- apply special behaviour to ordinary typing
+
+## Comparative review
+
+The design should learn from existing terminal coding tools, but not copy their rough edges.
+
+### Claude Code
+
+Public reports show that Claude Code already collapses large pasted content into placeholders such as `[Pasted text +34 lines]`. A GitHub issue describes this exact behaviour and the resulting inability to preview or edit the collapsed content before submission. That accessibility failure is what Vibe Kanban should avoid.  
+Source: [anthropics/claude-code issue #3412](https://github.com/anthropics/claude-code/issues/3412)
+
+### OpenCode
+
+OpenCode publicly exposes a built-in `app.toggle.paste_summary` keybind in its TUI keymap reference, which strongly indicates first-class paste-summary behaviour. Community reports also describe placeholders like `[pasted x lines]` and ask how to expand or disable them.  
+Direct source: [OpenCode keybinds docs](https://opencode.ai/docs/keybinds)  
+Community signal: [OpenCode Reddit discussion about `[pasted x lines]`](https://www.reddit.com/r/opencodeCLI/comments/1rk21kl/how_do_you_do_inline_undo_expand_pasted_xx_line/)
+
+This is a useful precedent for making collapsed paste handling configurable.
+
+### Codex
+
+I did not find evidence that Codex intentionally replaces long pasted text with a placeholder. The public signals I found are bug reports about preserving multi-line pasted input and keeping it editable in the input box, not about a dedicated collapsed-paste abstraction.  
+Sources:
+
+- [openai/codex issue #2137](https://github.com/openai/codex/issues/2137)
+- [openai/codex issue #7203](https://github.com/openai/codex/issues/7203)
+
+This suggests the safer product principle for Vibe Kanban: if content is collapsed, it still must remain user-reviewable and user-editable before submission.
+
+## Product decision
+
+Vibe Kanban should implement collapsed pasted snippets, but not as a lossy string replacement.
+
+### Required behaviour
+
+If pasted content exceeds `X` characters, the composer should insert a snippet token rendered as:
+
+- `[Pasted Text]`
+
+The full pasted text should remain associated with that token in structured composer state.
+
+### Default threshold
+
+Use:
+
+- `X = 1200` Unicode scalar characters
+
+### Rationale
+
+- below that size, inline editing is still manageable in a terminal
+- above that size, the terminal becomes noisy and cursor navigation degrades sharply
+- `1200` is large enough to avoid collapsing ordinary multi-line instructions
+
+### Future config
+
+The threshold should become configurable in TUI settings later:
+
+- `paste_collapse_threshold_chars`
+- `paste_collapse_enabled`
+
+## UX model
+
+## Paste handling rules
+
+When the composer receives a paste event:
+
+1. if pasted length is `<= X`, insert inline as normal text
+2. if pasted length is `> X`, insert a collapsed pasted snippet token
+3. mark the composer dirty immediately
+4. preserve cursor position after the inserted token
+5. show the snippet in the composer without expanding the full text inline
+
+### Recommended visual format
+
+Render the inline token as:
+
+- `[Pasted Text]`
+
+Render muted metadata beside it:
+
+- character count
+- line count
+
+Example:
+
+- `[Pasted Text] 2.8k chars, 41 lines`
+
+The canonical placeholder text shown to the user should stay short and stable. Metadata should be adjacent UI, not part of the literal prompt payload.
+
+## Snippet interactions
+
+The user must be able to act on a pasted snippet before send.
+
+### Required actions
+
+- `Enter`: open snippet preview
+- `e`: expand snippet into raw inline text
+- `v`: view full content in modal or pager
+- `Backspace` or `Delete`: remove snippet
+- `x`: convert snippet to plain inline text in place
+
+### Preview behaviour
+
+Preview should open a focused secondary editor or pager showing the full pasted content.
+
+From preview, the user should be able to:
+
+- inspect the full content
+- edit the content
+- save changes back into the snippet
+- cancel without changes
+
+The first version should not require inline editing directly inside the collapsed chip.
+
+## State model
+
+The correct implementation requires a structured composer document.
+
+### Proposed document model
+
+```rust
+enum ComposerBlock {
+    Text {
+        id: Uuid,
+        text: String,
+    },
+    PastedSnippet {
+        id: Uuid,
+        full_text: String,
+        char_count: usize,
+        line_count: usize,
+        collapsed: bool,
+    },
+}
+
+struct ComposerDocument {
+    blocks: Vec<ComposerBlock>,
+    cursor: ComposerCursor,
+}
+```
+
+### Key principle
+
+The placeholder is a render concern. The real text remains stored inside the `PastedSnippet.full_text` block.
+
+## Expansion model
+
+The prompt should remain structured inside the editor, but plain text at transport boundaries.
+
+### Expansion points
+
+Expand the full document into a plain string only when:
+
+- sending a prompt
+- queueing a prompt
+- creating and starting a workspace
+
+### Do not expand for
+
+- normal on-screen rendering
+- cursor movement
+- snippet preview
+- snippet deletion
+
+## Persistence model
+
+The current scratch payloads are too string-oriented for a correct collapsed-paste implementation.
+
+### Why the current model is insufficient
+
+Today, the draft payload only persists:
+
+- `message: String`
+
+That is not enough to reconstruct:
+
+- snippet boundaries
+- collapsed vs expanded state
+- editable snippet payloads
+
+## Recommended draft format
+
+Extend draft payloads to carry both:
+
+- the expanded plain-text message for compatibility
+- a TUI-specific structured document for exact restore
+
+### Follow-up draft
+
+```ts
+type DraftFollowUpData = {
+  message: string;
+  executor_config: ExecutorConfig;
+  tui_composer?: TuiComposerDocument;
+};
+```
+
+### Workspace-create draft
+
+```ts
+type DraftWorkspaceData = {
+  message: string;
+  repos: DraftWorkspaceRepo[];
+  executor_config?: ExecutorConfig | null;
+  linked_issue?: LinkedIssue | null;
+  attachments: DraftWorkspaceAttachment[];
+  tui_composer?: TuiComposerDocument;
+};
+```
+
+### Compatibility rule
+
+The expanded `message` remains the canonical cross-client fallback.
+
+That means:
+
+- web clients can ignore `tui_composer`
+- older TUI builds can ignore `tui_composer`
+- the latest TUI can restore collapsed snippets exactly
+
+## Draft save and restore rules
+
+### On draft save
+
+Persist:
+
+- `message = expand(document)`
+- `tui_composer = serialised structured document`
+
+### On draft restore
+
+1. if `tui_composer` exists and is valid, restore from it
+2. else fall back to `message` as plain text
+
+### Fallback behaviour
+
+If the structured payload is missing or invalid, restore the prompt as plain inline text. Do not drop content.
+
+## Input-event handling
+
+The TUI should handle paste as a distinct event, not as a stream of ordinary keypresses.
+
+### Recommended primitive
+
+Use terminal paste events such as `crossterm::event::Event::Paste(String)` where available.
+
+### Why this matters
+
+Large pasted text often arrives as one terminal paste event. Treating it as ordinary character input makes threshold detection, undo grouping, and snippet insertion more fragile.
+
+## Undo and redo model
+
+A collapsed paste insertion should be one undo unit.
+
+### Required rules
+
+- one large paste inserts one snippet block
+- undo removes the whole snippet block
+- redo restores the whole snippet block
+- editing inside snippet preview should create its own undo history inside that editor
+
+## Send and queue semantics
+
+Send and queue operations should continue to use the existing plain-text APIs.
+
+### Follow-up send
+
+Before `send_prompt()`:
+
+1. expand the composer document into a plain string
+2. use that expanded string for optimistic rendering and network submission
+3. clear the structured composer state only after the same point where the plain composer would normally clear
+
+### Queue
+
+Before `queue_prompt()`:
+
+1. expand the composer document into a plain string
+2. save the queue draft using that expanded string plus `tui_composer`
+3. submit the queue request using the expanded string
+
+### Workspace create
+
+Before `submit_workspace_create()`:
+
+1. expand the document into a plain string
+2. derive workspace title from the expanded string
+3. submit the existing create-and-start request using the expanded string
+
+## Optimistic UI
+
+Once the user sends or queues, the transcript should reflect the expanded content as the canonical user message.
+
+### Recommendation
+
+Do not render `[Pasted Text]` inside canonical chat history after submission.
+
+The placeholder belongs to the composer editing experience, not to durable conversation history.
+
+## Search, copy, and export
+
+## In-composer search
+
+Searching within the composer should include snippet contents when the search scope is the draft editor.
+
+If the match occurs inside a collapsed snippet:
+
+- reveal the snippet match in preview
+- or temporarily expand that snippet in search mode
+
+## Copying the draft
+
+If the user copies the whole draft, copy the expanded plain-text form, not the placeholder token.
+
+## Exporting a session
+
+Session export should only include the post-send expanded content, because the placeholder is not part of canonical transcript semantics.
+
+## Error handling
+
+### Persistence failure
+
+If saving `tui_composer` fails but saving plain `message` succeeds:
+
+- keep the draft
+- warn that collapsed snippet restore fidelity may be reduced after restart
+
+### Snippet preview failure
+
+If preview cannot open, allow immediate conversion to inline text.
+
+### Oversized paste
+
+If pasted content exceeds a hard safety ceiling, such as multi-megabyte input:
+
+- reject inline insertion
+- recommend attaching a file instead
+
+This ceiling is separate from the normal collapse threshold.
+
+## Accessibility and usability requirements
+
+This spec should explicitly avoid the main failure mode visible in Claude Code reports.
+
+### Must-haves
+
+- the user can inspect the full pasted content before send
+- the user can edit the pasted content before send
+- the user can force inline expansion
+- the collapsed state is recoverable after restore
+
+### Must-not
+
+- hide pasted content with no preview path
+- send placeholder text literally
+- drop the pasted text during autosave
+
+## Suggested Rust module layout
+
+```text
+crates/tui/src/paste/
+  mod.rs
+  document.rs
+  snippet.rs
+  persistence.rs
+  preview.rs
+  expansion.rs
+  thresholds.rs
+```
+
+## Implementation plan
+
+### Phase 1
+
+- add structured composer document model
+- add paste-event detection
+- add collapse threshold logic
+- add send and queue expansion
+
+### Phase 2
+
+- extend scratch payloads with `tui_composer`
+- restore collapsed snippets across restart
+- add snippet preview editor
+
+### Phase 3
+
+- add settings toggle and threshold configuration
+- add search-aware snippet reveal
+- add attachment recommendation for extremely large pasted payloads
+
+## Test plan
+
+## Unit tests
+
+- paste shorter than threshold stays inline
+- paste longer than threshold becomes one snippet block
+- document expansion reproduces the original text exactly
+- undo removes one snippet insertion atomically
+- queue and send use expanded text, not placeholder text
+- restore prefers `tui_composer` over `message`
+- restore falls back safely to plain `message`
+
+## Integration tests
+
+- paste large text in follow-up composer and send
+- paste large text in workspace-create composer and submit
+- queue a composer containing pasted snippets
+- restart after autosave and restore collapsed snippets
+- expand snippet to plain text and continue editing
+
+## Success criteria
+
+The design is successful if:
+
+- long pasted content no longer floods the terminal composer
+- the user can still review and edit the full text before send
+- drafts restore without losing pasted content
+- existing send and queue APIs remain plain-text at the transport boundary
+- canonical conversation history contains the real submitted text rather than editor placeholders
