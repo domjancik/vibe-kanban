@@ -1,0 +1,382 @@
+---
+title: "TUI Agent Todos Spec"
+description: "Implementation specification for viewing the agent's current todo list in the Ratatui workspace UI"
+---
+
+# Ratatui Agent Todos Flow
+
+This document specifies how the terminal UI should expose the agent's current todo list.
+
+The goal is to match the existing web behaviour: when the agent breaks work into tasks, you can see the current list, track progress, and inspect individual items without having to scan raw tool logs.
+
+## Scope
+
+This spec applies to:
+
+- viewing the current todo list for the selected session
+- showing compact progress in the main workspace UI
+- opening an expanded todo list without leaving the current conversation
+- updating the todo state live as the agent emits new todo-management events
+
+It does not apply to:
+
+- creating or editing todo items manually
+- persisting user-authored todos separate from agent state
+- project or kanban issue todos
+
+## Existing implementation review
+
+The product already has a cross-agent todo model. It is not a separate backend endpoint today.
+
+### Source of truth
+
+The web client derives current todos from normalized conversation entries:
+
+- filter `NormalizedEntryType::ToolUse`
+- keep entries whose `action_type.action === 'todo_management'`
+- use the most recent meaningful todo list
+
+The relevant web hook is:
+
+- `packages/web-core/src/features/workspace-chat/model/hooks/useTodos.ts`
+
+### Existing UI behaviour
+
+The web session chat renders:
+
+- a compact toolbar progress indicator
+- completed/total count
+- a popover with the full todo list
+
+Relevant components:
+
+- `packages/ui/src/components/TodoProgressPopup.tsx`
+- `packages/ui/src/components/SessionChatBox.tsx`
+
+### Existing backend and executor behaviour
+
+Todo-management events are already produced in normalized logs for multiple agents, including:
+
+- Codex plan updates
+- Claude todo writes
+- OpenCode todo updates
+- Cursor todo output
+- Droid todo writes
+
+The normalized action shape is already present in:
+
+- `crates/executors/src/logs/mod.rs`
+
+The current TUI already renders individual todo tool events in conversation history, but it does not currently compute and display the session's latest todo state as a separate UX primitive.
+
+## Product decision
+
+The TUI should support a first-class “Current Todos” view.
+
+It should not require a new backend endpoint in v1. The initial implementation should derive state from the same normalized conversation entries the web UI already uses.
+
+## Goals
+
+The TUI todo flow should:
+
+- surface current agent progress without forcing log inspection
+- stay synchronized with live tool events
+- work across supported executors that emit todo-management events
+- avoid stealing focus from the composer or chat viewport
+- preserve the current todo list while older session history backfills
+
+## Non-goals
+
+The first version should not:
+
+- allow editing todos from the TUI
+- invent a separate todo persistence system
+- display stale todos from another session
+- block on full-history loading before showing progress
+
+## Behavioural model
+
+## Core rule
+
+The “current todos” view is the latest meaningful todo-management state for the active session.
+
+### Meaningful todo state
+
+Match the existing web semantics:
+
+- accept the most recent `todo_management` entry with non-empty items
+- require each item to have non-empty `content`
+- require each item to have a `status`
+
+If there is no meaningful todo list yet, the TUI should show no active todos.
+
+## Session scoping
+
+Todo state must be scoped to the active conversation session.
+
+That means:
+
+- switching sessions recomputes todo state for the newly selected session
+- new-session mode has no current todo state until events begin arriving
+- workspace-create mode has no todo view
+
+## Data model
+
+The TUI should derive and cache a compact summary:
+
+```rust
+struct SessionTodoState {
+    todos: Vec<TodoItem>,
+    completed: usize,
+    total: usize,
+    in_progress_index: Option<usize>,
+    last_updated: Option<DateTime<Utc>>,
+    source_process_id: Option<Uuid>,
+}
+```
+
+### Derived fields
+
+- `completed`: count of items whose status is `completed`
+- `total`: total number of items
+- `in_progress_index`: first item with status `in_progress` or `in-progress`
+- `last_updated`: timestamp of the normalized entry that produced the active todo list
+
+## Loading model
+
+The todo system should integrate with the fast-session-loading behaviour already specified for chat history.
+
+### Initial load
+
+When a session opens:
+
+1. compute todo state from the recent interaction window first
+2. render compact progress immediately if a recent todo list exists
+3. continue backfilling older history in the background
+
+### Backfill rule
+
+Older history may reveal an earlier todo list, but it must not overwrite a newer list that was already derived from recent history.
+
+The reducer should only replace current todo state when the incoming entry is newer than the current `last_updated`, or when no meaningful todos have been found yet.
+
+### Live updates
+
+When a new todo-management normalized entry arrives on the active session stream:
+
+- recompute the todo state immediately
+- refresh compact progress without moving chat focus
+- update any expanded todo panel in place
+
+## UI model
+
+## Compact summary
+
+The main workspace screen should show a compact todo status indicator near the chat header or composer status area.
+
+The indicator should show:
+
+- todo icon
+- completed/total count
+- active state marker when any item is `in_progress`
+
+Examples:
+
+- `Todos 0/3`
+- `Todos 2/5`
+- `Todos 5/5`
+
+### Visual state
+
+- no todos: muted or hidden depending on layout density
+- in progress: highlight with active colour
+- all completed: success colour
+
+## Expanded list
+
+The user should be able to open a fuller view of the current todo list.
+
+### Recommended affordances
+
+- `t`: toggle todo panel or popup
+- `Enter` on focused todo summary: open expanded list
+- command palette action: `Show Current Todos`
+
+### Expanded view contents
+
+Show:
+
+- header with `completed/total`
+- progress bar or compact percentage text
+- each todo item with status icon
+- `last updated` timestamp when available
+
+### Status mapping
+
+- `completed`: checkmark
+- `in_progress` or `in-progress`: active dot
+- `cancelled`: muted or struck-through row
+- anything else: empty circle
+
+## Focus and navigation
+
+The todo view should be observable without disrupting the main chat workflow.
+
+### Compact mode
+
+The summary can update while:
+
+- the composer is focused
+- the chat list is focused
+- the terminal pane is focused
+
+It must not shift keyboard focus automatically.
+
+### Expanded mode
+
+If the expanded todo view is open and new updates arrive:
+
+- keep the view open
+- preserve the selected row if it still exists
+- do not force-scroll unless the selected row disappears
+
+## Relationship to transcript
+
+The todo summary is derived state, not a replacement for the underlying tool entries.
+
+The TUI should keep both:
+
+- raw todo-management tool entries in conversation history
+- current aggregate todo summary in dedicated UI
+
+This matches the web product shape and preserves debuggability.
+
+## Relationship to current agents
+
+The spec should work with the executor behaviours already normalised by the backend.
+
+### Codex
+
+Codex plan updates are already normalised into `ActionType::TodoManagement` entries.
+
+### Claude
+
+Claude todo writes are already mapped into `ActionType::TodoManagement`.
+
+### OpenCode
+
+OpenCode todo updates are already mapped into `ActionType::TodoManagement`.
+
+### Implication
+
+The TUI should not special-case executor brands at render time. It should consume the normalized action type only.
+
+## State management
+
+The TUI should maintain a derived todo reducer adjacent to conversation state.
+
+### Recommended module layout
+
+```text
+crates/tui/src/todos/
+  mod.rs
+  derive.rs
+  state.rs
+  render.rs
+  actions.rs
+```
+
+### Integration points
+
+- recompute after conversation bootstrap snapshot loads
+- recompute after conversation backfill snapshot loads
+- recompute after live normalized entries append
+- clear state when session scope changes
+
+## Algorithm
+
+Use the same semantic rules as the web `useTodos` hook.
+
+### Reducer rules
+
+1. iterate normalized entries in timestamp order
+2. look for `tool_use` entries with `action_type = todo_management`
+3. ignore malformed or empty todo lists unless no meaningful list exists yet
+4. keep the newest meaningful todo list
+5. derive `completed`, `total`, and `in_progress_index`
+
+### Important constraint
+
+The current todo list is not “all todo entries merged together”. It is the latest todo snapshot emitted by the agent.
+
+## Empty states
+
+If there are no current todos:
+
+- compact summary should render as muted or absent
+- expanded view should show `No active todos`
+
+Do not show stale todos from prior sessions or prior workspace selections.
+
+## Error handling
+
+### Malformed todo entries
+
+If an entry has invalid or incomplete todo items:
+
+- ignore it unless there is no better todo state yet
+- do not crash rendering
+
+### Partial load
+
+If recent history is still loading:
+
+- allow compact summary to appear as soon as a recent todo state exists
+- do not block on backfill
+
+## Optional backend improvement
+
+The existing primitives are enough for v1, but a future endpoint could reduce client recomputation cost.
+
+### Potential addition
+
+Provide a session-scoped endpoint or derived stream field:
+
+- `current_todos`
+- `last_updated`
+
+That is optional. It should only be added if recomputation cost or cross-client consistency becomes a real problem.
+
+## Testing plan
+
+## Unit tests
+
+- derive no todo state from empty entries
+- derive latest meaningful todo list from multiple todo snapshots
+- ignore malformed todo entries when a valid newer list exists
+- count completed items correctly
+- detect in-progress item correctly
+- keep newer recent todo state when older history backfills later
+
+## Integration tests
+
+- open session with recent todo snapshot and show summary immediately
+- receive live todo update and refresh compact summary
+- switch sessions and clear stale todo state
+- expand todo list and preserve focus during live updates
+
+## Snapshot tests
+
+- no-todos summary state
+- in-progress compact summary
+- all-completed compact summary
+- expanded todo list with mixed statuses
+
+## Success criteria
+
+The design is successful if:
+
+- the user can see what the agent is currently working on without opening raw logs
+- progress appears quickly from recent history rather than waiting for full session load
+- live updates do not steal focus from the composer or move the chat viewport
+- the same feature works across Codex, Claude, OpenCode, and other normalized executors without executor-specific UI forks
