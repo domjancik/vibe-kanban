@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 use anyhow::Result;
 use crossterm::event::{Event as CrosstermEvent, EventStream, KeyEvent, KeyEventKind};
@@ -32,6 +35,7 @@ impl App {
         let mut draw_requested = true;
         let mut pending_background_redraw = false;
         let mut last_key_event = Instant::now() - INPUT_QUIET_WINDOW;
+        let mut pending_paste_echo: Option<(Instant, VecDeque<char>)> = None;
 
         self.ensure_workspace_selected(rect_from_size(terminal.size()?));
 
@@ -49,12 +53,16 @@ impl App {
                             if !should_process_key_event(key) {
                                 continue;
                             }
+                            if should_suppress_paste_echo_key(&mut pending_paste_echo, key) {
+                                continue;
+                            }
                             self.handle_key(key, rect_from_size(terminal.size()?)).await;
                             draw_requested = true;
                             pending_background_redraw = false;
                             last_key_event = Instant::now();
                         }
                         CrosstermEvent::Paste(text) => {
+                            pending_paste_echo = Some((Instant::now(), text.chars().collect()));
                             self.handle_paste(text);
                             draw_requested = true;
                             pending_background_redraw = false;
@@ -347,11 +355,48 @@ fn should_process_key_event(key: KeyEvent) -> bool {
     matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
 }
 
+fn should_suppress_paste_echo_key(
+    pending: &mut Option<(Instant, VecDeque<char>)>,
+    key: KeyEvent,
+) -> bool {
+    const PASTE_ECHO_WINDOW: Duration = Duration::from_millis(250);
+
+    let Some((started_at, queue)) = pending.as_mut() else {
+        return false;
+    };
+
+    if started_at.elapsed() > PASTE_ECHO_WINDOW || queue.is_empty() {
+        *pending = None;
+        return false;
+    }
+
+    let expected = queue.front().copied();
+    let matches = match (expected, key.code) {
+        (Some(expected), crossterm::event::KeyCode::Char(actual)) => actual == expected,
+        (Some('\n' | '\r'), crossterm::event::KeyCode::Enter) => true,
+        (Some('\t'), crossterm::event::KeyCode::Tab) => true,
+        _ => false,
+    };
+
+    if matches {
+        queue.pop_front();
+        if queue.is_empty() {
+            *pending = None;
+        }
+        true
+    } else {
+        *pending = None;
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::{collections::VecDeque, time::Instant};
+
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
-    use super::should_process_key_event;
+    use super::{should_process_key_event, should_suppress_paste_echo_key};
 
     #[test]
     fn ignores_release_events_but_keeps_press_and_repeat() {
@@ -373,5 +418,24 @@ mod tests {
             kind: KeyEventKind::Release,
             state: KeyEventState::NONE,
         }));
+    }
+
+    #[test]
+    fn suppresses_echoed_key_stream_after_paste() {
+        let mut pending = Some((Instant::now(), "ab\n".chars().collect::<VecDeque<_>>()));
+
+        assert!(should_suppress_paste_echo_key(
+            &mut pending,
+            KeyEvent::from(KeyCode::Char('a'))
+        ));
+        assert!(should_suppress_paste_echo_key(
+            &mut pending,
+            KeyEvent::from(KeyCode::Char('b'))
+        ));
+        assert!(should_suppress_paste_echo_key(
+            &mut pending,
+            KeyEvent::from(KeyCode::Enter)
+        ));
+        assert!(pending.is_none());
     }
 }
