@@ -293,22 +293,70 @@ impl App {
         self.mark_detail_dirty();
     }
 
-    fn todo_scroll_metrics(&self, area: Rect) -> (usize, usize, usize) {
-        let viewport_lines = area.height.saturating_sub(2).max(1) as usize;
-        let total_lines = self
-            .current_todo_state()
-            .map_or(1, |state| state.total.max(1).saturating_mul(2));
+    fn todo_detail_lines(&self, width: usize) -> (Vec<Line<'static>>, Vec<usize>) {
+        let Some(todo_state) = self.current_todo_state() else {
+            return (Vec::new(), Vec::new());
+        };
+        let width = width.max(1);
         let selected_index = self
-            .current_todo_state()
-            .map_or(0, |state| {
-                self.selected_todo_index.min(state.total.saturating_sub(1))
-            })
-            .saturating_mul(2);
+            .selected_todo_index
+            .min(todo_state.total.saturating_sub(1));
+        let mut lines = Vec::new();
+        let mut offsets = Vec::with_capacity(todo_state.total);
+
+        for (index, todo) in todo_state.todos.iter().enumerate() {
+            offsets.push(lines.len());
+            let (marker, style) = match todo.status.to_ascii_lowercase().as_str() {
+                "completed" => (
+                    "●",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                "in_progress" | "in-progress" => (
+                    "◌",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                "cancelled" => ("●", Style::default().fg(Color::DarkGray)),
+                _ => ("◌", Style::default().fg(Color::White)),
+            };
+            let mut wrapped = crate::conversation::wrap_lines(
+                vec![Line::from(vec![
+                    Span::styled(format!("{marker} "), style),
+                    Span::styled(todo.content.clone(), style),
+                ])],
+                width,
+            );
+            if index == selected_index {
+                for line in &mut wrapped {
+                    line.style = Style::default().bg(Color::Rgb(28, 38, 48));
+                }
+            }
+            lines.extend(wrapped);
+            lines.push(Line::raw(""));
+        }
+
+        (lines, offsets)
+    }
+
+    fn todo_scroll_metrics(
+        &self,
+        area: Rect,
+        selected_offsets: &[usize],
+        total_lines: usize,
+    ) -> (usize, usize, usize) {
+        let viewport_lines = area.height.max(1) as usize;
+        let selected_index = self.current_todo_state().map_or(0, |state| {
+            self.selected_todo_index.min(state.total.saturating_sub(1))
+        });
+        let selected_offset = selected_offsets.get(selected_index).copied().unwrap_or(0);
         let max_offset = total_lines.saturating_sub(viewport_lines);
-        let offset = selected_index
+        let offset = selected_offset
             .saturating_sub(viewport_lines.saturating_sub(1))
             .min(max_offset);
-        (total_lines, viewport_lines, offset)
+        (total_lines.max(1), viewport_lines, offset)
     }
 
     fn render_todo_detail(&self, frame: &mut Frame, area: Rect) {
@@ -333,10 +381,20 @@ impl App {
         };
 
         let title = format!("Todos {}/{}", todo_state.completed, todo_state.total);
+        let block = panel_block(
+            &title,
+            self.focus == Focus::Detail && self.detail_section == DetailSection::Todos,
+        );
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        if inner.height == 0 || inner.width == 0 {
+            return;
+        }
+
         let sections = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(2), Constraint::Min(1)])
-            .split(area);
+            .split(inner);
 
         let mut header_lines = vec![Line::styled(
             format!(
@@ -357,64 +415,24 @@ impl App {
         }
 
         frame.render_widget(
-            Paragraph::new(Text::from(header_lines))
-                .block(panel_block(
-                    &title,
-                    self.focus == Focus::Detail && self.detail_section == DetailSection::Todos,
-                ))
-                .wrap(Wrap { trim: false }),
+            Paragraph::new(Text::from(header_lines)).wrap(Wrap { trim: false }),
             sections[0],
         );
 
-        let items = todo_state
-            .todos
-            .iter()
-            .map(|todo| {
-                let (marker, style) = match todo.status.to_ascii_lowercase().as_str() {
-                    "completed" => (
-                        "●",
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    "in_progress" | "in-progress" => (
-                        "◌",
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    "cancelled" => ("●", Style::default().fg(Color::DarkGray)),
-                    _ => ("◌", Style::default().fg(Color::White)),
-                };
-                ListItem::new(Text::from(vec![
-                    Line::from(vec![
-                        Span::styled(format!("{marker} "), style),
-                        Span::styled(todo.content.clone(), style),
-                    ]),
-                    Line::raw(""),
-                ]))
-            })
-            .collect::<Vec<_>>();
-        let mut state = ListState::default();
-        state.select(Some(
-            self.selected_todo_index
-                .min(todo_state.total.saturating_sub(1)),
-        ));
-        frame.render_stateful_widget(
-            List::new(items)
-                .block(panel_block("", false))
-                .highlight_style(Style::default().fg(Color::Cyan).bg(Color::Rgb(28, 38, 48))),
+        let (lines, selected_offsets) = self.todo_detail_lines(sections[1].width as usize);
+        frame.render_widget(
+            Paragraph::new(Text::from(lines.clone()))
+                .wrap(Wrap { trim: false })
+                .scroll((
+                    self.todo_scroll_metrics(sections[1], &selected_offsets, lines.len())
+                        .2 as u16,
+                    0,
+                )),
             sections[1],
-            &mut state,
         );
-        let (total_lines, viewport_lines, offset_lines) = self.todo_scroll_metrics(sections[1]);
-        render_vertical_scrollbar(
-            frame,
-            sections[1],
-            total_lines,
-            viewport_lines,
-            offset_lines,
-        );
+        let (total_lines, viewport_lines, offset_lines) =
+            self.todo_scroll_metrics(sections[1], &selected_offsets, lines.len());
+        render_vertical_scrollbar(frame, area, total_lines, viewport_lines, offset_lines);
     }
 
     fn render_workspace_create_detail(&mut self, frame: &mut Frame, area: Rect) {
