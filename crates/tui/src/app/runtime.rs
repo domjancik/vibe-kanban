@@ -248,15 +248,29 @@ impl App {
                     self.mark_detail_dirty();
                 }
                 Pane::Chat | Pane::Logs => {
-                    let rows = self.session_rows();
-                    if rows.is_empty() {
-                        return;
-                    }
-                    let current = self.selected_session_row_index(&rows).unwrap_or(0) as i32;
-                    let next =
-                        (current + delta).clamp(0, rows.len().saturating_sub(1) as i32) as usize;
-                    if let Some(target) = session_target(&rows[next]) {
-                        self.select_session_target(target);
+                    if self.detail_section == crate::app::DetailSection::Todos {
+                        let total = self.current_todo_state().map_or(0, |state| state.total);
+                        if total == 0 {
+                            return;
+                        }
+                        let next = (self.selected_todo_index as i32 + delta)
+                            .clamp(0, total.saturating_sub(1) as i32)
+                            as usize;
+                        if next != self.selected_todo_index {
+                            self.selected_todo_index = next;
+                            self.mark_detail_dirty();
+                        }
+                    } else {
+                        let rows = self.session_rows();
+                        if rows.is_empty() {
+                            return;
+                        }
+                        let current = self.selected_session_row_index(&rows).unwrap_or(0) as i32;
+                        let next = (current + delta).clamp(0, rows.len().saturating_sub(1) as i32)
+                            as usize;
+                        if let Some(target) = session_target(&rows[next]) {
+                            self.select_session_target(target);
+                        }
                     }
                 }
                 Pane::Git => {
@@ -346,17 +360,29 @@ impl App {
                     }
                 }
                 Pane::Chat | Pane::Logs => {
-                    let rows = self.session_rows();
-                    if rows.is_empty() {
-                        return;
-                    }
-                    let target = if to_end {
-                        rows.last().unwrap_or(&rows[0])
+                    if self.detail_section == crate::app::DetailSection::Todos {
+                        let total = self.current_todo_state().map_or(0, |state| state.total);
+                        if total == 0 {
+                            return;
+                        }
+                        let next = if to_end { total.saturating_sub(1) } else { 0 };
+                        if next != self.selected_todo_index {
+                            self.selected_todo_index = next;
+                            self.mark_detail_dirty();
+                        }
                     } else {
-                        &rows[0]
-                    };
-                    if let Some(target) = session_target(target) {
-                        self.select_session_target(target);
+                        let rows = self.session_rows();
+                        if rows.is_empty() {
+                            return;
+                        }
+                        let target = if to_end {
+                            rows.last().unwrap_or(&rows[0])
+                        } else {
+                            &rows[0]
+                        };
+                        if let Some(target) = session_target(target) {
+                            self.select_session_target(target);
+                        }
                     }
                 }
                 Pane::Git => {

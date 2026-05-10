@@ -40,6 +40,12 @@ pub(crate) struct SessionRenameState {
     pub(crate) cursor: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DetailSection {
+    Sessions,
+    Todos,
+}
+
 pub(crate) struct PastedSnippetPreviewState {
     pub(crate) snippet_id: Uuid,
     pub(crate) text: String,
@@ -154,6 +160,7 @@ pub struct App {
     pub(crate) selected_workspace_id: Option<Uuid>,
     pub(crate) selected_pane: Pane,
     pub(crate) focus: Focus,
+    pub(crate) detail_section: DetailSection,
     pub(crate) maximized_panel: bool,
     pub(crate) show_archived: bool,
     pub(crate) filter: String,
@@ -196,6 +203,7 @@ pub struct App {
     pub(crate) conversation_bootstrapping: bool,
     pub(crate) conversation_backfilling: bool,
     pub(crate) current_todos: Option<SessionTodoState>,
+    pub(crate) selected_todo_index: usize,
     pub(crate) optimistic_entries: Vec<OptimisticConversationEntry>,
     pub(crate) notes_cursor: usize,
     pub(crate) notes_edit_revision: u64,
@@ -236,6 +244,7 @@ impl App {
             selected_workspace_id: None,
             selected_pane: Pane::Chat,
             focus: Focus::WorkspaceList,
+            detail_section: DetailSection::Sessions,
             maximized_panel: false,
             show_archived: false,
             filter: String::new(),
@@ -280,6 +289,7 @@ impl App {
             conversation_bootstrapping: false,
             conversation_backfilling: false,
             current_todos: None,
+            selected_todo_index: 0,
             optimistic_entries: Vec::new(),
             notes_cursor: 0,
             notes_edit_revision: 0,

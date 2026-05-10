@@ -214,16 +214,17 @@ The TUI should prefer this persistent side-panel model over a floating popup.
 
 ### Recommended affordances
 
-- `t`: focus or toggle the right-panel todos section
-- `Enter` on focused todo summary: jump focus to the right-panel todos section
+- `t`: focus or toggle the right-panel todos section from non-editor focus states
 - command palette action: `Show Current Todos`
+
+The compact summary is informative only in v1. It should not become an independent focus target.
 
 ### Expanded view contents
 
 Show:
 
 - header with `completed/total`
-- progress bar or compact percentage text
+- compact percentage text
 - each todo item with status icon
 - `last updated` timestamp when available
 
@@ -256,7 +257,7 @@ If the expanded todo view is open and new updates arrive:
 - preserve the selected row if it still exists
 - do not force-scroll unless the selected row disappears
 
-If the right panel is currently showing another section, the compact summary should still update, but the TUI must not auto-switch the visible right-panel section.
+The current TUI keeps the todos section persistently visible under `Processes`. Compact summary updates must not change focus or auto-select the todo section.
 
 ## Relationship to transcript
 

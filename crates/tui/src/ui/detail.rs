@@ -8,7 +8,7 @@ use ratatui::{
 };
 
 use crate::{
-    app::{App, SearchTarget, highlight_text_span, state::DetailPaneRenderCache},
+    app::{App, DetailSection, SearchTarget, highlight_text_span, state::DetailPaneRenderCache},
     editor::render_editor_buffer,
     model::{Focus, format_relative_time, workspace_title},
     ui::{panel_block, render_vertical_scrollbar},
@@ -229,7 +229,11 @@ impl App {
         if let Some(prompt) = self.inline_search_prompt(SearchTarget::Sessions) {
             frame.render_widget(
                 Paragraph::new(prompt)
-                    .block(panel_block("Session Filter", self.focus == Focus::Detail))
+                    .block(panel_block(
+                        "Session Filter",
+                        self.focus == Focus::Detail
+                            && self.detail_section == DetailSection::Sessions,
+                    ))
                     .wrap(Wrap { trim: false }),
                 session_sections[0],
             );
@@ -241,7 +245,10 @@ impl App {
         }
         frame.render_stateful_widget(
             List::new(cache.session_items.clone())
-                .block(panel_block("Sessions", self.focus == Focus::Detail))
+                .block(panel_block(
+                    "Sessions",
+                    self.focus == Focus::Detail && self.detail_section == DetailSection::Sessions,
+                ))
                 .highlight_style(Style::default().fg(Color::Cyan).bg(Color::Rgb(28, 38, 48))),
             session_sections[1],
             &mut state,
@@ -263,6 +270,42 @@ impl App {
         self.render_todo_detail(frame, lower_chunks[1]);
     }
 
+    pub(crate) fn focus_todos(&mut self) {
+        if self.creating_workspace {
+            self.status = "Todos are unavailable during workspace creation".to_string();
+            return;
+        }
+        let Some(todo_state) = self.current_todo_state() else {
+            self.status = "No active todos".to_string();
+            return;
+        };
+        self.selected_todo_index = self
+            .selected_todo_index
+            .min(todo_state.total.saturating_sub(1));
+        if self.focus == Focus::Detail && self.detail_section == DetailSection::Todos {
+            self.detail_section = DetailSection::Sessions;
+            self.status = "Focused sessions".to_string();
+        } else {
+            self.focus = Focus::Detail;
+            self.detail_section = DetailSection::Todos;
+            self.status = "Focused current todos".to_string();
+        }
+        self.mark_detail_dirty();
+    }
+
+    fn todo_scroll_metrics(&self, area: Rect) -> (usize, usize, usize) {
+        let viewport_lines = area.height.saturating_sub(2).max(1) as usize;
+        let total_lines = self
+            .current_todo_state()
+            .map_or(1, |state| state.total.max(1));
+        let selected_index = self.selected_todo_index.min(total_lines.saturating_sub(1));
+        let max_offset = total_lines.saturating_sub(viewport_lines);
+        let offset = selected_index
+            .saturating_sub(viewport_lines.saturating_sub(1))
+            .min(max_offset);
+        (total_lines, viewport_lines, offset)
+    }
+
     fn render_todo_detail(&self, frame: &mut Frame, area: Rect) {
         if area.height == 0 || area.width == 0 {
             return;
@@ -274,7 +317,10 @@ impl App {
                     "No active todos",
                     Style::default().fg(Color::DarkGray),
                 ))
-                .block(panel_block("Todos", false))
+                .block(panel_block(
+                    "Todos",
+                    self.focus == Focus::Detail && self.detail_section == DetailSection::Todos,
+                ))
                 .wrap(Wrap { trim: false }),
                 area,
             );
@@ -282,37 +328,79 @@ impl App {
         };
 
         let title = format!("Todos {}/{}", todo_state.completed, todo_state.total);
-        let mut lines = Vec::with_capacity(todo_state.todos.len().saturating_add(2));
+        let sections = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(2), Constraint::Min(1)])
+            .split(area);
+
+        let mut header_lines = vec![Line::styled(
+            format!(
+                "{}% complete",
+                if todo_state.total == 0 {
+                    0
+                } else {
+                    (todo_state.completed * 100) / todo_state.total
+                }
+            ),
+            Style::default().fg(Color::DarkGray),
+        )];
         if let Some(last_updated) = todo_state.last_updated {
-            lines.push(Line::styled(
+            header_lines.push(Line::styled(
                 format!("updated {}", format_relative_time(Some(last_updated))),
                 Style::default().fg(Color::DarkGray),
             ));
         }
 
-        for todo in &todo_state.todos {
-            let (marker, style) = match todo.status.to_ascii_lowercase().as_str() {
-                "completed" => ("[x]", Style::default().fg(Color::Green)),
-                "in_progress" | "in-progress" => (
-                    "[>]",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                "cancelled" => ("[-]", Style::default().fg(Color::DarkGray)),
-                _ => ("[ ]", Style::default().fg(Color::White)),
-            };
-            lines.push(Line::from(vec![
-                Span::styled(format!("{marker} "), style),
-                Span::styled(todo.content.clone(), style),
-            ]));
-        }
-
         frame.render_widget(
-            Paragraph::new(Text::from(lines))
-                .block(panel_block(&title, false))
+            Paragraph::new(Text::from(header_lines))
+                .block(panel_block(
+                    &title,
+                    self.focus == Focus::Detail && self.detail_section == DetailSection::Todos,
+                ))
                 .wrap(Wrap { trim: false }),
-            area,
+            sections[0],
+        );
+
+        let items = todo_state
+            .todos
+            .iter()
+            .map(|todo| {
+                let (marker, style) = match todo.status.to_ascii_lowercase().as_str() {
+                    "completed" => ("[x]", Style::default().fg(Color::Green)),
+                    "in_progress" | "in-progress" => (
+                        "[>]",
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    "cancelled" => ("[-]", Style::default().fg(Color::DarkGray)),
+                    _ => ("[ ]", Style::default().fg(Color::White)),
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!("{marker} "), style),
+                    Span::styled(todo.content.clone(), style),
+                ]))
+            })
+            .collect::<Vec<_>>();
+        let mut state = ListState::default();
+        state.select(Some(
+            self.selected_todo_index
+                .min(todo_state.total.saturating_sub(1)),
+        ));
+        frame.render_stateful_widget(
+            List::new(items)
+                .block(panel_block("", false))
+                .highlight_style(Style::default().fg(Color::Cyan).bg(Color::Rgb(28, 38, 48))),
+            sections[1],
+            &mut state,
+        );
+        let (total_lines, viewport_lines, offset_lines) = self.todo_scroll_metrics(sections[1]);
+        render_vertical_scrollbar(
+            frame,
+            sections[1],
+            total_lines,
+            viewport_lines,
+            offset_lines,
         );
     }
 
@@ -459,13 +547,14 @@ mod tests {
 
     use chrono::{TimeZone, Utc};
     use db::models::session::Session;
+    use executors::logs::TodoItem;
     use ratatui::layout::Rect;
     use tokio::sync::mpsc::unbounded_channel;
     use uuid::Uuid;
 
     use crate::{
         api::{Api, WorkspaceSubscriptions},
-        app::{App, SessionRenameState},
+        app::{App, DetailSection, SessionRenameState},
         editor::ComposerEditorMode,
         model::{Focus, Pane, QueueStatus, WorkspaceBundle},
     };
@@ -486,6 +575,7 @@ mod tests {
             selected_workspace_id: None,
             selected_pane: Pane::Chat,
             focus: Focus::Detail,
+            detail_section: crate::app::DetailSection::Sessions,
             maximized_panel: false,
             show_archived: false,
             filter: String::new(),
@@ -530,6 +620,7 @@ mod tests {
             conversation_bootstrapping: false,
             conversation_backfilling: false,
             current_todos: None,
+            selected_todo_index: 0,
             optimistic_entries: Vec::new(),
             notes_cursor: 0,
             notes_edit_revision: 0,
@@ -606,5 +697,29 @@ mod tests {
         let metrics = app.session_scroll_metrics(&session_ids, Rect::new(0, 0, 40, 6));
 
         assert_eq!(metrics, (9, 4, 4));
+    }
+
+    #[test]
+    fn focus_todos_toggles_between_todo_and_session_sections() {
+        let mut app = test_app();
+        app.current_todos = Some(crate::conversation::SessionTodoState {
+            todos: vec![TodoItem {
+                content: "ship it".to_string(),
+                status: "in_progress".to_string(),
+                priority: None,
+            }],
+            completed: 0,
+            total: 1,
+            in_progress_index: Some(0),
+            last_updated: None,
+            source_process_id: Some(Uuid::new_v4()),
+        });
+
+        app.focus_todos();
+        assert_eq!(app.focus, Focus::Detail);
+        assert_eq!(app.detail_section, DetailSection::Todos);
+
+        app.focus_todos();
+        assert_eq!(app.detail_section, DetailSection::Sessions);
     }
 }

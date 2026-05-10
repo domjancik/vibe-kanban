@@ -149,6 +149,14 @@ impl App {
             &self.conversation_process_order,
             &self.conversation_process_entries,
         );
+        if let Some(state) = &next {
+            self.selected_todo_index = self.selected_todo_index.min(state.total.saturating_sub(1));
+        } else {
+            self.selected_todo_index = 0;
+            if self.detail_section == crate::app::DetailSection::Todos {
+                self.detail_section = crate::app::DetailSection::Sessions;
+            }
+        }
         if !same_todo_state(&self.current_todos, &next) {
             self.current_todos = next;
             self.mark_detail_dirty();
@@ -641,6 +649,7 @@ mod tests {
             selected_workspace_id: None,
             selected_pane: Pane::Chat,
             focus: Focus::Main,
+            detail_section: crate::app::DetailSection::Sessions,
             maximized_panel: false,
             show_archived: false,
             filter: String::new(),
@@ -687,6 +696,7 @@ mod tests {
             conversation_bootstrapping: false,
             conversation_backfilling: false,
             current_todos: None,
+            selected_todo_index: 0,
             optimistic_entries: Vec::new(),
             notes_cursor: 0,
             notes_edit_revision: 0,

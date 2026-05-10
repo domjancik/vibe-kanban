@@ -11,7 +11,7 @@ pub use self::state::App;
 pub(crate) use self::{
     search::{highlight_line_matches, highlight_text_span},
     state::{
-        AgentPickerState, ConversationSearchState, SearchPromptState, SearchTarget,
+        AgentPickerState, ConversationSearchState, DetailSection, SearchPromptState, SearchTarget,
         SessionRenameState, ToolCallDisplayMode, WorkspaceProjectFilter,
         WorkspaceProjectFilterPickerState,
     },

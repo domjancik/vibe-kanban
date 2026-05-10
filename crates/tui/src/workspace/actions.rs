@@ -1,7 +1,7 @@
 use ratatui::layout::Rect;
 
 use crate::{
-    app::App,
+    app::{App, DetailSection},
     model::{
         NetEvent, Pane, QueueStatus, TerminalState, WorkspaceActionKind, WorkspaceBundle,
         active_process,
@@ -30,6 +30,8 @@ impl App {
         };
         self.creating_new_session = false;
         self.chat_end_offset = 0;
+        self.detail_section = DetailSection::Sessions;
+        self.selected_todo_index = 0;
         let terminal_size = self.terminal_stream_size(size);
         self.bundle = WorkspaceBundle::default();
         self.bundle.terminal = TerminalState::default();
@@ -70,6 +72,7 @@ impl App {
 
     pub(crate) fn rebind_session_streams(&mut self) {
         self.chat_end_offset = 0;
+        self.selected_todo_index = 0;
         self.api.replace_process_stream(
             self.bundle.selected_session_id,
             self.tx.clone(),
@@ -277,6 +280,7 @@ impl App {
                 self.session_rename = None;
                 self.conversation_search = None;
                 self.creating_new_session = true;
+                self.detail_section = DetailSection::Sessions;
                 self.selected_pane = Pane::Chat;
                 self.rebind_discovery_stream();
                 self.sync_composer_context();
@@ -287,6 +291,7 @@ impl App {
                 {
                     self.session_rename = None;
                     self.conversation_search = None;
+                    self.detail_section = DetailSection::Sessions;
                     self.bundle.selected_session_id = Some(session_id);
                     self.creating_new_session = false;
                     self.rebind_session_streams();

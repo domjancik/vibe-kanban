@@ -204,7 +204,7 @@ On macOS terminals, the TUI should also support the common equivalents when the 
 - `g`: git pane
 - `d`: diff pane
 - `l`: logs pane
-- `t`: terminal pane
+- `t`: focus or toggle the todos section in the right detail pane
 - `o`: notes pane
 - `/`: open a live sessions filter prompt when the Sessions list is focused
 - `v`: stop the current agent execution
@@ -314,6 +314,12 @@ This separation matters because configuration shortcuts should not compete with 
 When the selection strip is focused, the shortcut keys above mutate executor configuration. When the composer editor is focused, the same keypresses should be treated as text input instead.
 
 The composer should expand vertically as the draft wraps, within sensible bounds, rather than remaining fixed-height and hiding most of the draft body.
+
+The composer title should also carry the current session context:
+
+- existing session: session name when present, otherwise session id
+- new-session mode: `New Session`
+- workspace-create mode: `Workspace Prompt`
 
 ### Composer configuration
 

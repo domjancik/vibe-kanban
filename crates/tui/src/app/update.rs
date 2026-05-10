@@ -567,9 +567,10 @@ impl App {
             AppIntent::FocusNext => self.focus = next_focus(&self.focus),
             AppIntent::FocusPrev => self.focus = prev_focus(&self.focus),
             AppIntent::ShowHelp => {
-                self.status = "Keys: Tab focus, Ctrl+W maximize active panel, / search or filter, F workspace project filter, n/N next/prev chat match, [/ ] user turns, T compact tool runs, j/k nav, 1-6 panes, i edit, Enter open/send, r rename session, E executor (new session only), V variant, M model, R reasoning, A agent menu, P permission, p pin, x archive, v stop execution, n new session, s start dev, c cleanup, e editor, create mode: a add repo, Enter branch, d remove, Esc cancel, Esc/C-]/C-g leave terminal".to_string();
+                self.status = "Keys: Tab focus, Ctrl+W maximize active panel, / search or filter, F workspace project filter, t focus todos, n/N next/prev chat match, [/ ] user turns, T compact tool runs, j/k nav, 1-6 panes, i edit, Enter open/send, r rename session, E executor (new session only), V variant, M model, R reasoning, A agent menu, P permission, p pin, x archive, v stop execution, n new session, s start dev, c cleanup, e editor, create mode: a add repo, Enter branch, d remove, Esc cancel, Esc/C-]/C-g leave terminal".to_string();
             }
             AppIntent::OpenSearch => self.open_search(size),
+            AppIntent::FocusTodos => self.focus_todos(),
             AppIntent::SelectPane(pane) => {
                 if self.creating_workspace {
                     self.selected_pane = Pane::Chat;
@@ -654,11 +655,6 @@ impl App {
             AppIntent::MoveSelection(delta) => self.move_selection(delta, size),
             AppIntent::PageSelection(direction) => {
                 self.move_selection(direction * self.page_step(size), size)
-            }
-            AppIntent::EnterTerminalInputMode => {
-                self.selected_pane = Pane::Terminal;
-                self.bundle.terminal.input_mode = true;
-                self.status = "Terminal input mode enabled".to_string();
             }
         }
     }
@@ -861,6 +857,7 @@ mod tests {
             selected_workspace_id: None,
             selected_pane: Pane::Chat,
             focus: Focus::Main,
+            detail_section: crate::app::DetailSection::Sessions,
             maximized_panel: false,
             show_archived: false,
             filter: String::new(),
@@ -907,6 +904,7 @@ mod tests {
             conversation_bootstrapping: false,
             conversation_backfilling: false,
             current_todos: None,
+            selected_todo_index: 0,
             optimistic_entries: Vec::new(),
             notes_cursor: 0,
             notes_edit_revision: 0,

@@ -2,7 +2,7 @@ use db::models::session::Session;
 use ratatui::layout::Rect;
 
 use crate::{
-    app::{App, SearchTarget},
+    app::{App, DetailSection, SearchTarget},
     workspace::{SessionRow, session_target},
 };
 
@@ -34,6 +34,9 @@ impl App {
 
     pub(crate) fn switch_session_or_process(&mut self, size: Rect) {
         let _ = size;
+        if self.detail_section == DetailSection::Todos {
+            return;
+        }
         let rows = self.session_rows();
         let index = self.selected_session_row_index(&rows).unwrap_or(0);
         if let Some(row) = rows.get(index)
@@ -128,6 +131,7 @@ mod tests {
             selected_workspace_id: None,
             selected_pane: Pane::Chat,
             focus: Focus::Main,
+            detail_section: crate::app::DetailSection::Sessions,
             maximized_panel: false,
             show_archived: false,
             filter: String::new(),
@@ -172,6 +176,7 @@ mod tests {
             conversation_bootstrapping: false,
             conversation_backfilling: false,
             current_todos: None,
+            selected_todo_index: 0,
             optimistic_entries: Vec::new(),
             notes_cursor: 0,
             notes_edit_revision: 0,

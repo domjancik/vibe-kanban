@@ -746,7 +746,24 @@ impl App {
             Pane::Chat if self.creating_workspace => "Workspace Prompt",
             _ => "Composer",
         };
-        format!("{label} [{}]", self.editor_mode_label())
+        let session_suffix = match self.selected_pane {
+            Pane::Chat if self.creating_workspace => String::new(),
+            Pane::Chat if self.creating_new_session => " - New Session".to_string(),
+            Pane::Chat => self
+                .current_session()
+                .map(|session| {
+                    format!(
+                        " - {}",
+                        session
+                            .name
+                            .clone()
+                            .unwrap_or_else(|| session.id.to_string())
+                    )
+                })
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        format!("{label}{session_suffix} [{}]", self.editor_mode_label())
     }
 
     pub(crate) fn render_composer_text(&self) -> Text<'static> {
@@ -932,6 +949,7 @@ mod tests {
             selected_workspace_id: None,
             selected_pane: Pane::Chat,
             focus: Focus::Main,
+            detail_section: crate::app::DetailSection::Sessions,
             maximized_panel: false,
             show_archived: false,
             filter: String::new(),
@@ -976,6 +994,7 @@ mod tests {
             conversation_bootstrapping: false,
             conversation_backfilling: false,
             current_todos: None,
+            selected_todo_index: 0,
             optimistic_entries: Vec::new(),
             notes_cursor: 0,
             notes_edit_revision: 0,
@@ -1254,6 +1273,27 @@ mod tests {
         app.editor_mode = ComposerEditorMode::Vim(VimMode::Normal);
 
         assert_eq!(app.editor_panel_title(), "Notes Editor [vim normal]");
+    }
+
+    #[test]
+    fn chat_composer_title_includes_current_session_name() {
+        let mut app = test_app();
+        let session_id = Uuid::new_v4();
+        app.bundle.sessions = vec![session(session_id, "Planning")];
+        app.bundle.selected_session_id = Some(session_id);
+
+        assert_eq!(app.editor_panel_title(), "Composer - Planning [standard]");
+    }
+
+    #[test]
+    fn chat_composer_title_marks_new_session_mode() {
+        let mut app = test_app();
+        app.creating_new_session = true;
+
+        assert_eq!(
+            app.editor_panel_title(),
+            "Composer - New Session [standard]"
+        );
     }
 
     #[test]

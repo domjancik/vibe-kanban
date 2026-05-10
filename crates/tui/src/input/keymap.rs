@@ -12,6 +12,7 @@ pub enum AppIntent {
     FocusPrev,
     ShowHelp,
     OpenSearch,
+    FocusTodos,
     SelectPane(Pane),
     ToggleShowArchived,
     OpenWorkspaceProjectFilter,
@@ -42,7 +43,6 @@ pub enum AppIntent {
     JumpToEnd,
     MoveSelection(i32),
     PageSelection(i32),
-    EnterTerminalInputMode,
 }
 
 pub fn map_app_key(
@@ -84,6 +84,10 @@ pub fn map_app_key(
             code: KeyCode::Char('/'),
             ..
         } => Some(AppIntent::OpenSearch),
+        KeyEvent {
+            code: KeyCode::Char('t'),
+            ..
+        } => Some(AppIntent::FocusTodos),
         KeyEvent {
             code: KeyCode::Char('1'),
             ..
@@ -251,10 +255,6 @@ pub fn map_app_key(
             code: KeyCode::PageUp,
             ..
         } => Some(AppIntent::PageSelection(-1)),
-        KeyEvent {
-            code: KeyCode::Char('t'),
-            ..
-        } => Some(AppIntent::EnterTerminalInputMode),
         _ => None,
     }
 }
@@ -293,6 +293,10 @@ mod tests {
         assert_eq!(
             map_app_key(key(KeyCode::PageDown), false, &Pane::Chat),
             Some(AppIntent::PageSelection(1))
+        );
+        assert_eq!(
+            map_app_key(key(KeyCode::Char('t')), false, &Pane::Chat),
+            Some(AppIntent::FocusTodos)
         );
         assert_eq!(
             map_app_key(key(KeyCode::Char('j')), false, &Pane::Chat),
