@@ -201,9 +201,13 @@ impl App {
             .constraints([
                 Constraint::Length(10),
                 Constraint::Length(12),
-                Constraint::Min(7),
+                Constraint::Min(10),
             ])
             .split(area);
+        let lower_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(7), Constraint::Min(3)])
+            .split(chunks[2]);
 
         let cache = self.detail_pane_cache().clone();
         frame.render_widget(
@@ -254,7 +258,61 @@ impl App {
 
         frame.render_widget(
             List::new(cache.process_items.clone()).block(panel_block("Processes", false)),
-            chunks[2],
+            lower_chunks[0],
+        );
+        self.render_todo_detail(frame, lower_chunks[1]);
+    }
+
+    fn render_todo_detail(&self, frame: &mut Frame, area: Rect) {
+        if area.height == 0 || area.width == 0 {
+            return;
+        }
+
+        let Some(todo_state) = self.current_todo_state() else {
+            frame.render_widget(
+                Paragraph::new(Line::styled(
+                    "No active todos",
+                    Style::default().fg(Color::DarkGray),
+                ))
+                .block(panel_block("Todos", false))
+                .wrap(Wrap { trim: false }),
+                area,
+            );
+            return;
+        };
+
+        let title = format!("Todos {}/{}", todo_state.completed, todo_state.total);
+        let mut lines = Vec::with_capacity(todo_state.todos.len().saturating_add(2));
+        if let Some(last_updated) = todo_state.last_updated {
+            lines.push(Line::styled(
+                format!("updated {}", format_relative_time(Some(last_updated))),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+
+        for todo in &todo_state.todos {
+            let (marker, style) = match todo.status.to_ascii_lowercase().as_str() {
+                "completed" => ("[x]", Style::default().fg(Color::Green)),
+                "in_progress" | "in-progress" => (
+                    "[>]",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                "cancelled" => ("[-]", Style::default().fg(Color::DarkGray)),
+                _ => ("[ ]", Style::default().fg(Color::White)),
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{marker} "), style),
+                Span::styled(todo.content.clone(), style),
+            ]));
+        }
+
+        frame.render_widget(
+            Paragraph::new(Text::from(lines))
+                .block(panel_block(&title, false))
+                .wrap(Wrap { trim: false }),
+            area,
         );
     }
 
@@ -471,21 +529,22 @@ mod tests {
             conversation_process_order: Vec::new(),
             conversation_bootstrapping: false,
             conversation_backfilling: false,
+            current_todos: None,
             optimistic_entries: Vec::new(),
             notes_cursor: 0,
             notes_edit_revision: 0,
             notes_save_in_flight: false,
             agent_picker: None,
             workspace_project_filter_picker: None,
+            workspace_create: None,
+            workspace_create_repo_picker: None,
+            workspace_create_branch_picker: None,
             session_rename: None,
             snippet_preview: None,
             search_prompt: None,
             conversation_search: None,
             tool_call_display_mode: crate::app::ToolCallDisplayMode::Expanded,
             actions_in_flight: Default::default(),
-            workspace_create: None,
-            workspace_create_repo_picker: None,
-            workspace_create_branch_picker: None,
             creating_workspace: false,
             workspace_create_previous_selection: None,
             creating_new_session: false,

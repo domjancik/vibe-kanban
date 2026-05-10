@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     api::{Api, WorkspaceSubscriptions},
-    conversation::{ChatRenderCache, OptimisticConversationEntry},
+    conversation::{ChatRenderCache, OptimisticConversationEntry, SessionTodoState},
     editor::{ComposerEditorMode, VimOperator},
     model::{Focus, NetEvent, Pane, PatchType, QueueStatus, WorkspaceBundle, WorkspaceSummary},
     paste::TuiComposerSnippet,
@@ -195,6 +195,7 @@ pub struct App {
     pub(crate) conversation_process_order: Vec<Uuid>,
     pub(crate) conversation_bootstrapping: bool,
     pub(crate) conversation_backfilling: bool,
+    pub(crate) current_todos: Option<SessionTodoState>,
     pub(crate) optimistic_entries: Vec<OptimisticConversationEntry>,
     pub(crate) notes_cursor: usize,
     pub(crate) notes_edit_revision: u64,
@@ -278,6 +279,7 @@ impl App {
             conversation_process_order: Vec::new(),
             conversation_bootstrapping: false,
             conversation_backfilling: false,
+            current_todos: None,
             optimistic_entries: Vec::new(),
             notes_cursor: 0,
             notes_edit_revision: 0,

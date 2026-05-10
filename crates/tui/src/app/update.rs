@@ -212,6 +212,7 @@ impl App {
                 if self.conversation_process_order.contains(&process_id) {
                     self.conversation_process_entries
                         .insert(process_id, entries);
+                    self.recompute_current_todo_state();
                     self.reconcile_optimistic_entries();
                     self.mark_chat_render_cache_dirty();
                     self.restore_chat_viewport_anchor(size, chat_anchor);
@@ -365,6 +366,7 @@ impl App {
                     let chat_anchor = self.capture_chat_viewport_anchor(size);
                     self.conversation_process_entries
                         .insert(process_id, entries);
+                    self.recompute_current_todo_state();
                     self.reconcile_optimistic_entries();
                     self.mark_chat_render_cache_dirty();
                     self.restore_chat_viewport_anchor(size, chat_anchor);
@@ -904,6 +906,7 @@ mod tests {
             conversation_process_order: Vec::new(),
             conversation_bootstrapping: false,
             conversation_backfilling: false,
+            current_todos: None,
             optimistic_entries: Vec::new(),
             notes_cursor: 0,
             notes_edit_revision: 0,

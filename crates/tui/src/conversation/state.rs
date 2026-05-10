@@ -1,7 +1,8 @@
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
+use chrono::{DateTime, Utc};
 use executors::{
-    logs::{NormalizedEntry, NormalizedEntryType},
+    logs::{ActionType, NormalizedEntry, NormalizedEntryType, TodoItem},
     profile::ExecutorConfig,
 };
 use ratatui::{
@@ -48,7 +49,112 @@ pub struct ChatRenderCache {
     pub latest_token_usage: Option<(u32, u32)>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SessionTodoState {
+    pub todos: Vec<TodoItem>,
+    pub completed: usize,
+    pub total: usize,
+    pub in_progress_index: Option<usize>,
+    pub last_updated: Option<DateTime<Utc>>,
+    pub source_process_id: Option<Uuid>,
+}
+
+fn same_todo_state(left: &Option<SessionTodoState>, right: &Option<SessionTodoState>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            left.completed == right.completed
+                && left.total == right.total
+                && left.in_progress_index == right.in_progress_index
+                && left.last_updated == right.last_updated
+                && left.source_process_id == right.source_process_id
+                && left.todos.len() == right.todos.len()
+                && left.todos.iter().zip(&right.todos).all(|(left, right)| {
+                    left.content == right.content
+                        && left.status == right.status
+                        && left.priority == right.priority
+                })
+        }
+        _ => false,
+    }
+}
+
+fn todo_items_meaningful(todos: &[TodoItem]) -> bool {
+    !todos.is_empty()
+        && todos
+            .iter()
+            .all(|todo| !todo.content.trim().is_empty() && !todo.status.trim().is_empty())
+}
+
+fn derive_session_todo_state(
+    process_order: &[Uuid],
+    process_entries: &HashMap<Uuid, Vec<PatchType>>,
+) -> Option<SessionTodoState> {
+    let mut latest: Option<SessionTodoState> = None;
+
+    for process_id in process_order {
+        let Some(entries) = process_entries.get(process_id) else {
+            continue;
+        };
+        for entry in entries {
+            let PatchType::NormalizedEntry(entry) = entry else {
+                continue;
+            };
+            let NormalizedEntryType::ToolUse { action_type, .. } = &entry.entry_type else {
+                continue;
+            };
+            let ActionType::TodoManagement { todos, .. } = action_type else {
+                continue;
+            };
+            let has_meaningful_todos = todo_items_meaningful(todos);
+            if !has_meaningful_todos && latest.is_some() {
+                continue;
+            }
+
+            let completed = todos
+                .iter()
+                .filter(|todo| todo.status.eq_ignore_ascii_case("completed"))
+                .count();
+            let in_progress_index = todos.iter().position(|todo| {
+                todo.status.eq_ignore_ascii_case("in_progress")
+                    || todo.status.eq_ignore_ascii_case("in-progress")
+            });
+            let last_updated = entry
+                .timestamp
+                .as_deref()
+                .and_then(|timestamp| DateTime::parse_from_rfc3339(timestamp).ok())
+                .map(|timestamp| timestamp.with_timezone(&Utc));
+
+            latest = Some(SessionTodoState {
+                todos: todos.clone(),
+                completed,
+                total: todos.len(),
+                in_progress_index,
+                last_updated,
+                source_process_id: Some(*process_id),
+            });
+        }
+    }
+
+    latest.filter(|state| state.total > 0 && todo_items_meaningful(&state.todos))
+}
+
 impl App {
+    pub(crate) fn current_todo_state(&self) -> Option<&SessionTodoState> {
+        self.current_todos.as_ref()
+    }
+
+    pub(crate) fn recompute_current_todo_state(&mut self) {
+        let next = derive_session_todo_state(
+            &self.conversation_process_order,
+            &self.conversation_process_entries,
+        );
+        if !same_todo_state(&self.current_todos, &next) {
+            self.current_todos = next;
+            self.mark_detail_dirty();
+        }
+    }
+
     pub(crate) fn current_conversation_scope(&self) -> Option<ConversationScope> {
         if self.creating_new_session {
             self.selected_workspace_id
@@ -110,6 +216,7 @@ impl App {
         self.conversation_process_order.clear();
         self.conversation_bootstrapping = false;
         self.conversation_backfilling = false;
+        self.current_todos = None;
         self.optimistic_entries.clear();
         self.reset_chat_render_cache();
     }
@@ -120,6 +227,7 @@ impl App {
             self.conversation_process_order.clear();
             self.conversation_bootstrapping = false;
             self.conversation_backfilling = false;
+            self.current_todos = None;
             return;
         };
         let mut process_order = self
@@ -155,6 +263,7 @@ impl App {
             .retain(|process_id, _| process_order.contains(process_id));
         self.conversation_bootstrapping = !process_order.is_empty();
         self.conversation_backfilling = false;
+        self.recompute_current_todo_state();
 
         if process_order.is_empty() {
             return;
@@ -498,14 +607,16 @@ mod tests {
             ExecutorAction, ExecutorActionType, coding_agent_initial::CodingAgentInitialRequest,
         },
         executor_discovery::ExecutorDiscoveredOptions,
-        logs::{NormalizedEntry, NormalizedEntryType, TokenUsageInfo},
+        logs::{
+            ActionType, NormalizedEntry, NormalizedEntryType, TodoItem, TokenUsageInfo, ToolStatus,
+        },
         profile::{ExecutorConfig, ExecutorConfigs},
     };
     use sqlx::types::Json;
     use tokio::sync::mpsc::unbounded_channel;
     use uuid::Uuid;
 
-    use super::{OptimisticConversationEntry, OptimisticState};
+    use super::{OptimisticConversationEntry, OptimisticState, derive_session_todo_state};
     use crate::{
         api::{Api, WorkspaceSubscriptions},
         app::App,
@@ -575,21 +686,22 @@ mod tests {
             conversation_process_order: Vec::new(),
             conversation_bootstrapping: false,
             conversation_backfilling: false,
+            current_todos: None,
             optimistic_entries: Vec::new(),
             notes_cursor: 0,
             notes_edit_revision: 0,
             notes_save_in_flight: false,
             agent_picker: None,
             workspace_project_filter_picker: None,
+            workspace_create: None,
+            workspace_create_repo_picker: None,
+            workspace_create_branch_picker: None,
             session_rename: None,
             snippet_preview: None,
             search_prompt: None,
             conversation_search: None,
             tool_call_display_mode: crate::app::ToolCallDisplayMode::Expanded,
             actions_in_flight: Default::default(),
-            workspace_create: None,
-            workspace_create_repo_picker: None,
-            workspace_create_branch_picker: None,
             creating_workspace: false,
             workspace_create_previous_selection: None,
             creating_new_session: false,
@@ -632,6 +744,29 @@ mod tests {
         })
     }
 
+    fn todo_patch(timestamp: &str, todos: Vec<(&str, &str)>) -> PatchType {
+        PatchType::NormalizedEntry(NormalizedEntry {
+            timestamp: Some(timestamp.to_string()),
+            entry_type: NormalizedEntryType::ToolUse {
+                tool_name: "todo".to_string(),
+                action_type: ActionType::TodoManagement {
+                    todos: todos
+                        .into_iter()
+                        .map(|(content, status)| TodoItem {
+                            content: content.to_string(),
+                            status: status.to_string(),
+                            priority: None,
+                        })
+                        .collect(),
+                    operation: "write".to_string(),
+                },
+                status: ToolStatus::Success,
+            },
+            content: "todo update".to_string(),
+            metadata: None,
+        })
+    }
+
     #[test]
     fn chat_render_cache_tracks_user_message_offsets() {
         let mut app = test_app();
@@ -670,6 +805,95 @@ mod tests {
             .collect::<String>();
         assert!(first_label.contains("user"));
         assert!(second_label.contains("user"));
+    }
+
+    #[test]
+    fn derive_session_todo_state_uses_latest_meaningful_snapshot() {
+        let old_process = Uuid::new_v4();
+        let new_process = Uuid::new_v4();
+        let state = derive_session_todo_state(
+            &[old_process, new_process],
+            &HashMap::from([
+                (
+                    old_process,
+                    vec![todo_patch(
+                        "2024-01-01T00:00:00Z",
+                        vec![("first", "completed"), ("second", "in_progress")],
+                    )],
+                ),
+                (
+                    new_process,
+                    vec![todo_patch(
+                        "2024-01-01T00:01:00Z",
+                        vec![("latest", "completed"), ("next", "completed")],
+                    )],
+                ),
+            ]),
+        )
+        .expect("todo state");
+
+        assert_eq!(state.total, 2);
+        assert_eq!(state.completed, 2);
+        assert_eq!(state.in_progress_index, None);
+        assert_eq!(state.source_process_id, Some(new_process));
+        assert_eq!(state.todos[0].content, "latest");
+    }
+
+    #[test]
+    fn derive_session_todo_state_ignores_empty_update_after_meaningful_snapshot() {
+        let process_id = Uuid::new_v4();
+        let state = derive_session_todo_state(
+            &[process_id],
+            &HashMap::from([(
+                process_id,
+                vec![
+                    todo_patch("2024-01-01T00:00:00Z", vec![("keep this", "in_progress")]),
+                    todo_patch("2024-01-01T00:01:00Z", vec![]),
+                ],
+            )]),
+        )
+        .expect("todo state");
+
+        assert_eq!(state.total, 1);
+        assert_eq!(state.in_progress_index, Some(0));
+        assert_eq!(state.todos[0].content, "keep this");
+    }
+
+    #[test]
+    fn recompute_current_todo_state_does_not_let_older_backfill_override_recent_todos() {
+        let mut app = test_app();
+        let recent_process = Uuid::new_v4();
+        let older_process = Uuid::new_v4();
+        app.conversation_process_order = vec![older_process, recent_process];
+        app.conversation_process_entries.insert(
+            recent_process,
+            vec![todo_patch(
+                "2024-01-01T00:01:00Z",
+                vec![("recent", "completed"), ("current", "in_progress")],
+            )],
+        );
+        app.recompute_current_todo_state();
+        assert_eq!(
+            app.current_todo_state()
+                .expect("recent todo state")
+                .todos
+                .first()
+                .map(|todo| todo.content.as_str()),
+            Some("recent")
+        );
+
+        app.conversation_process_entries.insert(
+            older_process,
+            vec![todo_patch(
+                "2024-01-01T00:00:00Z",
+                vec![("older", "completed")],
+            )],
+        );
+        app.recompute_current_todo_state();
+
+        let todo_state = app.current_todo_state().expect("todo state after backfill");
+        assert_eq!(todo_state.source_process_id, Some(recent_process));
+        assert_eq!(todo_state.todos[0].content, "recent");
     }
 
     #[test]

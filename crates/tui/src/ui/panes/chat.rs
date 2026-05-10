@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Margin, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Text},
     widgets::{Gauge, Paragraph, Wrap},
 };
@@ -164,13 +164,47 @@ impl App {
         area: Rect,
         latest_token_usage: Option<(u32, u32)>,
     ) {
+        let todo_chunks = if self.current_todo_state().is_some() && area.width >= 28 {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(16), Constraint::Min(10)])
+                .split(area)
+        } else {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(0), Constraint::Min(1)])
+                .split(area)
+        };
+
+        if let Some(todo_state) = self.current_todo_state()
+            && todo_chunks[0].width > 0
+        {
+            let todo_style = if todo_state.total > 0 && todo_state.completed == todo_state.total {
+                Style::default().fg(Color::Green)
+            } else if todo_state.in_progress_index.is_some() {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            frame.render_widget(
+                Paragraph::new(Line::styled(
+                    format!("Todos {}/{}", todo_state.completed, todo_state.total),
+                    todo_style,
+                )),
+                todo_chunks[0],
+            );
+        }
+
+        let context_area = todo_chunks[1];
         let Some((total_tokens, context_window)) = latest_token_usage else {
             frame.render_widget(
                 Paragraph::new(Line::styled(
                     "latest context usage unavailable",
                     Style::default().fg(Color::DarkGray),
                 )),
-                area,
+                context_area,
             );
             return;
         };
@@ -193,7 +227,7 @@ impl App {
                 .ratio(ratio)
                 .label(format!("context {total_tokens}/{context_window}"))
                 .gauge_style(Style::default().fg(gauge_color)),
-            area,
+            context_area,
         );
     }
 }

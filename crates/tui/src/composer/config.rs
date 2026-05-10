@@ -574,6 +574,7 @@ mod tests {
             conversation_process_order: Vec::new(),
             conversation_bootstrapping: false,
             conversation_backfilling: false,
+            current_todos: None,
             optimistic_entries: Vec::new(),
             notes_cursor: 0,
             notes_edit_revision: 0,

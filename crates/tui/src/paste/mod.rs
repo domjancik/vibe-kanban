@@ -120,7 +120,10 @@ pub(crate) fn placeholder_count_before(text: &str, cursor: usize) -> usize {
 
 fn snippet_marker(snippet: &TuiComposerSnippet) -> String {
     let payload = BASE64.encode(snippet.full_text.as_bytes());
-    format!("{SNIPPET_MARKER_PREFIX}{}:{payload}{SNIPPET_MARKER_SUFFIX}", snippet.id)
+    format!(
+        "{SNIPPET_MARKER_PREFIX}{}:{payload}{SNIPPET_MARKER_SUFFIX}",
+        snippet.id
+    )
 }
 
 fn parse_snippet_marker(marker: &str) -> Option<TuiComposerSnippet> {
