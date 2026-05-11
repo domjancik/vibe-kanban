@@ -4,9 +4,14 @@ use std::{
 };
 
 use anyhow::Result;
-use crossterm::event::{Event as CrosstermEvent, EventStream, KeyEvent, KeyEventKind};
+use crossterm::event::{
+    Event as CrosstermEvent, EventStream, KeyEvent, KeyEventKind, MouseEvent, MouseEventKind,
+};
 use futures_util::StreamExt;
-use ratatui::{DefaultTerminal, layout::Rect};
+use ratatui::{
+    DefaultTerminal,
+    layout::{Constraint, Direction, Layout, Rect},
+};
 use tokio::{
     select,
     sync::mpsc::error::TryRecvError,
@@ -67,6 +72,12 @@ impl App {
                             draw_requested = true;
                             pending_background_redraw = false;
                             last_key_event = Instant::now();
+                        }
+                        CrosstermEvent::Mouse(mouse) => {
+                            if self.handle_mouse(mouse, rect_from_size(terminal.size()?)) {
+                                draw_requested = true;
+                                pending_background_redraw = false;
+                            }
                         }
                         _ => {}
                     }
@@ -256,6 +267,183 @@ impl App {
         }
     }
 
+    fn handle_mouse(&mut self, mouse: MouseEvent, size: Rect) -> bool {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => self.handle_mouse_scroll(-1, mouse.column, mouse.row, size),
+            MouseEventKind::ScrollDown => {
+                self.handle_mouse_scroll(1, mouse.column, mouse.row, size)
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_mouse_scroll(&mut self, delta: i32, column: u16, row: u16, size: Rect) -> bool {
+        let (workspace_area, main_area, detail_area) = self.shell_regions(size);
+
+        if workspace_area.is_some_and(|area| rect_contains(area, column, row)) {
+            let previous_focus = self.focus.clone();
+            self.focus = Focus::WorkspaceList;
+            self.move_selection(delta, size);
+            self.focus = previous_focus;
+            return true;
+        }
+
+        if detail_area.is_some_and(|area| rect_contains(area, column, row)) {
+            return self.handle_detail_mouse_scroll(delta, column, row, size);
+        }
+
+        if rect_contains(main_area, column, row) {
+            return self.handle_main_mouse_scroll(delta, column, row, size);
+        }
+
+        false
+    }
+
+    fn handle_main_mouse_scroll(&mut self, delta: i32, column: u16, row: u16, area: Rect) -> bool {
+        let chunks = if self.selected_pane == Pane::Chat {
+            let composer_height = self.chat_composer_height(area.width);
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Min(8),
+                    Constraint::Length(4),
+                    Constraint::Length(composer_height),
+                ])
+                .split(area)
+        } else if self.selected_pane == Pane::Notes {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(3), Constraint::Min(10)])
+                .split(area)
+        } else {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Min(10),
+                    Constraint::Length(5),
+                ])
+                .split(area)
+        };
+
+        let body_area = chunks[1];
+        if !rect_contains(body_area, column, row) {
+            return false;
+        }
+
+        let previous_focus = self.focus.clone();
+        self.focus = Focus::Main;
+        match self.selected_pane {
+            Pane::Chat | Pane::Logs | Pane::Git | Pane::Changes => self.move_selection(delta, area),
+            _ => {
+                self.focus = previous_focus;
+                return false;
+            }
+        }
+        self.focus = previous_focus;
+        true
+    }
+
+    fn handle_detail_mouse_scroll(
+        &mut self,
+        delta: i32,
+        column: u16,
+        row: u16,
+        area: Rect,
+    ) -> bool {
+        if self.creating_workspace {
+            return false;
+        }
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(10),
+                Constraint::Length(12),
+                Constraint::Min(10),
+            ])
+            .split(area);
+        let lower_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(7), Constraint::Min(3)])
+            .split(chunks[2]);
+        let session_sections = if self
+            .inline_search_prompt(crate::app::SearchTarget::Sessions)
+            .is_some()
+        {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(3), Constraint::Min(3)])
+                .split(chunks[1])
+        } else {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(0), Constraint::Min(3)])
+                .split(chunks[1])
+        };
+
+        let previous_focus = self.focus.clone();
+        let previous_detail_section = self.detail_section;
+        self.focus = Focus::Detail;
+
+        if rect_contains(session_sections[1], column, row) {
+            self.detail_section = crate::app::DetailSection::Sessions;
+            self.move_selection(delta, area);
+        } else if rect_contains(lower_chunks[1], column, row) {
+            self.detail_section = crate::app::DetailSection::Todos;
+            self.move_selection(delta, area);
+        } else {
+            self.focus = previous_focus;
+            self.detail_section = previous_detail_section;
+            return false;
+        }
+
+        let restore_detail_section = previous_focus != Focus::Detail;
+        self.focus = previous_focus;
+        if restore_detail_section {
+            self.detail_section = previous_detail_section;
+        }
+        true
+    }
+
+    fn shell_regions(&self, area: Rect) -> (Option<Rect>, Rect, Option<Rect>) {
+        let outer = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(2),
+            ])
+            .split(area);
+        let body = outer[1];
+
+        if self.maximized_panel {
+            return match self.focus {
+                Focus::WorkspaceList => (Some(body), body, None),
+                Focus::Main | Focus::Composer => (None, body, None),
+                Focus::Detail => (None, body, Some(body)),
+            };
+        }
+
+        if area.width >= 140 {
+            let split = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(32),
+                    Constraint::Min(50),
+                    Constraint::Length(44),
+                ])
+                .split(body);
+            (Some(split[0]), split[1], Some(split[2]))
+        } else {
+            let split = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(32), Constraint::Min(40)])
+                .split(body);
+            (Some(split[0]), split[1], None)
+        }
+    }
+
     fn handle_paste(&mut self, pasted: String) {
         if self.snippet_preview.is_some() {
             self.handle_snippet_preview_paste(pasted);
@@ -349,6 +537,13 @@ impl App {
             || self.session_rename.is_some()
             || (self.bundle.terminal.input_mode && self.selected_pane == Pane::Terminal)
     }
+}
+
+fn rect_contains(area: Rect, column: u16, row: u16) -> bool {
+    column >= area.x
+        && column < area.x.saturating_add(area.width)
+        && row >= area.y
+        && row < area.y.saturating_add(area.height)
 }
 
 fn should_process_key_event(key: KeyEvent) -> bool {
