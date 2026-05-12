@@ -1,4 +1,5 @@
 pub mod editor;
+pub mod pr;
 pub mod runtime;
 pub mod search;
 pub mod shell;
@@ -11,8 +12,8 @@ pub use self::state::App;
 pub(crate) use self::{
     search::{highlight_line_matches, highlight_text_span},
     state::{
-        AgentPickerState, ConversationSearchState, DetailSection, SearchPromptState, SearchTarget,
-        SessionRenameState, ToolCallDisplayMode, WorkspaceProjectFilter,
+        AgentPickerState, ConversationSearchState, DetailSection, PrCreateField, SearchPromptState,
+        SearchTarget, SessionRenameState, ToolCallDisplayMode, WorkspaceProjectFilter,
         WorkspaceProjectFilterPickerState,
     },
     util::{

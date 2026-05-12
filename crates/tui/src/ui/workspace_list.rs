@@ -75,6 +75,18 @@ impl App {
                         if summary.is_some_and(|summary| summary.has_unseen_turns) {
                             line.push_str("  [new]");
                         }
+                        if let Some(summary) = summary
+                            && let Some(pr_number) = summary.pr_number
+                        {
+                            let pr_label = match summary.pr_status {
+                                Some(crate::model::MergeStatus::Open) => "open",
+                                Some(crate::model::MergeStatus::Merged) => "merged",
+                                Some(crate::model::MergeStatus::Closed) => "closed",
+                                Some(crate::model::MergeStatus::Unknown) => "pr",
+                                None => "pr",
+                            };
+                            line.push_str(&format!("  [pr #{pr_number} {pr_label}]"));
+                        }
                         let meta = if let Some(summary) = summary {
                             format!(
                                 "{}  +{} -{}  {}",

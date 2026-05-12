@@ -116,6 +116,10 @@ impl App {
             } => {
                 if Some(workspace_id) == self.selected_workspace_id {
                     self.bundle.git_status = statuses;
+                    self.bundle.selected_git_repo_index = self
+                        .bundle
+                        .selected_git_repo_index
+                        .min(self.bundle.git_status.len().saturating_sub(1));
                     self.mark_git_dirty();
                 }
             }
@@ -523,6 +527,61 @@ impl App {
                     self.status = message;
                 }
             }
+            NetEvent::PullRequestCreated {
+                workspace_id,
+                repo_id,
+                pr_url,
+            } => {
+                self.pr_create = None;
+                self.upsert_local_pr_state(
+                    repo_id,
+                    pr_url.clone(),
+                    extract_pr_number(&pr_url).unwrap_or_default(),
+                    crate::model::MergeStatus::Open,
+                );
+                self.status = format!("Created pull request: {pr_url}");
+                self.error = None;
+                self.api.load_workspace(workspace_id, self.tx.clone());
+            }
+            NetEvent::PullRequestCreateFailed { message } => {
+                if let Some(state) = self.pr_create.as_mut() {
+                    state.submitting = false;
+                }
+                self.error = Some(message.clone());
+                self.status = message;
+            }
+            NetEvent::PullRequestAttached {
+                workspace_id,
+                repo_id,
+                response,
+            } => {
+                if response.pr_attached {
+                    if let (Some(pr_url), Some(pr_number), Some(pr_status)) = (
+                        response.pr_url.clone(),
+                        response.pr_number,
+                        response.pr_status.clone(),
+                    ) {
+                        self.upsert_local_pr_state(repo_id, pr_url.clone(), pr_number, pr_status);
+                        self.status = format!("Attached pull request: {pr_url}");
+                        self.error = None;
+                    }
+                } else {
+                    self.status = "No active pull request found for this branch".to_string();
+                }
+                self.api.load_workspace(workspace_id, self.tx.clone());
+            }
+            NetEvent::PullRequestAttachFailed { message } => {
+                self.error = Some(message.clone());
+                self.status = message;
+            }
+            NetEvent::PullRequestOpened { url } => {
+                self.status = format!("Opened pull request: {url}");
+                self.error = None;
+            }
+            NetEvent::PullRequestOpenFailed { url, message } => {
+                self.error = Some(format!("{message} ({url})"));
+                self.status = format!("Failed to open PR: {url}");
+            }
             NetEvent::TerminalConnected(workspace_id) => {
                 if Some(workspace_id) == self.selected_workspace_id {
                     self.bundle.terminal.connected = true;
@@ -567,7 +626,7 @@ impl App {
             AppIntent::FocusNext => self.focus = next_focus(&self.focus),
             AppIntent::FocusPrev => self.focus = prev_focus(&self.focus),
             AppIntent::ShowHelp => {
-                self.status = "Keys: Tab focus, Ctrl+W maximize active panel, / search or filter, F workspace project filter, t focus todos, n/N next/prev chat match, [/ ] user turns, T compact tool runs, j/k nav, 1-6 panes, i edit, Enter open/send, r rename session, E executor (new session only), V variant, M model, R reasoning, A agent menu, P permission, p pin, x archive, v stop execution, n new session, s start dev, c cleanup, e editor, create mode: a add repo, Enter branch, d remove, Esc cancel, Esc/C-]/C-g leave terminal".to_string();
+                self.status = "Keys: Tab focus, Ctrl+W maximize active panel, / search or filter, F workspace project filter, t focus todos, n/N next/prev chat match, [/ ] user turns, T compact tool runs, j/k nav, 1-6 panes, i edit, Enter open/send, r rename session, E executor (new session only), V variant, M model, R reasoning, A agent menu, P permission, p pin / Git PR action, x archive, v stop execution, n new session, s start dev, c cleanup, e editor, Git: p create/open PR, o open PR, a attach PR, create mode: a add repo, Enter branch, d remove, Esc cancel, Esc/C-]/C-g leave terminal".to_string();
             }
             AppIntent::OpenSearch => self.open_search(size),
             AppIntent::FocusTodos => self.focus_todos(),
@@ -777,6 +836,12 @@ impl App {
     }
 }
 
+fn extract_pr_number(url: &str) -> Option<i64> {
+    url.rsplit('/')
+        .find(|segment| !segment.is_empty())
+        .and_then(|segment| segment.parse::<i64>().ok())
+}
+
 fn chat_line_text(line: &Line<'_>) -> String {
     line.spans
         .iter()
@@ -912,6 +977,7 @@ mod tests {
             agent_picker: None,
             workspace_project_filter_picker: None,
             session_rename: None,
+            pr_create: None,
             snippet_preview: None,
             search_prompt: None,
             conversation_search: None,

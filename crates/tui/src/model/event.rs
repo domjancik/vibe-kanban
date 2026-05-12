@@ -12,8 +12,8 @@ use executors::{executor_discovery::ExecutorDiscoveredOptions, executors::BaseCo
 use uuid::Uuid;
 
 use crate::model::{
-    GitBranch, LocalDiff, PatchType, QueueStatus, RepoBranchStatus, UserSystemInfo,
-    WorkspaceStreamState, WorkspaceSummary,
+    AttachPrResponse, GitBranch, LocalDiff, PatchType, QueueStatus, RepoBranchStatus,
+    UserSystemInfo, WorkspaceStreamState, WorkspaceSummary,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,6 +159,29 @@ pub enum NetEvent {
     WorkspaceActionFinished {
         kind: WorkspaceActionKind,
         success: bool,
+        message: String,
+    },
+    PullRequestCreated {
+        workspace_id: Uuid,
+        repo_id: Uuid,
+        pr_url: String,
+    },
+    PullRequestCreateFailed {
+        message: String,
+    },
+    PullRequestAttached {
+        workspace_id: Uuid,
+        repo_id: Uuid,
+        response: AttachPrResponse,
+    },
+    PullRequestAttachFailed {
+        message: String,
+    },
+    PullRequestOpened {
+        url: String,
+    },
+    PullRequestOpenFailed {
+        url: String,
         message: String,
     },
     TerminalConnected(Uuid),

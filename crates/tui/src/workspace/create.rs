@@ -621,6 +621,7 @@ mod tests {
             workspace_create_repo_picker: None,
             workspace_create_branch_picker: None,
             session_rename: None,
+            pr_create: None,
             snippet_preview: None,
             search_prompt: None,
             conversation_search: None,

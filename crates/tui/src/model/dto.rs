@@ -163,6 +163,29 @@ pub struct OpenEditorRequest {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct CreatePrApiRequest {
+    pub title: String,
+    pub body: Option<String>,
+    pub target_branch: Option<String>,
+    pub draft: Option<bool>,
+    pub repo_id: Uuid,
+    pub auto_generate_description: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AttachExistingPrRequest {
+    pub repo_id: Uuid,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AttachPrResponse {
+    pub pr_attached: bool,
+    pub pr_url: Option<String>,
+    pub pr_number: Option<i64>,
+    pub pr_status: Option<MergeStatus>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct FollowUpRequest {
     pub prompt: String,
     pub executor_config: ExecutorConfig,

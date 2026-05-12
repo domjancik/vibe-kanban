@@ -62,6 +62,9 @@ impl App {
         if self.workspace_create_branch_picker.is_some() {
             self.render_workspace_create_branch_picker(frame, frame.area());
         }
+        if self.pr_create.is_some() {
+            self.render_pr_create_modal(frame, frame.area());
+        }
         if self.snippet_preview.is_some() {
             self.render_snippet_preview(frame, frame.area());
         }

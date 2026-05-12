@@ -26,11 +26,12 @@ use crate::{
         WorkspaceSubscriptions, net_error,
     },
     model::{
-        CreateAndStartWorkspaceResponse, DiffStreamState, ExecutionProcessesState,
-        ExecutorDiscoveryStreamState, GitBranch, LogEntriesState, NetEvent, PatchType,
-        RepoBranchStatus, ScratchPayload, ScratchRecord, ScratchStreamState, UpdateScratchPayload,
-        UpdateScratchRequest, UpdateWorkspaceRequest, WorkspaceStreamState,
-        WorkspaceSummaryRequest, WorkspaceSummaryResponse,
+        AttachExistingPrRequest, AttachPrResponse, CreateAndStartWorkspaceResponse,
+        CreatePrApiRequest, DiffStreamState, ExecutionProcessesState, ExecutorDiscoveryStreamState,
+        GitBranch, LogEntriesState, NetEvent, PatchType, RepoBranchStatus, ScratchPayload,
+        ScratchRecord, ScratchStreamState, UpdateScratchPayload, UpdateScratchRequest,
+        UpdateWorkspaceRequest, WorkspaceStreamState, WorkspaceSummaryRequest,
+        WorkspaceSummaryResponse,
     },
 };
 
@@ -296,6 +297,30 @@ impl Api {
             )
             .await?;
         Ok(())
+    }
+
+    pub async fn create_pull_request(
+        &self,
+        workspace_id: Uuid,
+        request: &CreatePrApiRequest,
+    ) -> Result<String> {
+        self.post(
+            &format!("/api/workspaces/{workspace_id}/pull-requests"),
+            request,
+        )
+        .await
+    }
+
+    pub async fn attach_existing_pull_request(
+        &self,
+        workspace_id: Uuid,
+        request: &AttachExistingPrRequest,
+    ) -> Result<AttachPrResponse> {
+        self.post(
+            &format!("/api/workspaces/{workspace_id}/pull-requests/attach"),
+            request,
+        )
+        .await
     }
 
     pub fn load_workspace_create_bootstrap(&self, tx: UnboundedSender<NetEvent>) {

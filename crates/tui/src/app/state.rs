@@ -41,6 +41,30 @@ pub(crate) struct SessionRenameState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrCreateField {
+    Title,
+    Body,
+    TargetBranch,
+    Draft,
+    AutoGenerate,
+}
+
+pub(crate) struct PrCreateState {
+    pub(crate) repo_id: Uuid,
+    pub(crate) repo_name: String,
+    pub(crate) title: String,
+    pub(crate) title_cursor: usize,
+    pub(crate) body: String,
+    pub(crate) body_cursor: usize,
+    pub(crate) target_branch: String,
+    pub(crate) target_branch_cursor: usize,
+    pub(crate) draft: bool,
+    pub(crate) auto_generate_description: bool,
+    pub(crate) selected_field: PrCreateField,
+    pub(crate) submitting: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DetailSection {
     Sessions,
     Todos,
@@ -214,6 +238,7 @@ pub struct App {
     pub(crate) workspace_create_repo_picker: Option<WorkspaceCreateRepoPickerState>,
     pub(crate) workspace_create_branch_picker: Option<WorkspaceCreateBranchPickerState>,
     pub(crate) session_rename: Option<SessionRenameState>,
+    pub(crate) pr_create: Option<PrCreateState>,
     pub(crate) snippet_preview: Option<PastedSnippetPreviewState>,
     pub(crate) search_prompt: Option<SearchPromptState>,
     pub(crate) conversation_search: Option<ConversationSearchState>,
@@ -300,6 +325,7 @@ impl App {
             workspace_create_repo_picker: None,
             workspace_create_branch_picker: None,
             session_rename: None,
+            pr_create: None,
             snippet_preview: None,
             search_prompt: None,
             conversation_search: None,

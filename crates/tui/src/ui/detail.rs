@@ -196,6 +196,10 @@ impl App {
             self.render_workspace_create_detail(frame, area);
             return;
         }
+        if self.selected_pane == crate::model::Pane::Git {
+            self.render_git_detail(frame, area);
+            return;
+        }
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -357,6 +361,82 @@ impl App {
             .saturating_sub(viewport_lines.saturating_sub(1))
             .min(max_offset);
         (total_lines.max(1), viewport_lines, offset)
+    }
+
+    fn render_git_detail(&mut self, frame: &mut Frame, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(10), Constraint::Min(8)])
+            .split(area);
+
+        let workspace_info = if let Some(workspace) = &self.bundle.workspace {
+            Text::from(vec![
+                Line::raw(workspace_title(workspace)),
+                Line::raw(format!("branch: {}", workspace.branch)),
+                Line::raw(format!("archived: {}", workspace.archived)),
+                Line::raw(format!("pinned: {}", workspace.pinned)),
+                Line::raw(format!(
+                    "updated: {}",
+                    crate::model::format_relative_time(Some(workspace.updated_at))
+                )),
+            ])
+        } else {
+            Text::from(vec![Line::raw("No workspace selected")])
+        };
+        frame.render_widget(
+            Paragraph::new(workspace_info).block(panel_block("Workspace", false)),
+            chunks[0],
+        );
+
+        let lines = if let Some(status) = self.current_git_repo_status() {
+            let pr_line = if let Some(pr) = self.selected_repo_any_pr() {
+                let status_label = match pr.status {
+                    crate::model::MergeStatus::Open => "open",
+                    crate::model::MergeStatus::Merged => "merged",
+                    crate::model::MergeStatus::Closed => "closed",
+                    crate::model::MergeStatus::Unknown => "linked",
+                };
+                format!("PR #{} {status_label}", pr.pr_number)
+            } else {
+                "No PR".to_string()
+            };
+            vec![
+                Line::styled(
+                    status.repo_name.clone(),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Line::raw(format!("target: {}", status.status.target_branch_name)),
+                Line::raw(format!(
+                    "ahead {}  behind {}",
+                    status.status.commits_ahead.unwrap_or_default(),
+                    status.status.commits_behind.unwrap_or_default()
+                )),
+                Line::raw(format!(
+                    "remote ahead {}  remote behind {}",
+                    status.status.remote_commits_ahead.unwrap_or_default(),
+                    status.status.remote_commits_behind.unwrap_or_default()
+                )),
+                Line::styled(pr_line, Style::default().fg(Color::Green)),
+                Line::styled(
+                    "p primary PR action  o open PR  a attach PR".to_string(),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Line::styled(
+                    "j/k select repo  Enter no-op".to_string(),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]
+        } else {
+            vec![Line::raw("No repository status available")]
+        };
+        frame.render_widget(
+            Paragraph::new(Text::from(lines))
+                .block(panel_block("Pull Request", self.focus == Focus::Detail))
+                .wrap(Wrap { trim: false }),
+            chunks[1],
+        );
     }
 
     fn render_todo_detail(&self, frame: &mut Frame, area: Rect) {
@@ -662,6 +742,7 @@ mod tests {
             workspace_create_repo_picker: None,
             workspace_create_branch_picker: None,
             session_rename: None,
+            pr_create: None,
             snippet_preview: None,
             search_prompt: None,
             conversation_search: None,

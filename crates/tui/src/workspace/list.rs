@@ -498,6 +498,7 @@ mod tests {
             agent_picker: None,
             workspace_project_filter_picker: None,
             session_rename: None,
+            pr_create: None,
             snippet_preview: None,
             search_prompt: None,
             conversation_search: None,

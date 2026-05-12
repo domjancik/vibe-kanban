@@ -274,8 +274,16 @@ impl App {
                     }
                 }
                 Pane::Git => {
-                    let scroll = self.bundle.log_scroll as i32 + delta;
-                    self.bundle.log_scroll = scroll.clamp(0, u16::MAX as i32) as u16;
+                    if self.bundle.git_status.is_empty() {
+                        return;
+                    }
+                    let next = (self.bundle.selected_git_repo_index as i32 + delta)
+                        .clamp(0, self.bundle.git_status.len().saturating_sub(1) as i32)
+                        as usize;
+                    if self.bundle.selected_git_repo_index != next {
+                        self.bundle.selected_git_repo_index = next;
+                        self.mark_git_dirty();
+                    }
                 }
                 _ => {}
             },
@@ -296,6 +304,18 @@ impl App {
                 Pane::Logs => {
                     let scroll = self.bundle.log_scroll as i32 + delta;
                     self.bundle.log_scroll = scroll.clamp(0, u16::MAX as i32) as u16;
+                }
+                Pane::Git => {
+                    if self.bundle.git_status.is_empty() {
+                        return;
+                    }
+                    let next = (self.bundle.selected_git_repo_index as i32 + delta)
+                        .clamp(0, self.bundle.git_status.len().saturating_sub(1) as i32)
+                        as usize;
+                    if self.bundle.selected_git_repo_index != next {
+                        self.bundle.selected_git_repo_index = next;
+                        self.mark_git_dirty();
+                    }
                 }
                 _ => {}
             },
@@ -386,11 +406,14 @@ impl App {
                     }
                 }
                 Pane::Git => {
-                    self.bundle.log_scroll = if to_end {
-                        self.max_scroll_for_selected_pane()
-                    } else {
-                        0
-                    };
+                    if !self.bundle.git_status.is_empty() {
+                        self.bundle.selected_git_repo_index = if to_end {
+                            self.bundle.git_status.len().saturating_sub(1)
+                        } else {
+                            0
+                        };
+                        self.mark_git_dirty();
+                    }
                 }
                 _ => {}
             },
@@ -410,12 +433,22 @@ impl App {
                     }
                 }
                 Pane::Chat => self.chat_end_offset = if to_end { 0 } else { u16::MAX },
-                Pane::Logs | Pane::Git => {
+                Pane::Logs => {
                     self.bundle.log_scroll = if to_end {
                         self.max_scroll_for_selected_pane()
                     } else {
                         0
                     };
+                }
+                Pane::Git => {
+                    if !self.bundle.git_status.is_empty() {
+                        self.bundle.selected_git_repo_index = if to_end {
+                            self.bundle.git_status.len().saturating_sub(1)
+                        } else {
+                            0
+                        };
+                        self.mark_git_dirty();
+                    }
                 }
                 _ => {}
             },
@@ -432,12 +465,7 @@ impl App {
                 .enumerate()
                 .map(|(index, entry)| render_log_entry(index, entry).len())
                 .sum::<usize>(),
-            Pane::Git => self
-                .bundle
-                .git_status
-                .iter()
-                .map(|status| 3 + usize::from(status.status.is_rebase_in_progress))
-                .sum::<usize>(),
+            Pane::Git => self.bundle.git_status.len(),
             _ => 0,
         };
         lines.saturating_sub(1).min(u16::MAX as usize) as u16

@@ -280,4 +280,104 @@ impl App {
             }),
         );
     }
+
+    pub(crate) fn render_pr_create_modal(&self, frame: &mut Frame, area: Rect) {
+        let Some(pr) = self.pr_create.as_ref() else {
+            return;
+        };
+        let popup = centered_rect(76, 65, area);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Min(2),
+            ])
+            .split(popup);
+
+        frame.render_widget(Clear, popup);
+        frame.render_widget(panel_block("Create Pull Request", true), popup);
+        frame.render_widget(
+            Paragraph::new(format!("Repo: {}", pr.repo_name))
+                .block(panel_block("Repository", false))
+                .wrap(Wrap { trim: false }),
+            chunks[0],
+        );
+        frame.render_widget(
+            Paragraph::new(render_editor_buffer(
+                &pr.title,
+                pr.title_cursor,
+                pr.selected_field == crate::app::PrCreateField::Title,
+                self.editor_mode,
+            ))
+            .block(panel_block(
+                "Title",
+                pr.selected_field == crate::app::PrCreateField::Title,
+            ))
+            .wrap(Wrap { trim: false }),
+            chunks[1],
+        );
+        frame.render_widget(
+            Paragraph::new(render_editor_buffer(
+                &pr.body,
+                pr.body_cursor,
+                pr.selected_field == crate::app::PrCreateField::Body,
+                self.editor_mode,
+            ))
+            .block(panel_block(
+                "Body",
+                pr.selected_field == crate::app::PrCreateField::Body,
+            ))
+            .wrap(Wrap { trim: false }),
+            chunks[2],
+        );
+        frame.render_widget(
+            Paragraph::new(render_editor_buffer(
+                &pr.target_branch,
+                pr.target_branch_cursor,
+                pr.selected_field == crate::app::PrCreateField::TargetBranch,
+                self.editor_mode,
+            ))
+            .block(panel_block(
+                "Target Branch",
+                pr.selected_field == crate::app::PrCreateField::TargetBranch,
+            ))
+            .wrap(Wrap { trim: false }),
+            chunks[3],
+        );
+        frame.render_widget(
+            Paragraph::new(if pr.draft { "[x] Draft" } else { "[ ] Draft" }).block(panel_block(
+                "Mode",
+                pr.selected_field == crate::app::PrCreateField::Draft,
+            )),
+            chunks[4],
+        );
+        frame.render_widget(
+            Paragraph::new(if pr.auto_generate_description {
+                "[x] Auto-generate description"
+            } else {
+                "[ ] Auto-generate description"
+            })
+            .block(panel_block(
+                "Description",
+                pr.selected_field == crate::app::PrCreateField::AutoGenerate,
+            )),
+            chunks[5],
+        );
+        let footer = if pr.submitting {
+            "Submitting..."
+        } else {
+            "Tab cycle  Space toggle  Enter submit  Ctrl+S submit  Esc cancel"
+        };
+        frame.render_widget(
+            Paragraph::new(footer)
+                .block(panel_block("Actions", false))
+                .wrap(Wrap { trim: false }),
+            chunks[6],
+        );
+    }
 }

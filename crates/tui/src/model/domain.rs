@@ -69,6 +69,7 @@ pub struct WorkspaceBundle {
     pub repos: Vec<RepoWithTargetBranch>,
     pub sessions: Vec<Session>,
     pub git_status: Vec<RepoBranchStatus>,
+    pub selected_git_repo_index: usize,
     pub process_map: HashMap<Uuid, ExecutionProcess>,
     pub log_entries: Vec<PatchType>,
     pub diffs: Vec<LocalDiff>,
@@ -105,8 +106,8 @@ pub struct ChangesPaneRenderCache {
 #[derive(Debug, Clone)]
 pub struct GitPaneRenderCache {
     pub revision: u64,
-    pub text: Text<'static>,
-    pub total_lines: usize,
+    pub selected_repo_index: usize,
+    pub items: Vec<ListItem<'static>>,
 }
 
 #[derive(Debug, Clone)]

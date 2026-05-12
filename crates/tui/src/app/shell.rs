@@ -155,6 +155,10 @@ impl App {
             self.handle_workspace_create_branch_picker_key(key);
             return;
         }
+        if self.pr_create.is_some() {
+            self.handle_pr_create_key(key).await;
+            return;
+        }
         if self.snippet_preview.is_some() {
             self.handle_snippet_preview_key(key).await;
             return;
@@ -228,6 +232,24 @@ impl App {
                 }
                 crossterm::event::KeyCode::Char('N') if self.conversation_search.is_some() => {
                     self.advance_conversation_search(false, size);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        if self.focus == Focus::Main && self.selected_pane == Pane::Git {
+            match key.code {
+                crossterm::event::KeyCode::Char('p') => {
+                    self.primary_pr_action().await;
+                    return;
+                }
+                crossterm::event::KeyCode::Char('o') => {
+                    self.open_selected_pull_request().await;
+                    return;
+                }
+                crossterm::event::KeyCode::Char('a') => {
+                    self.attach_selected_pull_request().await;
                     return;
                 }
                 _ => {}
@@ -449,6 +471,10 @@ impl App {
             self.handle_snippet_preview_paste(pasted);
             return;
         }
+        if self.pr_create.is_some() {
+            self.handle_pr_create_paste(pasted);
+            return;
+        }
         match (&self.focus, &self.selected_pane) {
             (Focus::Composer, Pane::Chat) => self.handle_composer_paste(pasted),
             (Focus::Composer, Pane::Notes) => self.handle_notes_paste(pasted),
@@ -527,6 +553,12 @@ impl App {
             | NetEvent::QueueCancelFailed { .. }
             | NetEvent::DraftDiscarded { .. }
             | NetEvent::DraftDiscardFailed { .. }
+            | NetEvent::PullRequestCreated { .. }
+            | NetEvent::PullRequestCreateFailed { .. }
+            | NetEvent::PullRequestAttached { .. }
+            | NetEvent::PullRequestAttachFailed { .. }
+            | NetEvent::PullRequestOpened { .. }
+            | NetEvent::PullRequestOpenFailed { .. }
             | NetEvent::WorkspaceActionFinished { .. }
             | NetEvent::Error(_) => false,
         }
@@ -535,6 +567,7 @@ impl App {
     fn is_input_sensitive_mode(&self) -> bool {
         self.focus == Focus::Composer
             || self.session_rename.is_some()
+            || self.pr_create.is_some()
             || (self.bundle.terminal.input_mode && self.selected_pane == Pane::Terminal)
     }
 }

@@ -54,6 +54,7 @@ impl App {
         self.queue_session_id = None;
         self.queue_pending = false;
         self.session_rename = None;
+        self.pr_create = None;
         self.session_filter.clear();
         self.search_prompt = None;
         self.conversation_search = None;
