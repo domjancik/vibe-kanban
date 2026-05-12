@@ -1,0 +1,437 @@
+---
+title: "TUI Pull Request Spec"
+description: "Implementation specification for pull request surfacing, quick access, and creation in the Ratatui workspace UI"
+---
+
+# Ratatui Pull Request Flow
+
+This document specifies how the terminal UI should surface pull requests, expose quick PR actions, and create new pull requests from a workspace.
+
+It covers both:
+
+- PR surfacing, meaning how the TUI shows open or linked pull requests
+- PR creation, meaning how the user opens or creates a PR from the terminal
+
+## Existing implementation review
+
+The product already supports PR creation in the web UI and already tracks PR state in backend workspace models.
+
+### Existing product behaviour
+
+The web product supports:
+
+- creating a PR from the Git panel
+- creating a PR from the command bar
+- per-repo PR actions in multi-repo workspaces
+- showing PR state in repo cards and workspace chrome
+
+Relevant docs:
+
+- [docs/workspaces/git-operations.mdx](/var/folders/_v/2k243jwn4hv_8l_gl4d31sh80000gn/T/vibe-kanban/worktrees/cead-design-an-altern/vibe-kanban/docs/workspaces/git-operations.mdx)
+- [docs/workspaces/command-bar.mdx](/var/folders/_v/2k243jwn4hv_8l_gl4d31sh80000gn/T/vibe-kanban/worktrees/cead-design-an-altern/vibe-kanban/docs/workspaces/command-bar.mdx)
+
+### Existing backend primitives
+
+The backend already exposes the key PR endpoints needed for a first TUI implementation:
+
+- `POST /api/workspaces/{id}/pull-requests`
+- `POST /api/workspaces/{id}/pull-requests/attach`
+- `GET /api/workspaces/{id}/pull-requests/comments`
+
+Workspace summaries already expose an aggregate PR URL:
+
+- `pr_url` on workspace summary rows
+
+Workspace and repo state already track per-repo PR information such as:
+
+- PR URL
+- PR number
+- PR status
+
+### Current TUI coverage
+
+The general TUI spec mentions:
+
+- a PR status marker in workspace rows
+- a PR filter in the workspace list
+- PR creation as a later advanced action
+
+But there is no dedicated TUI PR spec yet. This document fills that gap.
+
+## Goals
+
+The TUI PR flow should:
+
+- make open PR state visible at a glance
+- provide one-keystroke or near-one-keystroke access to the active PR
+- support per-repo PR creation in multi-repo workspaces
+- preserve the existing web semantics for PR title, description, target branch, and draft mode
+- avoid forcing the user into command-palette-only workflows for common PR actions
+
+## Non-goals
+
+The first version should not:
+
+- implement full PR review inside the TUI
+- expose every GitHub or Azure PR capability
+- support editing every PR field after creation
+- replace the browser as the primary place for full PR discussion and CI review
+
+## Product decision
+
+The TUI should treat PRs as a first-class Git action cluster, not as an afterthought hidden behind command palette text search.
+
+This means:
+
+- visible PR surfacing in the workspace list and right panel
+- contextual quick actions for create and open
+- repo-aware behaviour in multi-repo workspaces
+
+## PR surfacing
+
+## Workspace list
+
+Each workspace row should show a compact PR marker when the workspace has at least one linked PR.
+
+### Row data
+
+Use:
+
+- workspace summary `pr_url` for aggregate presence
+- open PR state when available
+
+### Row states
+
+- no PR: no badge
+- open PR: open PR badge
+- merged PR only: merged badge
+- closed PR only: closed badge
+
+The first implementation can prioritise open-vs-not-open if merged/closed aggregate state is not cheaply available in summaries yet.
+
+## Right panel
+
+The right-side Git detail area should be the primary place for expanded PR surfacing.
+
+### Placement
+
+Inside the Git section for the selected workspace or repo, show:
+
+- target branch
+- ahead/behind counts
+- PR status chip
+- quick PR actions
+
+In multi-repo workspaces, each repo row should expose its own PR state and actions.
+
+### PR chip behaviour
+
+If a repo has an open PR:
+
+- show PR number
+- show status `open`
+- render it as an actionable chip or button
+- opening the chip should open the PR URL
+
+If a repo has a merged or closed PR:
+
+- show the status distinctly
+- allow opening the linked PR URL if it still exists
+
+## Command palette
+
+All PR actions should also be available through the command palette.
+
+Required commands:
+
+- `Create Pull Request`
+- `Open Active Pull Request`
+- `Attach Existing Pull Request`
+- `Create Pull Request (repo)`
+- `Open Active Pull Request (repo)`
+
+## Quick access shortcuts
+
+The TUI should support fast PR actions without forcing the user through a modal-heavy workflow.
+
+## Recommended shortcut model
+
+Use contextual shortcuts when the Git section or a repo row is focused.
+
+### Required shortcuts
+
+- `p`: create PR for the focused repo or current workspace default repo
+- `o`: open the active PR for the focused repo
+- `a`: attach an existing PR to the focused repo or workspace
+
+### Workspace-level fallback
+
+If focus is not on a specific repo row:
+
+- `o` opens the only open PR in the workspace when exactly one exists
+- if multiple open PRs exist, open a small repo selector first
+- if no open PR exists, show a non-fatal status message
+
+### Optional global shortcut
+
+If the app later reserves a global Git shortcut prefix, expose:
+
+- `g p`: create PR
+- `g o`: open active PR
+
+Do not block the first implementation on a new global keybinding system.
+
+## Open active PR
+
+Opening the active PR should be a first-class action, not just a passive badge.
+
+### Behaviour
+
+When the user invokes `Open Active Pull Request`:
+
+1. determine the target repo context
+2. find the open PR for that repo
+3. open the PR URL in the system browser
+
+### Multi-repo behaviour
+
+If multiple repos in the workspace have open PRs:
+
+- repo-focused action opens the focused repo PR directly
+- workspace-level action opens a repo picker filtered to repos with open PRs
+
+### No-PR handling
+
+If there is no open PR:
+
+- show `No active pull request`
+- do not silently fall back to create mode unless the invoked command was explicitly the primary `p` action
+
+## Create PR
+
+PR creation should reuse the existing backend create-PR route and web semantics.
+
+### Create flow inputs
+
+For the focused repo, collect:
+
+- title
+- description body
+- target branch
+- draft mode
+- `auto_generate_description`
+
+### Defaults
+
+Default from existing product behaviour:
+
+- title: workspace or task-derived name
+- body: empty unless generated
+- target branch: repo target branch
+- draft: off by default unless the user toggles it
+
+### Recommended TUI create flow
+
+Use a lightweight right-panel or modal form with:
+
+- title field
+- body field
+- target branch field
+- draft toggle
+- auto-generate-description toggle
+- submit and cancel actions
+
+The first version does not need rich markdown editing for the PR body.
+
+## Primary PR action
+
+The `p` shortcut should be contextual and ergonomic.
+
+### Rule
+
+If the focused repo already has an open PR:
+
+- `p` should open the existing PR instead of trying to create a duplicate
+
+If the focused repo does not have an open PR:
+
+- `p` should open the create-PR flow
+
+This makes `p` the “primary PR action” and keeps `o` as the explicit open action.
+
+## Attach existing PR
+
+Some users will create PRs outside the app and then want the workspace linked.
+
+### Attach flow
+
+Use the existing backend attach route.
+
+Inputs:
+
+- focused repo id
+
+Behaviour:
+
+- backend looks for the PR matching the workspace branch
+- if found, link it to the workspace
+- if not found, show a clear error
+
+## Browser opening model
+
+The TUI must be able to open a PR URL locally.
+
+### Required helper
+
+Use a platform-aware open command:
+
+- macOS: `open`
+- Linux: `xdg-open`
+- Windows: `start`
+
+### Failure handling
+
+If browser launch fails:
+
+- copy or display the URL in a modal
+- allow `y` to copy URL
+- keep the PR chip visible
+
+The action should fail gracefully rather than disappearing.
+
+## Multi-repo semantics
+
+Multi-repo workspaces need repo-scoped PR behaviour.
+
+### Rules
+
+- PR creation is always repo-scoped
+- PR opening is repo-scoped when a repo row is focused
+- workspace-level open/create actions require disambiguation when multiple repos are eligible
+
+### Repo chooser triggers
+
+Open a repo chooser when:
+
+- the workspace has more than one repo and none is focused
+- multiple repos have open PRs and the user invokes workspace-level `o`
+- multiple repos are ahead and the user invokes workspace-level `p`
+
+## UI details
+
+## Workspace row surfacing
+
+Show:
+
+- compact PR badge
+- optional PR filter in workspace list
+
+The workspace row should not try to encode full per-repo PR detail.
+
+## Git detail section
+
+Show:
+
+- repo branch
+- ahead/behind indicators
+- PR chip with status
+- action hints such as `p create/open`, `o open`, `a attach`
+
+### Example states
+
+- `PR #142 open`
+- `PR #142 merged`
+- `No PR`
+
+## Create form validation
+
+Validate before submit:
+
+- title is non-empty
+- target branch is non-empty
+- repo is known
+
+### Server-side validation to surface
+
+Preserve existing backend errors such as:
+
+- CLI not installed
+- CLI not logged in
+- target branch not found
+- unsupported provider
+
+These should map to human-readable TUI messages rather than raw JSON.
+
+## Post-create behaviour
+
+On successful PR creation:
+
+1. update the repo PR chip immediately
+2. refresh workspace summary PR state
+3. show the PR URL
+4. optionally auto-open the PR in the browser
+
+### Recommendation
+
+Default to auto-open on successful create, matching current web expectations, but make it configurable later.
+
+## Comments and future extensions
+
+The backend already exposes PR comments. This should not block the first surfacing-and-creation release.
+
+Future additions may include:
+
+- `View PR Comments`
+- `Refresh PR Status`
+- `Review PR` handoff flows
+
+## Suggested Rust module layout
+
+```text
+crates/tui/src/pr/
+  mod.rs
+  state.rs
+  actions.rs
+  create.rs
+  open.rs
+  attach.rs
+  picker.rs
+  render.rs
+```
+
+## Testing plan
+
+## Unit tests
+
+- primary `p` action opens existing PR when one is already open
+- `p` opens create flow when no PR exists
+- workspace-level `o` opens the only open PR directly
+- workspace-level `o` opens repo chooser when multiple open PRs exist
+- validation blocks empty title
+- post-create state updates PR chip and workspace summary
+
+## Integration tests
+
+- create PR from single-repo workspace
+- create PR from focused repo in multi-repo workspace
+- open active PR from repo row
+- attach existing PR by branch match
+- browser-open failure falls back to visible URL
+
+## Snapshot tests
+
+- workspace row with PR badge
+- repo card with open PR
+- repo card with merged PR
+- create-PR form
+- repo chooser for multiple PRs
+
+## Success criteria
+
+The design is successful if:
+
+- PR existence is visible without digging through menus
+- opening the active PR is fast enough to feel like a primary action
+- creating a PR from the TUI works for both single-repo and multi-repo workspaces
+- repo-scoped and workspace-scoped behaviour are predictable
+- the design reuses existing backend PR routes and product semantics rather than inventing a parallel system
