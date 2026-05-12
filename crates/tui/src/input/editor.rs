@@ -99,6 +99,13 @@ pub fn map_text_input_key(key: KeyEvent, options: TextInputOptions) -> Option<Te
             Some(TextInputEvent::Edit(TextEditAction::MoveLineStart))
         }
         KeyEvent {
+            code: KeyCode::Char('w'),
+            modifiers,
+            ..
+        } if modifiers == KeyModifiers::CONTROL => {
+            Some(TextInputEvent::Edit(TextEditAction::BackspaceWord))
+        }
+        KeyEvent {
             code: KeyCode::Char('e'),
             modifiers,
             ..
@@ -232,6 +239,13 @@ mod tests {
         assert_eq!(
             map_text_input_key(
                 KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL),
+                options
+            ),
+            Some(TextInputEvent::Edit(TextEditAction::BackspaceWord))
+        );
+        assert_eq!(
+            map_text_input_key(
+                KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
                 options
             ),
             Some(TextInputEvent::Edit(TextEditAction::BackspaceWord))
