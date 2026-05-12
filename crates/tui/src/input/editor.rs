@@ -35,16 +35,44 @@ pub fn map_text_input_key(key: KeyEvent, options: TextInputOptions) -> Option<Te
         }
         KeyEvent {
             code: KeyCode::Backspace,
+            modifiers,
+            ..
+        } if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(TextInputEvent::Edit(TextEditAction::BackspaceWord))
+        }
+        KeyEvent {
+            code: KeyCode::Backspace,
             ..
         } => Some(TextInputEvent::Edit(TextEditAction::Backspace)),
+        KeyEvent {
+            code: KeyCode::Delete,
+            modifiers,
+            ..
+        } if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(TextInputEvent::Edit(TextEditAction::DeleteWord))
+        }
         KeyEvent {
             code: KeyCode::Delete,
             ..
         } => Some(TextInputEvent::Edit(TextEditAction::Delete)),
         KeyEvent {
             code: KeyCode::Left,
+            modifiers,
+            ..
+        } if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(TextInputEvent::Edit(TextEditAction::MoveWordLeft))
+        }
+        KeyEvent {
+            code: KeyCode::Left,
             ..
         } => Some(TextInputEvent::Edit(TextEditAction::MoveLeft)),
+        KeyEvent {
+            code: KeyCode::Right,
+            modifiers,
+            ..
+        } if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(TextInputEvent::Edit(TextEditAction::MoveWordRight))
+        }
         KeyEvent {
             code: KeyCode::Right,
             ..
@@ -150,6 +178,70 @@ mod tests {
                 options
             ),
             Some(TextInputEvent::Edit(TextEditAction::MoveLineEnd))
+        );
+    }
+
+    #[test]
+    fn alt_and_control_arrow_shortcuts_map_to_word_navigation() {
+        let options = TextInputOptions {
+            submit_on_enter: false,
+            enter_inserts_newline: true,
+            shift_enter_inserts_newline: false,
+        };
+
+        assert_eq!(
+            map_text_input_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT), options),
+            Some(TextInputEvent::Edit(TextEditAction::MoveWordLeft))
+        );
+        assert_eq!(
+            map_text_input_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT), options),
+            Some(TextInputEvent::Edit(TextEditAction::MoveWordRight))
+        );
+        assert_eq!(
+            map_text_input_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL), options),
+            Some(TextInputEvent::Edit(TextEditAction::MoveWordLeft))
+        );
+        assert_eq!(
+            map_text_input_key(
+                KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL),
+                options
+            ),
+            Some(TextInputEvent::Edit(TextEditAction::MoveWordRight))
+        );
+    }
+
+    #[test]
+    fn alt_and_control_delete_shortcuts_map_to_word_deletion() {
+        let options = TextInputOptions {
+            submit_on_enter: false,
+            enter_inserts_newline: true,
+            shift_enter_inserts_newline: false,
+        };
+
+        assert_eq!(
+            map_text_input_key(
+                KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT),
+                options
+            ),
+            Some(TextInputEvent::Edit(TextEditAction::BackspaceWord))
+        );
+        assert_eq!(
+            map_text_input_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::ALT), options),
+            Some(TextInputEvent::Edit(TextEditAction::DeleteWord))
+        );
+        assert_eq!(
+            map_text_input_key(
+                KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL),
+                options
+            ),
+            Some(TextInputEvent::Edit(TextEditAction::BackspaceWord))
+        );
+        assert_eq!(
+            map_text_input_key(
+                KeyEvent::new(KeyCode::Delete, KeyModifiers::CONTROL),
+                options
+            ),
+            Some(TextInputEvent::Edit(TextEditAction::DeleteWord))
         );
     }
 }

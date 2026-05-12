@@ -4,8 +4,12 @@ pub enum TextEditAction {
     InsertNewline,
     Backspace,
     Delete,
+    BackspaceWord,
+    DeleteWord,
     MoveLeft,
     MoveRight,
+    MoveWordLeft,
+    MoveWordRight,
     MoveUp,
     MoveDown,
     MoveLineStart,
@@ -14,7 +18,7 @@ pub enum TextEditAction {
 
 use crate::editor::{
     clamp_char_boundary, line_end_index, line_start_index, move_cursor_vertical,
-    next_char_boundary, prev_char_boundary,
+    next_char_boundary, next_word_start, prev_char_boundary, prev_word_start,
 };
 
 pub fn apply_text_edit_action(
@@ -46,6 +50,21 @@ pub fn apply_text_edit_action(
                 false
             }
         }
+        TextEditAction::BackspaceWord => {
+            *cursor = clamp_char_boundary(buffer, *cursor);
+            if *cursor > 0 {
+                let start = prev_word_start(buffer, *cursor);
+                if start < *cursor {
+                    buffer.drain(start..*cursor);
+                    *cursor = start;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
         TextEditAction::Delete => {
             *cursor = clamp_char_boundary(buffer, *cursor);
             if *cursor < buffer.len() {
@@ -56,11 +75,31 @@ pub fn apply_text_edit_action(
                 false
             }
         }
+        TextEditAction::DeleteWord => {
+            *cursor = clamp_char_boundary(buffer, *cursor);
+            if *cursor < buffer.len() {
+                let end = next_word_start(buffer, *cursor);
+                if *cursor < end {
+                    buffer.drain(*cursor..end);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
         TextEditAction::MoveLeft => move_cursor_with(buffer, cursor, |buffer, cursor| {
             prev_char_boundary(buffer, cursor)
         }),
         TextEditAction::MoveRight => move_cursor_with(buffer, cursor, |buffer, cursor| {
             next_char_boundary(buffer, cursor)
+        }),
+        TextEditAction::MoveWordLeft => move_cursor_with(buffer, cursor, |buffer, cursor| {
+            prev_word_start(buffer, cursor)
+        }),
+        TextEditAction::MoveWordRight => move_cursor_with(buffer, cursor, |buffer, cursor| {
+            next_word_start(buffer, cursor)
         }),
         TextEditAction::MoveUp => move_cursor_with(buffer, cursor, |buffer, cursor| {
             move_cursor_vertical(buffer, cursor, -1)
@@ -118,6 +157,42 @@ mod tests {
         ));
         assert_eq!(buffer, "a");
         assert_eq!(cursor, 1);
+    }
+
+    #[test]
+    fn applies_word_navigation_and_deletion_actions() {
+        let mut buffer = String::from("hello world again");
+        let mut cursor = 6;
+
+        assert!(apply_text_edit_action(
+            &mut buffer,
+            &mut cursor,
+            TextEditAction::MoveWordRight
+        ));
+        assert_eq!(cursor, 12);
+
+        assert!(apply_text_edit_action(
+            &mut buffer,
+            &mut cursor,
+            TextEditAction::MoveWordLeft
+        ));
+        assert_eq!(cursor, 6);
+
+        assert!(apply_text_edit_action(
+            &mut buffer,
+            &mut cursor,
+            TextEditAction::BackspaceWord
+        ));
+        assert_eq!(buffer, "world again");
+        assert_eq!(cursor, 0);
+
+        assert!(apply_text_edit_action(
+            &mut buffer,
+            &mut cursor,
+            TextEditAction::DeleteWord
+        ));
+        assert_eq!(buffer, "again");
+        assert_eq!(cursor, 0);
     }
 
     #[test]
