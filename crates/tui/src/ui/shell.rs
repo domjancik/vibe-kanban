@@ -10,8 +10,6 @@ use crate::{app::App, model::workspace_title};
 
 impl App {
     pub(crate) fn render(&mut self, frame: &mut Frame) {
-        self.clamp_focus_to_visible(frame.area());
-
         let outer = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -47,7 +45,11 @@ impl App {
                 .constraints([Constraint::Length(32), Constraint::Min(40)])
                 .split(outer[1]);
             self.render_workspace_list(frame, body[0]);
-            self.render_main(frame, body[1]);
+            match self.compact_secondary_region() {
+                FocusedRegion::Main => self.render_main(frame, body[1]),
+                FocusedRegion::Detail => self.render_detail(frame, body[1]),
+                FocusedRegion::WorkspaceList => self.render_main(frame, body[1]),
+            }
         }
 
         frame.render_widget(self.footer(), outer[2]);
@@ -118,6 +120,13 @@ impl App {
             FocusedRegion::Detail => "detail pane",
         }
     }
+
+    fn compact_secondary_region(&self) -> FocusedRegion {
+        match self.focused_region() {
+            FocusedRegion::Detail => FocusedRegion::Detail,
+            FocusedRegion::WorkspaceList | FocusedRegion::Main => FocusedRegion::Main,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -125,4 +134,120 @@ enum FocusedRegion {
     WorkspaceList,
     Main,
     Detail,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FocusedRegion;
+    use crate::{app::App, model::Focus};
+
+    fn test_app() -> App {
+        let api = crate::api::Api::new("http://127.0.0.1:9".to_string()).unwrap();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        App {
+            api,
+            rx,
+            tx,
+            workspace_streams: Vec::new(),
+            summary_streams: Vec::new(),
+            subscriptions: crate::api::WorkspaceSubscriptions::default(),
+            active_workspaces: std::collections::HashMap::new(),
+            archived_workspaces: std::collections::HashMap::new(),
+            summaries: std::collections::HashMap::new(),
+            selected_workspace_id: None,
+            selected_pane: crate::model::Pane::Chat,
+            focus: Focus::Main,
+            detail_section: crate::app::DetailSection::Sessions,
+            maximized_panel: false,
+            show_archived: false,
+            filter: String::new(),
+            workspace_project_filters: Vec::new(),
+            session_filter: String::new(),
+            workspace_list_revision: 0,
+            detail_revision: 0,
+            workspace_list_cache: None,
+            detail_pane_cache: None,
+            status: String::new(),
+            error: None,
+            bundle: crate::model::WorkspaceBundle::default(),
+            executor_profiles: executors::profile::ExecutorConfigs {
+                executors: std::collections::HashMap::new(),
+            },
+            default_executor_profile: None,
+            composer_config: None,
+            composer_options: None,
+            composer: String::new(),
+            composer_snippets: Vec::new(),
+            composer_cursor: 0,
+            editor_mode: crate::editor::ComposerEditorMode::Standard,
+            vim_pending_operator: None,
+            composer_dirty: false,
+            composer_edit_revision: 0,
+            composer_height_cache: None,
+            draft_save_in_flight: false,
+            composer_queue_conflict: false,
+            composer_scratch_id: None,
+            composer_scratch_loaded: false,
+            queue_session_id: None,
+            queue_status: crate::model::QueueStatus::Empty,
+            queue_pending: false,
+            last_composer_edit: None,
+            chat_end_offset: 0,
+            chat_render_cache: None,
+            chat_render_cache_dirty: true,
+            last_chat_render_cache_build: None,
+            conversation_loader: None,
+            conversation_process_entries: std::collections::HashMap::new(),
+            conversation_process_order: Vec::new(),
+            conversation_bootstrapping: false,
+            conversation_backfilling: false,
+            current_todos: None,
+            selected_todo_index: 0,
+            optimistic_entries: Vec::new(),
+            notes_cursor: 0,
+            notes_edit_revision: 0,
+            notes_save_in_flight: false,
+            agent_picker: None,
+            workspace_project_filter_picker: None,
+            workspace_create: None,
+            workspace_create_repo_picker: None,
+            workspace_create_branch_picker: None,
+            session_rename: None,
+            pr_create: None,
+            snippet_preview: None,
+            search_prompt: None,
+            conversation_search: None,
+            tool_call_display_mode: crate::app::ToolCallDisplayMode::Expanded,
+            actions_in_flight: Default::default(),
+            creating_workspace: false,
+            workspace_create_previous_selection: None,
+            creating_new_session: false,
+            should_quit: false,
+        }
+    }
+
+    #[test]
+    fn compact_layout_shows_detail_when_detail_is_focused() {
+        let mut app = test_app();
+        app.focus = Focus::Detail;
+        assert!(matches!(
+            app.compact_secondary_region(),
+            FocusedRegion::Detail
+        ));
+    }
+
+    #[test]
+    fn compact_layout_shows_main_for_workspace_and_composer_focus() {
+        let mut app = test_app();
+        app.focus = Focus::WorkspaceList;
+        assert!(matches!(
+            app.compact_secondary_region(),
+            FocusedRegion::Main
+        ));
+        app.focus = Focus::Composer;
+        assert!(matches!(
+            app.compact_secondary_region(),
+            FocusedRegion::Main
+        ));
+    }
 }

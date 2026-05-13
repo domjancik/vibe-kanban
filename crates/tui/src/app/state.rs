@@ -5,7 +5,7 @@ use executors::{
     executor_discovery::ExecutorDiscoveredOptions,
     profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},
 };
-use ratatui::{layout::Rect, text::Text, widgets::ListItem};
+use ratatui::{text::Text, widgets::ListItem};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use uuid::Uuid;
 
@@ -13,7 +13,6 @@ use crate::{
     api::{Api, WorkspaceSubscriptions},
     conversation::{ChatRenderCache, OptimisticConversationEntry, SessionTodoState},
     editor::{ComposerEditorMode, VimOperator},
-    input::{next_focus, prev_focus},
     model::{Focus, NetEvent, Pane, PatchType, QueueStatus, WorkspaceBundle, WorkspaceSummary},
     paste::TuiComposerSnippet,
 };
@@ -367,45 +366,5 @@ impl App {
     pub(crate) fn mark_terminal_dirty(&mut self) {
         self.bundle.terminal_revision = self.bundle.terminal_revision.saturating_add(1);
         self.bundle.terminal_cache = None;
-    }
-
-    pub(crate) fn detail_visible_for_size(&self, size: Rect) -> bool {
-        self.maximized_panel || size.width >= 140
-    }
-
-    pub(crate) fn focus_visible_for_size(&self, focus: Focus, size: Rect) -> bool {
-        match focus {
-            Focus::Detail => self.detail_visible_for_size(size),
-            Focus::WorkspaceList | Focus::Main | Focus::Composer => true,
-        }
-    }
-
-    pub(crate) fn next_visible_focus(&self, current: Focus, size: Rect) -> Focus {
-        let mut candidate = current;
-        for _ in 0..4 {
-            candidate = next_focus(&candidate);
-            if self.focus_visible_for_size(candidate, size) {
-                return candidate;
-            }
-        }
-        current
-    }
-
-    pub(crate) fn prev_visible_focus(&self, current: Focus, size: Rect) -> Focus {
-        let mut candidate = current;
-        for _ in 0..4 {
-            candidate = prev_focus(&candidate);
-            if self.focus_visible_for_size(candidate, size) {
-                return candidate;
-            }
-        }
-        current
-    }
-
-    pub(crate) fn clamp_focus_to_visible(&mut self, size: Rect) {
-        if self.focus_visible_for_size(self.focus, size) {
-            return;
-        }
-        self.focus = Focus::Main;
     }
 }
