@@ -8,7 +8,7 @@ use crate::{
     api::transport::log_tui,
     app::{App, ToolCallDisplayMode},
     conversation::chat_window_bounds,
-    input::{AppIntent, next_focus, prev_focus},
+    input::AppIntent,
     model::{Focus, NetEvent, Pane, QueueStatus, WorkspaceActionKind, active_process},
 };
 
@@ -623,8 +623,8 @@ impl App {
                 };
             }
             AppIntent::Quit => self.should_quit = true,
-            AppIntent::FocusNext => self.focus = next_focus(&self.focus),
-            AppIntent::FocusPrev => self.focus = prev_focus(&self.focus),
+            AppIntent::FocusNext => self.focus = self.next_visible_focus(self.focus, size),
+            AppIntent::FocusPrev => self.focus = self.prev_visible_focus(self.focus, size),
             AppIntent::ShowHelp => {
                 self.status = "Keys: Tab focus, Ctrl+W maximize active panel, / search or filter, F workspace project filter, t focus todos, n/N next/prev chat match, [/ ] user turns, T compact tool runs, j/k nav, 1-6 panes, i edit, Enter open/send, r rename session, E executor (new session only), V variant, M model, R reasoning, A agent menu, P permission, p pin / Git PR action, x archive, v stop execution, n new session, s start dev, c cleanup, e editor, Git: p create/open PR, o open PR, a attach PR, create mode: a add repo, Enter branch, d remove, Esc cancel, Esc/C-]/C-g leave terminal".to_string();
             }
@@ -1558,5 +1558,38 @@ mod tests {
             .await;
 
         assert_eq!(app.workspace_list_revision, 8);
+    }
+
+    #[test]
+    fn narrow_layout_focus_cycle_skips_hidden_detail_panel() {
+        let mut app = test_app();
+        let size = Rect::new(0, 0, 120, 30);
+
+        assert_eq!(app.next_visible_focus(Focus::Main, size), Focus::Composer);
+        assert_eq!(app.prev_visible_focus(Focus::Composer, size), Focus::Main);
+
+        app.focus = Focus::Detail;
+        app.clamp_focus_to_visible(size);
+        assert_eq!(app.focus, Focus::Main);
+    }
+
+    #[test]
+    fn wide_layout_keeps_detail_panel_in_focus_cycle() {
+        let app = test_app();
+        let size = Rect::new(0, 0, 160, 30);
+
+        assert_eq!(app.next_visible_focus(Focus::Main, size), Focus::Detail);
+        assert_eq!(app.prev_visible_focus(Focus::Composer, size), Focus::Detail);
+    }
+
+    #[test]
+    fn maximized_layout_keeps_detail_panel_visible_even_when_narrow() {
+        let mut app = test_app();
+        let size = Rect::new(0, 0, 120, 30);
+        app.maximized_panel = true;
+
+        assert!(app.detail_visible_for_size(size));
+        assert_eq!(app.next_visible_focus(Focus::Main, size), Focus::Detail);
+        assert_eq!(app.prev_visible_focus(Focus::Composer, size), Focus::Detail);
     }
 }

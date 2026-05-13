@@ -10,6 +10,8 @@ use crate::{app::App, model::workspace_title};
 
 impl App {
     pub(crate) fn render(&mut self, frame: &mut Frame) {
+        self.clamp_focus_to_visible(frame.area());
+
         let outer = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
